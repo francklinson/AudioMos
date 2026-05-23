@@ -1,0 +1,287 @@
+/* Home 页面动态背景样式 */
+
+.home-container {
+  min-height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 动态背景层 - 蓝紫色主题 */
+.home-background {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #8b5cf6 100%);
+  overflow: hidden;
+}
+
+/* 渐变圆形背景 */
+.bg-gradient-circle {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.8;
+  animation: float-circle 20s infinite ease-in-out;
+}
+
+.circle-1 {
+  width: 600px;
+  height: 600px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.6) 0%, rgba(118, 75, 162, 0.4) 100%);
+  top: -150px;
+  right: -100px;
+  animation-delay: 0s;
+}
+
+.circle-2 {
+  width: 500px;
+  height: 500px;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.5) 0%, rgba(139, 92, 246, 0.3) 100%);
+  bottom: -150px;
+  left: -100px;
+  animation-delay: 5s;
+}
+
+.circle-3 {
+  width: 450px;
+  height: 450px;
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.5) 0%, rgba(102, 126, 234, 0.4) 100%);
+  top: 40%;
+  right: 5%;
+  animation-delay: 10s;
+}
+
+.circle-4 {
+  width: 350px;
+  height: 350px;
+  background: linear-gradient(135deg, rgba(118, 75, 162, 0.5) 0%, rgba(139, 92, 246, 0.4) 100%);
+  top: 15%;
+  left: 10%;
+  animation-delay: 15s;
+}
+
+.circle-5 {
+  width: 400px;
+  height: 400px;
+  background: linear-gradient(135deg, rgba(196, 181, 253, 0.4) 0%, rgba(102, 126, 234, 0.3) 100%);
+  bottom: 10%;
+  right: 20%;
+  animation-delay: 7s;
+}
+
+@keyframes float-circle {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  25% {
+    transform: translate(30px, -30px) scale(1.05);
+  }
+  50% {
+    transform: translate(-20px, 20px) scale(0.95);
+  }
+  75% {
+    transform: translate(20px, 10px) scale(1.02);
+  }
+}
+
+/* 浮动装饰元素 */
+.floating-elements {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.float-item {
+  position: absolute;
+  border-radius: 50%;
+  opacity: 0.4;
+  animation: float-item 20s infinite ease-in-out;
+}
+
+.float-1 {
+  width: 60px;
+  height: 60px;
+  background: linear-gradient(135deg, #a78bfa 0%, #8b5cf6 100%);
+  top: 10%;
+  left: 5%;
+  animation-delay: 0s;
+}
+
+.float-2 {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #c4b5fd 0%, #a78bfa 100%);
+  top: 20%;
+  right: 10%;
+  animation-delay: 3s;
+}
+
+.float-3 {
+  width: 80px;
+  height: 80px;
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  top: 60%;
+  left: 8%;
+  animation-delay: 6s;
+}
+
+.float-4 {
+  width: 50px;
+  height: 50px;
+  background: linear-gradient(135deg, #a78bfa 0%, #c4b5fd 100%);
+  bottom: 20%;
+  right: 5%;
+  animation-delay: 9s;
+}
+
+.float-5 {
+  width: 35px;
+  height: 35px;
+  background: linear-gradient(135deg, #c4b5fd 0%, #8b5cf6 100%);
+  top: 40%;
+  right: 15%;
+  animation-delay: 12s;
+}
+
+@keyframes float-item {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 0.4;
+  }
+  50% {
+    transform: translateY(-40px) rotate(180deg);
+    opacity: 0.7;
+  }
+}
+
+/* 网格背景 */
+.grid-pattern {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 50px 50px;
+  animation: grid-move 30s linear infinite;
+}
+
+@keyframes grid-move {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 50px 50px;
+  }
+}
+
+/* 粒子效果 */
+.particles {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.particle {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  animation: particle-float 15s infinite linear;
+}
+
+.particle:nth-child(1) { left: 10%; animation-delay: 0s; animation-duration: 12s; }
+.particle:nth-child(2) { left: 20%; animation-delay: 2s; animation-duration: 15s; }
+.particle:nth-child(3) { left: 30%; animation-delay: 4s; animation-duration: 13s; }
+.particle:nth-child(4) { left: 40%; animation-delay: 6s; animation-duration: 16s; }
+.particle:nth-child(5) { left: 50%; animation-delay: 8s; animation-duration: 14s; }
+.particle:nth-child(6) { left: 60%; animation-delay: 10s; animation-duration: 17s; }
+.particle:nth-child(7) { left: 70%; animation-delay: 12s; animation-duration: 15s; }
+.particle:nth-child(8) { left: 80%; animation-delay: 14s; animation-duration: 13s; }
+.particle:nth-child(9) { left: 90%; animation-delay: 1s; animation-duration: 16s; }
+.particle:nth-child(10) { left: 5%; animation-delay: 3s; animation-duration: 14s; }
+
+@keyframes particle-float {
+  0% {
+    transform: translateY(100vh) scale(0);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-100vh) scale(1.5);
+    opacity: 0;
+  }
+}
+
+/* 内容区域 */
+.home-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* 卡片样式优化 */
+.home-card {
+  background: rgba(255, 255, 255, 0.9) !important;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08) !important;
+  transition: all 0.3s ease;
+}
+
+.home-card:hover {
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12) !important;
+  transform: translateY(-2px);
+}
+
+/* 统计卡片特殊样式 */
+.stat-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.9) 100%) !important;
+}
+
+/* 上传区域样式 */
+.upload-area {
+  background: rgba(255, 255, 255, 0.8) !important;
+  backdrop-filter: blur(10px);
+}
+
+/* 进度条样式优化 */
+.progress-card {
+  background: linear-gradient(135deg, rgba(246, 255, 237, 0.95) 0%, rgba(246, 255, 237, 0.9) 100%) !important;
+  border: 1px solid rgba(183, 235, 143, 0.5) !important;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .bg-gradient-circle {
+    filter: blur(60px);
+    opacity: 0.4;
+  }
+  
+  .circle-1 {
+    width: 300px;
+    height: 300px;
+  }
+  
+  .circle-2 {
+    width: 250px;
+    height: 250px;
+  }
+  
+  .circle-3 {
+    width: 200px;
+    height: 200px;
+  }
+}

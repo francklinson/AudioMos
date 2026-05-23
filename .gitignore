@@ -1,0 +1,217 @@
+# AudioMOS 项目 Git 忽略配置
+
+# ===== Python =====
+# 字节码文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# 分发/打包
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# PyInstaller
+*.manifest
+*.spec
+
+# 单元测试/覆盖率
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# ===== IDE/编辑器 =====
+# PyCharm / IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+*.ids
+*.orig
+
+# VS Code
+.vscode/
+*.code-workspace
+.history/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+
+# ===== 操作系统 =====
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.nfs*
+
+# ===== 项目特定 =====
+# 日志文件
+logs/
+*.log
+log/
+
+# 数据文件（用户上传/生成的数据）- 统一存储在 data/ 目录下
+data/uploads/       # 用户上传的音频文件
+data/temp/          # 临时文件（切分、对齐后的音频）
+data/results/       # 处理结果（Excel文件）
+# data/ref/         # 参考音频（可选忽略）
+
+# 旧的数据目录（已废弃，保留以清理历史数据）
+config/uploads/
+config/results/
+config/temp/
+config/data/temp/
+config/logs/
+backend/logs/
+logs/
+
+# 模型权重文件（大文件）
+*.tar
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.onnx
+!app/algorithms/dnsmos/**/*.onnx
+
+# 参考音频（可选，如果文件较大）
+# data/ref/
+
+# 配置文件（包含敏感信息）
+config.yaml
+!config/config.yaml.example
+
+# PID 文件
+*.pid
+.backend.pid
+.frontend.pid
+
+# ===== Node.js / 前端 =====
+# 依赖目录
+node_modules/
+
+# 构建输出
+frontend/dist/
+frontend/build/
+
+# 缓存
+.npm
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# 包管理器锁定文件（可选，根据团队约定）
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ===== 其他 =====
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+
+# Docker
+.dockerignore
+
+# 数据库
+*.db
+*.sqlite
+*.sqlite3
+
+# 压缩文件
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# 大型媒体文件
+*.wav
+*.mp3
+*.mp4
+*.avi
+*.mov
+*.flac
+
+# 文档生成
+docs/_build/
+site/
+
+# 测试输出
+test_output/
+test-results/

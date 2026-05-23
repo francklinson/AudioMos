@@ -1,0 +1,81 @@
+# AudioMOS 系统配置文件
+# 部署前请根据实际情况修改此配置文件
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+  debug: false
+
+# 安全认证配置
+auth:
+  # JWT密钥,部署时请务必修改
+  secret_key: "your-secret-key-change-this-in-production"
+  # Token过期时间(分钟)
+  access_token_expire_minutes: 60
+  # 默认管理员账号
+  admin_username: "admin"
+  # 默认管理员密码(建议部署后立即修改)
+  admin_password: "tp123456"
+
+# 路径配置 - 所有数据统一存储在 data/ 目录下
+paths:
+  # 参考音频目录
+  ref_dir: "./data/ref"
+  # 上传文件存储目录
+  upload_dir: "./data/uploads"
+  # 结果文件存储目录
+  result_dir: "./data/results"
+  # 临时文件目录（切分、对齐等中间文件）
+  temp_dir: "./data/temp"
+  # 模型文件目录
+  models_dir: "./models"
+
+# CUDA配置
+cuda:
+  # 是否使用CUDA
+  enabled: true
+  # GPU设备ID
+  device_id: 0
+
+# 日志配置
+logging:
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+  # 日志文件路径(相对于项目根目录)
+  file: "./logs/backend.log"
+  # 日志文件最大大小(MB)
+  max_size: 10
+  # 保留的日志文件数量
+  backup_count: 5
+
+# MOS评分权重配置(与原始代码保持一致)
+scoring:
+  weights:
+    stoi: 5.0
+    sisdr: 5.0
+    pesq: 1.0
+    dnsmos_ovrl: 1.0
+    dnsmos_sig: 1.0
+    dnsmos_bak: 1.0
+    dnsmos_p808: 1.0
+    wer: 5.0
+    wcorr: 5.0
+    nisqa_mos: 1.0
+    nisqa_noi: 1.0
+    nisqa_dis: 1.0
+    nisqa_col: 1.0
+    nisqa_loud: 1.0
+    tcf: 5.0
+    scoreq: 1.0
+
+# 音频处理配置
+audio:
+  # 目标采样率
+  target_sample_rate: 16000
+  # 支持的音频格式
+  supported_formats:
+    - ".wav"
+    - ".mp3"
+  # 最大文件大小(MB)
+  max_file_size: 100
