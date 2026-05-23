@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 50)
     logger.info("AudioMOS 系统启动")
     logger.info("=" * 50)
-    logger.info(f"服务地址: {settings.server.host}:{settings.server.port}")
+    logger.info(f"服务地址: {settings.server.backend.host}:{settings.server.backend.port}")
     logger.info(f"CUDA启用: {settings.cuda.enabled}")
     logger.info(f"参考音频目录: {settings.paths.ref_dir}")
     
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "app.main:app",
-        host=settings.server.host,
-        port=settings.server.port,
+        host=settings.server.backend.host,
+        port=settings.server.backend.port,
         reload=settings.server.debug
     )

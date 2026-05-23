@@ -7,6 +7,90 @@
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
+# 读取配置文件中的端口
+CONFIG_FILE="$SCRIPT_DIR/config/config.yaml"
+
+# 从 YAML 文件读取端口的函数
+read_yaml_value() {
+    local file="$1"
+    local key="$2"
+    local default="$3"
+    
+    if [ -f "$file" ]; then
+        # 使用 grep 和 sed 提取 YAML 值
+        local value=$(grep -E "^\s*$key:" "$file" | head -1 | sed 's/.*:\s*//' | sed 's/"//g' | tr -d ' ')
+        if [ -n "$value" ]; then
+            echo "$value"
+            return
+        fi
+    fi
+    echo "$default"
+}
+
+# 读取嵌套 YAML 值 (如 server.backend.port)
+read_nested_yaml() {
+    local file="$1"
+    local section="$2"
+    local subsection="$3"
+    local key="$4"
+    local default="$5"
+    
+    if [ -f "$file" ]; then
+        # 找到 section 下的 subsection 下的 key
+        local in_section=false
+        local in_subsection=false
+        
+        while IFS= read -r line; do
+            # 检查是否进入目标 section
+            if echo "$line" | grep -qE "^$section:"; then
+                in_section=true
+                continue
+            fi
+            
+            # 如果在 section 中，检查是否进入 subsection
+            if $in_section && echo "$line" | grep -qE "^\s+$subsection:"; then
+                in_subsection=true
+                continue
+            fi
+            
+            # 如果在 subsection 中，查找 key
+            if $in_subsection && echo "$line" | grep -qE "^\s+$key:"; then
+                local value=$(echo "$line" | sed 's/.*:\s*//' | sed 's/"//g' | tr -d ' ')
+                if [ -n "$value" ]; then
+                    echo "$value"
+                    return
+                fi
+            fi
+            
+            # 如果缩进减少，退出 subsection
+            if $in_subsection && echo "$line" | grep -qE "^\S"; then
+                in_subsection=false
+            fi
+            
+            # 如果缩进减少，退出 section
+            if $in_section && echo "$line" | grep -qE "^\S" && ! echo "$line" | grep -qE "^$section:"; then
+                in_section=false
+            fi
+        done < "$file"
+    fi
+    
+    echo "$default"
+}
+
+# 读取配置（优先使用环境变量，其次配置文件，最后默认值）
+BACKEND_HOST="${AUDIOMOS_BACKEND_HOST:-$(read_nested_yaml "$CONFIG_FILE" "server" "backend" "host" "0.0.0.0")}"
+BACKEND_PORT="${AUDIOMOS_BACKEND_PORT:-$(read_nested_yaml "$CONFIG_FILE" "server" "backend" "port" "8000")}"
+FRONTEND_HOST="${AUDIOMOS_FRONTEND_HOST:-$(read_nested_yaml "$CONFIG_FILE" "server" "frontend" "host" "0.0.0.0")}"
+FRONTEND_PORT="${AUDIOMOS_FRONTEND_PORT:-$(read_nested_yaml "$CONFIG_FILE" "server" "frontend" "port" "3000")}"
+
+# 向后兼容旧的环境变量
+if [ -n "$AUDIOMOS_HOST" ]; then
+    BACKEND_HOST="$AUDIOMOS_HOST"
+fi
+if [ -n "$AUDIOMOS_PORT" ]; then
+    BACKEND_PORT="$AUDIOMOS_PORT"
+fi
+
 # PID 文件路径
 BACKEND_PID_FILE="$SCRIPT_DIR/.backend.pid"
 FRONTEND_PID_FILE="$SCRIPT_DIR/.frontend.pid"
@@ -26,6 +110,16 @@ show_help() {
     echo "  status   查看服务状态"
     echo "  models   检查模型文件状态"
     echo "  help     显示帮助信息"
+    echo ""
+    echo "当前配置:"
+    echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
+    echo "  前端: $FRONTEND_HOST:$FRONTEND_PORT"
+    echo ""
+    echo "环境变量:"
+    echo "  AUDIOMOS_BACKEND_HOST    后端主机地址"
+    echo "  AUDIOMOS_BACKEND_PORT    后端端口"
+    echo "  AUDIOMOS_FRONTEND_HOST   前端主机地址"
+    echo "  AUDIOMOS_FRONTEND_PORT   前端端口"
     echo ""
 }
 
@@ -70,17 +164,24 @@ show_status() {
 
     if [ "$status" = "running" ]; then
         echo "✅ 后端服务: 运行中 (PID: $(cat $BACKEND_PID_FILE))"
-        echo "✅ 前端服务: 运行中 (PID: $(cat $FRONTEND_PID_FILE))"
+        echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
         echo ""
-        echo "🌐 前端访问: http://localhost:3000"
-        echo "📡 后端API:  http://localhost:8000"
-        echo "📚 API文档:  http://localhost:8000/docs"
+        echo "✅ 前端服务: 运行中 (PID: $(cat $FRONTEND_PID_FILE))"
+        echo "   地址: http://$FRONTEND_HOST:$FRONTEND_PORT"
+        echo ""
+        echo "🌐 前端访问: http://$FRONTEND_HOST:$FRONTEND_PORT"
+        echo "📡 后端API:  http://$BACKEND_HOST:$BACKEND_PORT"
+        echo "📚 API文档:  http://$BACKEND_HOST:$BACKEND_PORT/docs"
     elif [ "$status" = "backend_only" ]; then
         echo "✅ 后端服务: 运行中 (PID: $(cat $BACKEND_PID_FILE))"
+        echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
+        echo ""
         echo "❌ 前端服务: 未运行"
     elif [ "$status" = "frontend_only" ]; then
         echo "❌ 后端服务: 未运行"
+        echo ""
         echo "✅ 前端服务: 运行中 (PID: $(cat $FRONTEND_PID_FILE))"
+        echo "   地址: http://$FRONTEND_HOST:$FRONTEND_PORT"
     else
         echo "❌ 后端服务: 未运行"
         echo "❌ 前端服务: 未运行"
@@ -260,6 +361,10 @@ start_services() {
     echo ""
     echo "项目路径: $SCRIPT_DIR"
     echo ""
+    echo "当前配置:"
+    echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
+    echo "  前端: $FRONTEND_HOST:$FRONTEND_PORT"
+    echo ""
 
     # 检查虚拟环境
     if [ ! -d ".venv" ]; then
@@ -308,7 +413,11 @@ start_services() {
     if [ "$status" = "stopped" ] || [ "$status" = "frontend_only" ]; then
         echo ""
         echo "启动后端服务..."
+        echo "  地址: http://$BACKEND_HOST:$BACKEND_PORT"
         cd backend
+        # 设置环境变量供后端使用
+        export AUDIOMOS_BACKEND_HOST="$BACKEND_HOST"
+        export AUDIOMOS_BACKEND_PORT="$BACKEND_PORT"
         nohup python run.py > "$SCRIPT_DIR/logs/backend.log" 2>&1 &
         BACKEND_PID=$!
         echo "$BACKEND_PID" > "$BACKEND_PID_FILE"
@@ -332,8 +441,10 @@ start_services() {
     if [ "$status" = "stopped" ] || [ "$status" = "backend_only" ]; then
         echo ""
         echo "启动前端服务..."
+        echo "  地址: http://$FRONTEND_HOST:$FRONTEND_PORT"
         cd frontend
-        nohup npm run dev > "$SCRIPT_DIR/logs/frontend.log" 2>&1 &
+        # 使用环境变量或修改 vite 配置来设置端口
+        nohup npx vite --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$SCRIPT_DIR/logs/frontend.log" 2>&1 &
         FRONTEND_PID=$!
         echo "$FRONTEND_PID" > "$FRONTEND_PID_FILE"
         echo "前端服务已启动, PID: $FRONTEND_PID"
@@ -344,9 +455,9 @@ start_services() {
     echo "  AudioMOS 启动成功!"
     echo "================================"
     echo ""
-    echo "🌐 前端访问: http://localhost:3000"
-    echo "📡 后端API:  http://localhost:8000"
-    echo "📚 API文档:  http://localhost:8000/docs"
+    echo "🌐 前端访问: http://$FRONTEND_HOST:$FRONTEND_PORT"
+    echo "📡 后端API:  http://$BACKEND_HOST:$BACKEND_PORT"
+    echo "📚 API文档:  http://$BACKEND_HOST:$BACKEND_PORT/docs"
     echo ""
     echo "默认登录账号:"
     echo "  用户名: admin"

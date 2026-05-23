@@ -18,12 +18,12 @@ def main():
     主函数 - 启动服务
     """
     logger.info(f"启动 AudioMOS 后端服务...")
-    logger.info(f"监听地址: {settings.server.host}:{settings.server.port}")
+    logger.info(f"监听地址: {settings.server.backend.host}:{settings.server.backend.port}")
     
     uvicorn.run(
         "app.main:app",
-        host=settings.server.host,
-        port=settings.server.port,
+        host=settings.server.backend.host,
+        port=settings.server.backend.port,
         reload=settings.server.debug,
         log_level="info"
     )

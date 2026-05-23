@@ -9,13 +9,27 @@ from typing import List
 from pydantic_settings import BaseSettings
 
 
-class ServerConfig(BaseSettings):
+class BackendConfig(BaseSettings):
+    """后端服务配置"""
     host: str = "0.0.0.0"
     port: int = 8000
+
+
+class FrontendConfig(BaseSettings):
+    """前端服务配置"""
+    host: str = "0.0.0.0"
+    port: int = 3000
+
+
+class ServerConfig(BaseSettings):
+    """服务器配置"""
+    backend: BackendConfig = BackendConfig()
+    frontend: FrontendConfig = FrontendConfig()
     debug: bool = False
 
 
 class AuthConfig(BaseSettings):
+    """认证配置"""
     secret_key: str = "your-secret-key-change-this-in-production"
     access_token_expire_minutes: int = 60
     admin_username: str = "admin"
@@ -23,32 +37,37 @@ class AuthConfig(BaseSettings):
 
 
 class PathsConfig(BaseSettings):
-    ref_dir: str = "./ref_dir"
-    upload_dir: str = "./uploads"
-    result_dir: str = "./results"
-    temp_dir: str = "./temp"
+    """路径配置"""
+    ref_dir: str = "./data/ref"
+    upload_dir: str = "./data/uploads"
+    result_dir: str = "./data/results"
+    temp_dir: str = "./data/temp"
     models_dir: str = "./models"
 
 
 class CUDAConfig(BaseSettings):
+    """CUDA配置"""
     enabled: bool = True
     device_id: int = 0
 
 
 class LoggingConfig(BaseSettings):
+    """日志配置"""
     level: str = "INFO"
-    file: str = "./logs/app.log"
+    file: str = "./logs/backend.log"
     max_size: int = 10
     backup_count: int = 5
 
 
 class AudioConfig(BaseSettings):
+    """音频配置"""
     target_sample_rate: int = 16000
     supported_formats: List[str] = [".wav", ".mp3"]
     max_file_size: int = 100
 
 
 class Config(BaseSettings):
+    """全局配置"""
     server: ServerConfig = ServerConfig()
     auth: AuthConfig = AuthConfig()
     paths: PathsConfig = PathsConfig()
@@ -69,11 +88,6 @@ def load_config(config_path: str = None) -> Config:
     """
     if config_path is None:
         # 查找配置文件
-        # 从当前文件(backend/app/core/config.py)向上查找:
-        # parent = backend/app/core
-        # parent.parent = backend/app
-        # parent.parent.parent = backend
-        # parent.parent.parent.parent = 项目根目录(AudioMos)
         possible_paths = [
             Path(__file__).parent.parent.parent.parent / "config" / "config.yaml",
             Path(__file__).parent.parent.parent.parent / "config.yaml",
@@ -89,21 +103,13 @@ def load_config(config_path: str = None) -> Config:
     config = Config()
 
     # 确定项目根目录
-    # config文件路径: backend/app/core/config.py
-    # 项目根目录是 backend 的父目录
     if config_path:
         config_file_path = Path(config_path)
-        # 如果配置文件在 config 目录下，则项目根目录是 config 的父目录
         if config_file_path.parent.name == "config":
             project_root = config_file_path.parent.parent
         else:
-            # 配置文件直接在项目根目录下
             project_root = config_file_path.parent
     else:
-        # 从当前文件位置推断项目根目录
-        # __file__ = backend/app/core/config.py
-        # parent.parent.parent = backend
-        # parent.parent.parent.parent = 项目根目录
         project_root = Path(__file__).parent.parent.parent.parent
     
     if config_path and Path(config_path).exists():
@@ -111,8 +117,16 @@ def load_config(config_path: str = None) -> Config:
             yaml_config = yaml.safe_load(f)
         
         if yaml_config:
+            # 服务器配置
             if "server" in yaml_config:
-                config.server = ServerConfig(**yaml_config["server"])
+                server_data = yaml_config["server"]
+                if "backend" in server_data:
+                    config.server.backend = BackendConfig(**server_data["backend"])
+                if "frontend" in server_data:
+                    config.server.frontend = FrontendConfig(**server_data["frontend"])
+                if "debug" in server_data:
+                    config.server.debug = server_data["debug"]
+            
             if "auth" in yaml_config:
                 config.auth = AuthConfig(**yaml_config["auth"])
             if "paths" in yaml_config:
@@ -132,7 +146,6 @@ def load_config(config_path: str = None) -> Config:
         path = Path(path_str)
         if path.is_absolute():
             return str(path)
-        # 使用resolve()来简化路径（如 config/../data/ref -> data/ref）
         return str((project_root / path).resolve())
     
     # 解析所有路径配置
@@ -143,11 +156,24 @@ def load_config(config_path: str = None) -> Config:
     config.paths.models_dir = resolve_path(config.paths.models_dir)
     config.logging.file = resolve_path(config.logging.file)
     
-    # 从环境变量覆盖配置
+    # 从环境变量覆盖配置 - 后端
+    if os.getenv("AUDIOMOS_BACKEND_HOST"):
+        config.server.backend.host = os.getenv("AUDIOMOS_BACKEND_HOST")
+    if os.getenv("AUDIOMOS_BACKEND_PORT"):
+        config.server.backend.port = int(os.getenv("AUDIOMOS_BACKEND_PORT"))
+    
+    # 从环境变量覆盖配置 - 前端
+    if os.getenv("AUDIOMOS_FRONTEND_HOST"):
+        config.server.frontend.host = os.getenv("AUDIOMOS_FRONTEND_HOST")
+    if os.getenv("AUDIOMOS_FRONTEND_PORT"):
+        config.server.frontend.port = int(os.getenv("AUDIOMOS_FRONTEND_PORT"))
+    
+    # 向后兼容旧的环境变量
     if os.getenv("AUDIOMOS_HOST"):
-        config.server.host = os.getenv("AUDIOMOS_HOST")
+        config.server.backend.host = os.getenv("AUDIOMOS_HOST")
     if os.getenv("AUDIOMOS_PORT"):
-        config.server.port = int(os.getenv("AUDIOMOS_PORT"))
+        config.server.backend.port = int(os.getenv("AUDIOMOS_PORT"))
+    
     if os.getenv("AUDIOMOS_SECRET_KEY"):
         config.auth.secret_key = os.getenv("AUDIOMOS_SECRET_KEY")
     if os.getenv("AUDIOMOS_REF_DIR"):
