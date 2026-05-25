@@ -104,6 +104,11 @@ const Home: React.FC = () => {
     current: 1,
     pageSize: 10,
   });
+  // 任务列表分页状态
+  const [taskPagination, setTaskPagination] = useState({
+    current: 1,
+    pageSize: 5,
+  });
 
   // 计算项目配置状态
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(
@@ -127,44 +132,7 @@ const Home: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // 同步任务列表中的处理中任务到currentTask
-  useEffect(() => {
-    const processingTask = tasks.find(t => t.status === 'processing');
-    if (processingTask) {
-      setCurrentTask(prev => {
-        // 如果当前没有任务，或者任务ID相同但进度不同，则更新
-        if (!prev || (prev.task_id === processingTask.task_id && prev.progress !== processingTask.progress)) {
-          return processingTask;
-        }
-        return prev;
-      });
-    }
-  }, [tasks]);
 
-  // WebSocket连接
-  useEffect(() => {
-    if (currentTask?.task_id && currentTask.status === 'processing') {
-      const wsUrl = `ws://localhost:8000/api/mos/ws/${currentTask.task_id}`;
-      const socket = new WebSocket(wsUrl);
-
-      socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        setCurrentTask(prev => prev ? { ...prev, ...data } : null);
-      };
-
-      socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-
-      socket.onclose = () => {
-        console.log('WebSocket closed');
-      };
-
-      return () => {
-        socket.close();
-      };
-    }
-  }, [currentTask?.task_id, currentTask?.status]);
 
   const handleUpload = async () => {
     if (fileList.length === 0) {
@@ -209,18 +177,6 @@ const Home: React.FC = () => {
 
       // 刷新任务列表
       await loadTasks();
-
-      // 设置当前任务
-      const newTask: Task = {
-        task_id: data.task_id,
-        status: 'queued',
-        progress: 0,
-        message: `已加入队列，排队位置: ${processData.queue_position || 1}`,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        uploaded_files: data.files,
-      };
-      setCurrentTask(newTask);
     } catch (error: any) {
       message.error(error.response?.data?.detail || '上传失败');
     } finally {
@@ -268,9 +224,6 @@ const Home: React.FC = () => {
           await mosApi.deleteTask(taskId);
           message.success('删除成功');
           loadTasks();
-          if (currentTask?.task_id === taskId) {
-            setCurrentTask(null);
-          }
         } catch (error) {
           message.error('删除失败');
         }
@@ -694,10 +647,17 @@ const Home: React.FC = () => {
                   rowKey="task_id"
                   size="small"
                   pagination={{
-                    pageSize: 5,
+                    current: taskPagination.current,
+                    pageSize: taskPagination.pageSize,
                     showSizeChanger: true,
                     pageSizeOptions: [5, 10, 20, 50],
                     showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 条`,
+                    onChange: (page, pageSize) => {
+                      setTaskPagination({ current: page, pageSize: pageSize || 5 });
+                    },
+                    onShowSizeChange: (current, size) => {
+                      setTaskPagination({ current: 1, pageSize: size });
+                    },
                   }}
                 />
               )}
