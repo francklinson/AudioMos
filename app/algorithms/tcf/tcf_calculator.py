@@ -229,26 +229,54 @@ class OptimizedDNSMOScore:
     """优化的DNSMOS评分"""
 
     def __init__(self) -> None:
+        import time
+        print("\n[DNSMOS] 初始化DNSMOS模型...")
+        start_time = time.time()
+        
         # 获取项目根目录
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         # 优先检查 models/dnsmos/，然后检查 app/algorithms/dnsmos/
         p808_model_path = os.path.join(project_root, 'models', 'dnsmos', 'DNSMOS', 'model_v8.onnx')
         primary_model_path = os.path.join(project_root, 'models', 'dnsmos', 'pDNSMOS', 'sig_bak_ovr.onnx')
+        
+        print(f"[DNSMOS] 检查模型路径...")
+        print(f"  项目模型路径: {os.path.join(project_root, 'models', 'dnsmos')}")
+        
         if not os.path.exists(p808_model_path):
+            print(f"  ⚠ 项目路径不存在，尝试备用路径...")
             p808_model_path = os.path.join(project_root, 'app', 'algorithms', 'dnsmos', 'DNSMOS', 'model_v8.onnx')
             primary_model_path = os.path.join(project_root, 'app', 'algorithms', 'dnsmos', 'pDNSMOS', 'sig_bak_ovr.onnx')
+            print(f"  备用路径: {os.path.join(project_root, 'app', 'algorithms', 'dnsmos')}")
+        
+        # 检查模型文件是否存在
+        if not os.path.exists(primary_model_path):
+            raise FileNotFoundError(f"DNSMOS Primary模型未找到: {primary_model_path}")
+        if not os.path.exists(p808_model_path):
+            raise FileNotFoundError(f"DNSMOS P808模型未找到: {p808_model_path}")
+        
+        print(f"  ✓ Primary模型: {primary_model_path}")
+        print(f"  ✓ P808模型: {p808_model_path}")
         
         # 使用CUDA加速
         providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if cuda.is_available() else ['CPUExecutionProvider']
+        print(f"[DNSMOS] 使用ONNX Runtime providers: {providers}")
         
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.intra_op_num_threads = 4
         
+        print(f"[DNSMOS] 加载ONNX模型...")
+        load_start = time.time()
         self.onnx_sess = ort.InferenceSession(primary_model_path, sess_options=sess_options, providers=providers)
         self.p808_onnx_sess = ort.InferenceSession(p808_model_path, sess_options=sess_options, providers=providers)
+        load_time = time.time() - load_start
+        
         self.INPUT_LENGTH = 9.01
         self.SAMPLING_RATE = 16000
+        
+        init_time = time.time() - start_time
+        print(f"[DNSMOS] 模型初始化完成 (耗时: {init_time:.2f}s)")
+        print(f"  ✓ DNSMOS评分器就绪")
     
     @staticmethod
     def __audio_melspec(audio, n_mels=120, frame_size=320, hop_length=160, sr=16000, to_db=True):
@@ -346,11 +374,37 @@ class OptimizedNisqaMosScore:
     """优化的NISQA评分"""
 
     def __init__(self):
+        import time
+        print("\n[NISQA] 初始化NISQA模型...")
+        start_time = time.time()
+        
         if not NISQA_AVAILABLE:
             raise ImportError("nisqa未安装")
+        
+        # 获取项目根目录
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        
+        # 检查模型路径
+        model_path_project = os.path.join(project_root, 'models', 'nisqa', 'weights', 'nisqa_3000.tar')
+        model_path_algo = os.path.join(project_root, 'app', 'algorithms', 'nisqa', 'weights', 'nisqa_3000.tar')
+        
+        print(f"[NISQA] 检查模型路径...")
+        if os.path.exists(model_path_project):
+            self.nisqa_model = model_path_project
+            print(f"  ✓ 使用项目路径模型: {model_path_project}")
+        elif os.path.exists(model_path_algo):
+            self.nisqa_model = model_path_algo
+            print(f"  ✓ 使用算法路径模型: {model_path_algo}")
+        else:
+            # 使用默认文件名，让nisqa自己查找
+            self.nisqa_model = 'nisqa_3000.tar'
+            print(f"  ⚠ 本地模型未找到，使用默认配置: {self.nisqa_model}")
+        
         self.nisqa_mode = "predict_list"
-        # 使用支持更长音频的模型文件 (ms_max_segments=3000, 支持~120秒音频)
-        self.nisqa_model = 'nisqa_3000.tar'
+        
+        init_time = time.time() - start_time
+        print(f"[NISQA] 模型初始化完成 (耗时: {init_time:.2f}s)")
+        print(f"  ✓ NISQA评分器就绪")
     
     @timed_execution("nisqa")
     def get_mos(self, file_dir_list) -> dict:
@@ -496,26 +550,48 @@ class OptimizedWerScore:
     """优化的WER评分"""
     
     def __init__(self):
+        import time
+        print("\n[WeNet] 初始化WeNet模型...")
+        start_time = time.time()
+        
         if not WENET_AVAILABLE:
             raise ImportError("wenet未安装")
         
         # 项目路径下的模型目录(优先)
-        project_root = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         project_model_path = os.path.join(project_root, "models", "wenet")
         
         # 本地缓存路径(备选)
         local_model_path = os.path.expanduser("~/.wenet/wenetspeech")
         
+        print(f"[WeNet] 检查模型路径...")
+        print(f"  项目模型路径: {project_model_path}")
+        print(f"  本地缓存路径: {local_model_path}")
+        
+        load_start = time.time()
         # 优先使用项目路径下的模型
         if os.path.exists(project_model_path) and os.path.exists(os.path.join(project_model_path, "final.pt")):
-            print(f"使用项目路径WeNet模型: {project_model_path}")
+            print(f"  ✓ 找到项目路径模型")
+            print(f"[WeNet] 加载模型...")
             self.model = wenet.load_model(project_model_path)
+            load_time = time.time() - load_start
+            print(f"  ✓ 模型加载完成 (耗时: {load_time:.2f}s)")
         elif os.path.exists(local_model_path):
-            print(f"使用本地缓存WeNet模型: {local_model_path}")
+            print(f"  ✓ 找到本地缓存模型")
+            print(f"[WeNet] 加载模型...")
             self.model = wenet.load_model(local_model_path)
+            load_time = time.time() - load_start
+            print(f"  ✓ 模型加载完成 (耗时: {load_time:.2f}s)")
         else:
-            print("下载WeNet模型...")
+            print(f"  ⚠ 本地模型未找到，将从网络下载...")
+            print(f"[WeNet] 下载并加载模型...")
             self.model = wenet.load_model("wenetspeech")
+            load_time = time.time() - load_start
+            print(f"  ✓ 模型下载并加载完成 (耗时: {load_time:.2f}s)")
+        
+        init_time = time.time() - start_time
+        print(f"[WeNet] 模型初始化完成 (总耗时: {init_time:.2f}s)")
+        print(f"  ✓ WeNet语音识别器就绪")
     
     @staticmethod
     def __get_ref_gt_text(input_wav_file):
@@ -563,15 +639,23 @@ class OptimizedWerScore:
 
 class OptimizedToneColorFidelityScore:
     """优化的音色还原度评分 - 支持多模型加权评估"""
-    
+
     def __init__(self):
+        import time
+        print("\n[TCF] 初始化音色还原度评分模型...")
+        start_time = time.time()
+
         if not MODELSCOPE_AVAILABLE:
             raise ImportError("modelscope未安装")
-        
+
         # 多模型配置，权重根据ERR值得到，ERR越大错误率越高权重越低
         # 项目路径下的模型目录(优先)
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        
+        # 计算项目根目录: app/algorithms/tcf/ -> 项目根目录
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+        print(f"[TCF] 项目根目录: {project_root}")
+        print(f"[TCF] 配置多模型加权评估...")
+
         # 多模型配置，权重根据ERR值得到: weight = 10 - ERR
         # ERR越小(性能越好)，权重越高
         self.sv_model_dict = {

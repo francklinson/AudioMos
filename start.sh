@@ -200,132 +200,296 @@ check_models() {
 
     # 1. 检查TCF模型 (音色还原度) - 多模型检查
     echo "🔍 检查 TCF (音色还原度) 模型..."
-    echo "   使用6模型加权评估 (eres2net/eres2netv2/campplus/ecapa-tdnn/res2net/resnet34)"
+    echo "   说明: 使用多模型加权评估音色还原度"
+    echo "   模型列表: eres2net/campplus/ecapa-tdnn/res2net/resnet34"
     echo ""
-    
+    echo "   检查路径:"
+    echo "      项目路径: $SCRIPT_DIR/models/tcf/"
+    echo "      缓存路径: $HOME/.cache/modelscope/hub/"
+    echo ""
+
     local tcf_models=("eres2net" "campplus" "ecapa-tdnn" "res2net" "resnet34")
     local tcf_model_ids=("damo/speech_eres2net_sv_zh-cn_16k-common" "damo/speech_campplus_sv_zh-cn_16k-common" "damo/speech_ecapa-tdnn_sv_zh-cn_cnceleb_16k" "damo/speech_res2net_sv_zh-cn_3dspeaker_16k" "damo/speech_resnet34_sv_zh-cn_3dspeaker_16k")
     local tcf_available=0
     local tcf_total=${#tcf_models[@]}
-    
+
     for i in "${!tcf_models[@]}"; do
         local model_name="${tcf_models[$i]}"
         local model_id="${tcf_model_ids[$i]}"
         local project_path="$SCRIPT_DIR/models/tcf/$model_name/configuration.json"
         local cache_path="$HOME/.cache/modelscope/hub/$model_id/configuration.json"
-        
+
         if [ -f "$project_path" ]; then
-            echo "   ✅ $model_name (项目路径)"
+            echo "   ✅ $model_name"
+            echo "      来源: 项目路径"
+            echo "      位置: $SCRIPT_DIR/models/tcf/$model_name/"
             ((tcf_available++))
         elif [ -f "$cache_path" ]; then
-            echo "   ✅ $model_name (本地缓存)"
+            echo "   ✅ $model_name"
+            echo "      来源: 本地缓存"
+            echo "      位置: $HOME/.cache/modelscope/hub/$model_id/"
             ((tcf_available++))
         else
-            echo "   ❌ $model_name 缺失"
-            echo "      期望: $SCRIPT_DIR/models/tcf/$model_name/"
+            echo "   ❌ $model_name"
+            echo "      状态: 缺失"
+            echo "      期望路径: $SCRIPT_DIR/models/tcf/$model_name/"
+            echo "      模型ID: $model_id"
         fi
     done
-    
+
     echo ""
+    echo "   汇总:"
     if [ $tcf_available -eq 0 ]; then
-        echo "   ⚠️  所有TCF模型都缺失"
+        echo "      ⚠️  所有TCF模型都缺失"
         all_ready=false
     elif [ $tcf_available -lt $tcf_total ]; then
-        echo "   ⚠️  TCF模型部分可用 ($tcf_available/$tcf_total)"
-        echo "      将使用可用模型进行加权评估"
+        echo "      ⚠️  TCF模型部分可用 ($tcf_available/$tcf_total)"
+        echo "      说明: 将使用可用模型进行加权评估"
     else
-        echo "   ✅ 所有TCF模型已就绪 ($tcf_available/$tcf_total)"
+        echo "      ✅ 所有TCF模型已就绪 ($tcf_available/$tcf_total)"
     fi
     echo ""
 
     # 2. 检查WeNet模型 (WER语音识别) - 优先检查项目路径
     echo "🔍 检查 WeNet (语音识别) 模型..."
+    echo "   说明: 用于计算WER(词错误率)"
+    echo ""
+    echo "   检查路径:"
+    echo "      项目路径: $SCRIPT_DIR/models/wenet/"
+    echo "      缓存路径: $HOME/.wenet/wenetspeech/"
+    echo ""
+
     local wenet_project_path="$SCRIPT_DIR/models/wenet/final.pt"
     local wenet_cache_path="$HOME/.wenet/wenetspeech/final.pt"
-    
+
     if [ -f "$wenet_project_path" ]; then
-        echo "   ✅ WeNet模型已就绪 (项目路径)"
+        echo "   ✅ WeNet模型已就绪"
+        echo "      来源: 项目路径"
         echo "      位置: $SCRIPT_DIR/models/wenet/"
+        echo "      主文件: final.pt"
     elif [ -f "$wenet_cache_path" ]; then
-        echo "   ✅ WeNet模型已就绪 (本地缓存)"
+        echo "   ✅ WeNet模型已就绪"
+        echo "      来源: 本地缓存"
         echo "      位置: $HOME/.wenet/wenetspeech/"
+        echo "      主文件: final.pt"
     else
         echo "   ❌ WeNet模型缺失"
-        echo "      期望路径: $SCRIPT_DIR/models/wenet/"
+        echo "      状态: 未找到"
+        echo "      期望路径(项目): $SCRIPT_DIR/models/wenet/final.pt"
+        echo "      期望路径(缓存): $HOME/.wenet/wenetspeech/final.pt"
+        echo "      下载命令: wenet.load_model('wenetspeech') 会自动下载"
         all_ready=false
     fi
     echo ""
 
     # 3. 检查NISQA模型
     echo "🔍 检查 NISQA 模型..."
+    echo "   说明: 语音质量评估模型"
+    echo ""
+    echo "   检查路径:"
+    echo "      项目路径: $SCRIPT_DIR/models/nisqa/weights/"
+    echo "      算法路径: $SCRIPT_DIR/app/algorithms/nisqa/weights/"
+    echo ""
+
     local nisqa_model_path="$SCRIPT_DIR/models/nisqa/weights/nisqa.tar"
     local nisqa_model_path_old="$SCRIPT_DIR/app/algorithms/nisqa/weights/nisqa.tar"
+
     if [ -f "$nisqa_model_path" ]; then
         echo "   ✅ NISQA模型已就绪"
+        echo "      来源: 项目路径"
         echo "      位置: $nisqa_model_path"
+        local nisqa_size=$(du -sh "$nisqa_model_path" 2>/dev/null | cut -f1)
+        echo "      大小: $nisqa_size"
     elif [ -f "$nisqa_model_path_old" ]; then
         echo "   ✅ NISQA模型已就绪"
+        echo "      来源: 算法路径"
         echo "      位置: $nisqa_model_path_old"
+        local nisqa_size=$(du -sh "$nisqa_model_path_old" 2>/dev/null | cut -f1)
+        echo "      大小: $nisqa_size"
     else
         echo "   ⚠️  NISQA模型缺失 (可选依赖)"
-        echo "      期望路径: $nisqa_model_path"
+        echo "      状态: 未找到"
+        echo "      期望路径(项目): $nisqa_model_path"
+        echo "      期望路径(算法): $nisqa_model_path_old"
+        echo "      说明: NISQA是可选依赖，缺失时不影响核心功能"
     fi
     echo ""
 
     # 4. 检查DNSMOS模型
     echo "🔍 检查 DNSMOS 模型..."
+    echo "   说明: DNSMOS语音质量评估 (P808 + Primary)"
+    echo ""
+    echo "   检查路径:"
+    echo "      项目路径: $SCRIPT_DIR/models/dnsmos/"
+    echo "      算法路径: $SCRIPT_DIR/app/algorithms/dnsmos/"
+    echo ""
+
     local dnsmos_p808_path="$SCRIPT_DIR/models/dnsmos/DNSMOS/model_v8.onnx"
     local dnsmos_primary_path="$SCRIPT_DIR/models/dnsmos/pDNSMOS/sig_bak_ovr.onnx"
     local dnsmos_p808_path_old="$SCRIPT_DIR/app/algorithms/dnsmos/DNSMOS/model_v8.onnx"
     local dnsmos_primary_path_old="$SCRIPT_DIR/app/algorithms/dnsmos/pDNSMOS/sig_bak_ovr.onnx"
     local dnsmos_ok=true
 
-    if [ ! -f "$dnsmos_p808_path" ] && [ ! -f "$dnsmos_p808_path_old" ]; then
-        echo "   ⚠️  DNSMOS P808模型缺失 (可选依赖)"
-        echo "      期望路径: $dnsmos_p808_path"
+    echo "   检查子模型:"
+
+    # 检查P808模型
+    if [ -f "$dnsmos_p808_path" ]; then
+        echo "      ✅ P808模型"
+        echo "         来源: 项目路径"
+        echo "         位置: $dnsmos_p808_path"
+        local p808_size=$(du -sh "$dnsmos_p808_path" 2>/dev/null | cut -f1)
+        echo "         大小: $p808_size"
+    elif [ -f "$dnsmos_p808_path_old" ]; then
+        echo "      ✅ P808模型"
+        echo "         来源: 算法路径"
+        echo "         位置: $dnsmos_p808_path_old"
+        local p808_size=$(du -sh "$dnsmos_p808_path_old" 2>/dev/null | cut -f1)
+        echo "         大小: $p808_size"
+    else
+        echo "      ⚠️  P808模型缺失 (可选)"
+        echo "         期望路径(项目): $dnsmos_p808_path"
+        echo "         期望路径(算法): $dnsmos_p808_path_old"
         dnsmos_ok=false
     fi
 
-    if [ ! -f "$dnsmos_primary_path" ] && [ ! -f "$dnsmos_primary_path_old" ]; then
-        echo "   ⚠️  DNSMOS Primary模型缺失 (可选依赖)"
-        echo "      期望路径: $dnsmos_primary_path"
+    # 检查Primary模型
+    if [ -f "$dnsmos_primary_path" ]; then
+        echo "      ✅ Primary模型"
+        echo "         来源: 项目路径"
+        echo "         位置: $dnsmos_primary_path"
+        local primary_size=$(du -sh "$dnsmos_primary_path" 2>/dev/null | cut -f1)
+        echo "         大小: $primary_size"
+    elif [ -f "$dnsmos_primary_path_old" ]; then
+        echo "      ✅ Primary模型"
+        echo "         来源: 算法路径"
+        echo "         位置: $dnsmos_primary_path_old"
+        local primary_size=$(du -sh "$dnsmos_primary_path_old" 2>/dev/null | cut -f1)
+        echo "         大小: $primary_size"
+    else
+        echo "      ⚠️  Primary模型缺失 (可选)"
+        echo "         期望路径(项目): $dnsmos_primary_path"
+        echo "         期望路径(算法): $dnsmos_primary_path_old"
         dnsmos_ok=false
     fi
 
+    echo ""
+    echo "   汇总:"
     if $dnsmos_ok; then
-        echo "   ✅ DNSMOS模型已就绪"
+        echo "      ✅ DNSMOS模型已就绪"
+    else
+        echo "      ⚠️  DNSMOS部分模型缺失 (可选依赖)"
+        echo "      说明: DNSMOS是可选依赖，缺失时不影响核心功能"
     fi
     echo ""
 
     # 5. 检查Scoreq模型 (通过Python检查)
     echo "🔍 检查 Scoreq 模块..."
+    echo "   说明: 语音质量评估模块"
+    echo ""
     if source .venv/bin/activate && python -c "import scoreq; print('OK')" 2>/dev/null | grep -q "OK"; then
         echo "   ✅ Scoreq模块已安装"
         local scoreq_path=$(source .venv/bin/activate && python -c "import scoreq; print(scoreq.__file__)" 2>/dev/null)
+        echo "      来源: Python包"
         echo "      位置: $scoreq_path"
     else
         echo "   ⚠️  Scoreq模块未安装 (可选依赖)"
+        echo "      状态: 未安装"
+        echo "      说明: Scoreq是可选依赖，缺失时不影响核心功能"
     fi
     echo ""
 
     # 6. 检查speechmetrics (通过Python检查)
     echo "🔍 检查 SpeechMetrics 模块..."
+    echo "   说明: 语音质量评估指标库 (STOI/SISDR等)"
+    echo ""
     if source .venv/bin/activate && PYTHONPATH="$SCRIPT_DIR/app/algorithms:$PYTHONPATH" python -c "import speechmetrics; print('OK')" 2>/dev/null | grep -q "OK"; then
         echo "   ✅ SpeechMetrics模块已就绪"
+        echo "      来源: 项目算法目录"
+        echo "      位置: $SCRIPT_DIR/app/algorithms/speechmetrics/"
     else
         echo "   ⚠️  SpeechMetrics模块未就绪 (可选依赖)"
+        echo "      状态: 未就绪"
+        echo "      说明: SpeechMetrics是可选依赖，缺失时不影响核心功能"
     fi
     echo ""
 
     # 7. 检查UTMOS模型
     echo "🔍 检查 UTMOS 模型..."
-    # 添加app/algorithms到Python路径
+    echo "   说明: UTokyo-SaruLab MOS预测系统 (VoiceMOS 2024第一名)"
+    echo ""
+    echo "   检查路径:"
+    echo "      项目路径: $SCRIPT_DIR/models/utmos/models/fusion_stage3/"
+    echo ""
+
+    local utmos_model_dir="$SCRIPT_DIR/models/utmos/models/fusion_stage3"
+    local utmos_ok=true
+
+    if [ -d "$utmos_model_dir" ]; then
+        local utmos_count=$(find "$utmos_model_dir" -name "*.pth" | wc -l)
+        echo "   模型文件:"
+        for f in "$utmos_model_dir"/fold*.pth; do
+            if [ -f "$f" ]; then
+                local fname=$(basename "$f")
+                local fsize=$(du -sh "$f" 2>/dev/null | cut -f1)
+                echo "      ✅ $fname ($fsize)"
+            fi
+        done
+        echo ""
+        if [ $utmos_count -ge 5 ]; then
+            echo "   ✅ UTMOSv2模型已就绪 ($utmos_count个fold)"
+            echo "      来源: 项目路径"
+            echo "      位置: $utmos_model_dir"
+        else
+            echo "   ⚠️  UTMOSv2模型不完整 ($utmos_count/5个fold)"
+            echo "      位置: $utmos_model_dir"
+            utmos_ok=false
+        fi
+    else
+        echo "   ❌ UTMOSv2模型缺失"
+        echo "      状态: 未找到"
+        echo "      期望路径: $utmos_model_dir"
+        echo "      下载命令: python download_utmos_models.py"
+        utmos_ok=false
+    fi
+
+    echo ""
+    # 检查UTMOS模块
     if source .venv/bin/activate && PYTHONPATH="$SCRIPT_DIR/app/algorithms:$PYTHONPATH" python -c "import utmosv2; print('OK')" 2>/dev/null | grep -q "OK"; then
         echo "   ✅ UTMOS模块已安装"
-        echo "      说明: UTokyo-SaruLab MOS预测系统 (VoiceMOS 2024第一名)"
+        echo "      来源: 项目算法目录"
+        echo "      位置: $SCRIPT_DIR/app/algorithms/utmos/"
     else
         echo "   ⚠️  UTMOS模块未安装 (可选依赖)"
         echo "      安装命令: pip install -e ./app/algorithms/utmos"
+    fi
+    echo ""
+
+    # 8. 检查wav2vec2模型 (UTMOS依赖)
+    echo "🔍 检查 wav2vec2 模型 (UTMOS依赖)..."
+    echo "   说明: facebook/wav2vec2-base (UTMOS的SSL编码器依赖)"
+    echo ""
+    echo "   检查路径:"
+    echo "      项目路径: $SCRIPT_DIR/models/wav2vec2/facebook--wav2vec2-base/"
+    echo ""
+
+    local wav2vec2_path="$SCRIPT_DIR/models/wav2vec2/facebook--wav2vec2-base"
+
+    if [ -d "$wav2vec2_path" ] && [ -f "$wav2vec2_path/model.safetensors" ]; then
+        echo "   ✅ wav2vec2-base模型已就绪"
+        echo "      来源: 项目路径"
+        echo "      位置: $wav2vec2_path"
+        local wav2vec2_size=$(du -sh "$wav2vec2_path" 2>/dev/null | cut -f1)
+        echo "      总大小: $wav2vec2_size"
+        if [ -f "$wav2vec2_path/model.safetensors" ]; then
+            local model_size=$(du -sh "$wav2vec2_path/model.safetensors" 2>/dev/null | cut -f1)
+            echo "      模型文件: model.safetensors ($model_size)"
+        fi
+    else
+        echo "   ❌ wav2vec2-base模型缺失"
+        echo "      状态: 未找到"
+        echo "      期望路径: $wav2vec2_path"
+        echo "      下载命令: python download_wav2vec2_models.py"
+        all_ready=false
     fi
     echo ""
 

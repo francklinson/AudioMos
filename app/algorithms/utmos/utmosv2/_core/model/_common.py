@@ -133,6 +133,18 @@ class UTMOSv2ModelMixin(abc.ABC):
         Raises:
             ValueError: If both `input_path` and `input_dir` are provided, or if neither is provided.
         """
+        import time
+        if verbose:
+            print(f"\n[UTMOS.predict] 开始预测流程")
+            print(f"  输入类型: {'音频数据' if data is not None else ('单文件' if input_path else '目录')}")
+            print(f"  设备: {device}")
+            print(f"  批量大小: {batch_size}")
+            print(f"  重复次数: {num_repetitions}")
+        
+        predict_start = time.time()
+        
+        if verbose:
+            print(f"\n[UTMOS.predict] 步骤1/3: 准备数据")
         data_internal = self._prepare_data(
             data,
             sr,
@@ -142,18 +154,27 @@ class UTMOSv2ModelMixin(abc.ABC):
             val_list_path,
             predict_dataset,
         )
+        if verbose:
+            if hasattr(data_internal, '__len__'):
+                print(f"  ✓ 数据准备完成，共 {len(data_internal)} 个样本")
+            else:
+                print(f"  ✓ 数据准备完成 (内存数据)")
+        
         # NOTE: Temporarily modify the config to pass the remove_silent_section option
-        # This feature was implemented later as a user-facing utility, not part of the initial setup used for the VoiceMOS Challenge 2024
-        # or our paper experiments, where this functionally was not so necessary. To maintain backward compatibility and reproducibility,
-        # we intentionally kept it as an optional post-release feature rather than a default config entry.
-        # See these issues for more details:
-        # - https://github.com/sarulab-speech/UTMOSv2/issues/56
-        # - https://github.com/sarulab-speech/UTMOSv2/issues/73
         initial_state = getattr(self._cfg.dataset, "remove_silent_section", None)
         self._cfg.dataset.remove_silent_section = remove_silent_section
+        
+        if verbose:
+            print(f"\n[UTMOS.predict] 步骤2/3: 创建数据集")
         dataset = get_dataset(self._cfg, data_internal, self._cfg.phase)
         self._cfg.dataset.remove_silent_section = initial_state
+        if verbose:
+            print(f"  ✓ 数据集创建完成")
+            print(f"    - 数据集类型: {type(dataset).__name__}")
+            print(f"    - 样本数量: {len(dataset)}")
 
+        if verbose:
+            print(f"\n[UTMOS.predict] 步骤3/3: 创建DataLoader并预测")
         dataloader = torch.utils.data.DataLoader(
             dataset,
             batch_size=batch_size,
@@ -161,8 +182,16 @@ class UTMOSv2ModelMixin(abc.ABC):
             num_workers=num_workers,
             pin_memory=True,
         )
+        if verbose:
+            print(f"  ✓ DataLoader创建完成")
+            print(f"    - batch数量: {len(dataloader)}")
+            print(f"    - num_workers: {num_workers}")
 
         pred = self._predict_impl(dataloader, num_repetitions, device, verbose)
+        
+        predict_time = time.time() - predict_start
+        if verbose:
+            print(f"\n[UTMOS.predict] 预测完成 (总耗时: {predict_time:.3f}s)")
 
         if data is not None:
             return torch.from_numpy(pred) if isinstance(data, torch.Tensor) else pred

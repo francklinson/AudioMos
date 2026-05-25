@@ -94,12 +94,16 @@ const Home: React.FC = () => {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [currentTask, setCurrentTask] = useState<Task | null>(null);
 
   // 结果展示相关状态
   const [resultDrawerVisible, setResultDrawerVisible] = useState(false);
   const [selectedTaskResult, setSelectedTaskResult] = useState<TaskResult | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
+  // 结果表格分页状态
+  const [resultPagination, setResultPagination] = useState({
+    current: 1,
+    pageSize: 10,
+  });
 
   // 计算项目配置状态
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(
@@ -242,6 +246,8 @@ const Home: React.FC = () => {
 
   const handleViewResults = async (taskId: string) => {
     setResultLoading(true);
+    // 重置分页状态
+    setResultPagination({ current: 1, pageSize: 10 });
     try {
       const data = await mosApi.getTaskResults(taskId);
       setSelectedTaskResult(data);
@@ -619,22 +625,7 @@ const Home: React.FC = () => {
                 {uploading ? '上传处理中...' : fileList.length === 0 ? '请选择音频文件' : selectedMetrics.length === 0 ? '请至少选择一项计算指标' : `开始上传并处理 (${fileList.length} 个文件)`}
               </Button>
 
-              {currentTask && (
-                <Card
-                  className="progress-card"
-                  size="small"
-                  style={{ marginTop: 16 }}
-                >
-                  <Space direction="vertical" style={{ width: '100%' }}>
-                    <Text strong>当前任务</Text>
-                    <Progress
-                      percent={currentTask.progress}
-                      status={currentTask.status === 'failed' ? 'exception' : 'active'}
-                    />
-                    <Text type="secondary">{currentTask.message}</Text>
-                  </Space>
-                </Card>
-              )}
+
             </Card>
           </Col>
 
@@ -702,7 +693,12 @@ const Home: React.FC = () => {
                   columns={columns}
                   rowKey="task_id"
                   size="small"
-                  pagination={{ pageSize: 5 }}
+                  pagination={{
+                    pageSize: 5,
+                    showSizeChanger: true,
+                    pageSizeOptions: [5, 10, 20, 50],
+                    showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 条`,
+                  }}
                 />
               )}
             </Card>
@@ -741,7 +737,7 @@ const Home: React.FC = () => {
 
             <Table
               dataSource={selectedTaskResult.results}
-              rowKey={(record, index) => `${record['文件名'] || record['file'] || 'file'}_${index}`}
+              rowKey={(record) => `${record['文件名'] || record['file'] || 'file'}_${record['任务ID'] || Math.random().toString(36).substr(2, 9)}`}
               columns={selectedTaskResult.columns.map((col, idx) => ({
                 title: col,
                 dataIndex: col,
@@ -755,9 +751,17 @@ const Home: React.FC = () => {
               }))}
               scroll={{ x: 'max-content' }}
               pagination={{
-                pageSize: 10,
+                current: resultPagination.current,
+                pageSize: resultPagination.pageSize,
                 showSizeChanger: true,
-                showTotal: (total) => `共 ${total} 条`,
+                pageSizeOptions: [10, 20, 50, 100],
+                showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 条`,
+                onChange: (page, pageSize) => {
+                  setResultPagination({ current: page, pageSize: pageSize || 10 });
+                },
+                onShowSizeChange: (current, size) => {
+                  setResultPagination({ current: 1, pageSize: size });
+                },
               }}
               size="small"
               bordered

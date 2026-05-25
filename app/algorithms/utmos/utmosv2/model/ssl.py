@@ -13,13 +13,65 @@ if TYPE_CHECKING:
     from utmosv2._settings._config import Config
 
 
+import os
+import time
+from pathlib import Path
+
 class _SSLEncoder(nn.Module):
     def __init__(self, sr: int, model_name: str, freeze: bool):
         super().__init__()
         self.sr = sr
-        self.processor = AutoFeatureExtractor.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
+        
+        print(f"\n[UTMOS._SSLEncoder] 初始化SSL编码器")
+        print(f"  模型名称: {model_name}")
+        print(f"  采样率: {sr} Hz")
+        print(f"  冻结参数: {freeze}")
+        
+        # 获取项目根目录
+        project_root = Path(__file__).parent.parent.parent.parent.parent.parent.parent
+        local_model_path = project_root / "models" / "wav2vec2" / "facebook--wav2vec2-base"
+        
+        load_start = time.time()
+        
+        # 如果本地模型存在，使用本地模型
+        if "facebook/wav2vec2-base" in model_name and local_model_path.exists():
+            print(f"\n[UTMOS._SSLEncoder] 使用本地wav2vec2模型")
+            print(f"  路径: {local_model_path}")
+            
+            print(f"  加载FeatureExtractor...")
+            fe_start = time.time()
+            self.processor = AutoFeatureExtractor.from_pretrained(str(local_model_path), local_files_only=True)
+            fe_time = time.time() - fe_start
+            print(f"  ✓ FeatureExtractor加载完成 (耗时: {fe_time:.2f}s)")
+            
+            print(f"  加载Model...")
+            model_start = time.time()
+            self.model = AutoModel.from_pretrained(str(local_model_path), local_files_only=True)
+            model_time = time.time() - model_start
+            print(f"  ✓ Model加载完成 (耗时: {model_time:.2f}s)")
+        else:
+            # 否则从HuggingFace下载
+            print(f"\n[UTMOS._SSLEncoder] 从HuggingFace下载模型")
+            print(f"  模型: {model_name}")
+            
+            print(f"  下载FeatureExtractor...")
+            fe_start = time.time()
+            self.processor = AutoFeatureExtractor.from_pretrained(model_name)
+            fe_time = time.time() - fe_start
+            print(f"  ✓ FeatureExtractor下载完成 (耗时: {fe_time:.2f}s)")
+            
+            print(f"  下载Model...")
+            model_start = time.time()
+            self.model = AutoModel.from_pretrained(model_name)
+            model_time = time.time() - model_start
+            print(f"  ✓ Model下载完成 (耗时: {model_time:.2f}s)")
+        
+        total_time = time.time() - load_start
+        print(f"\n[UTMOS._SSLEncoder] SSL编码器初始化完成 (总耗时: {total_time:.2f}s)")
+        print(f"  模型参数量: {sum(p.numel() for p in self.model.parameters()) / 1e6:.1f}M")
+        
         if freeze:
+            print(f"  冻结模型参数")
             for param in self.model.parameters():
                 param.requires_grad = False
 
