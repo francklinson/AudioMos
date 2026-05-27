@@ -510,21 +510,67 @@ class OptimizedRefScore:
         SISDR = [0.0 for _ in range(file_num)]
         PESQ = [0.0 for _ in range(file_num)]
         
+        print(f"\n[RefScore] 开始计算参考相关指标，文件数: {file_num}")
+        print(f"[RefScore] 参考音频目录: {ref_dir}")
+        
+        # 检查参考目录是否存在
+        if not os.path.exists(ref_dir):
+            print(f"[RefScore] ❌ 参考目录不存在: {ref_dir}")
+            return {'STOI': STOI, 'SISDR': SISDR, 'pesq': PESQ}
+        
+        # 列出参考目录中的文件
+        ref_files = [f for f in os.listdir(ref_dir) if f.endswith('.wav')]
+        print(f"[RefScore] 参考目录中的音频文件: {ref_files}")
+        
         for file_index, file in enumerate(file_list):
+            file_basename = os.path.basename(file)
+            print(f"\n[RefScore] 处理文件 {file_index+1}/{file_num}: {file_basename}")
+            print(f"[RefScore] 完整路径: {file}")
+            
             path_to_reference = self.get_ref_file(file, ref_dir)
+            print(f"[RefScore] 匹配到的参考文件: {path_to_reference}")
+            
             if path_to_reference is None:
+                print(f"[RefScore] ⚠️ 未找到参考文件 for {file_basename}")
+                print(f"[RefScore]   尝试匹配: ref_{file_basename}")
+                # 尝试列出可能的参考文件名
+                input_name = file_basename.removesuffix('.wav')
+                parts = input_name.split('_')
+                if len(parts) >= 2:
+                    print(f"[RefScore]   文件名拆分: {parts}")
+                    print(f"[RefScore]   尝试 ref_{parts[-1]}.wav")
+                    if len(parts) >= 3:
+                        print(f"[RefScore]   尝试 ref_{parts[-2]}.wav")
                 continue
             
+            print(f"[RefScore] ✓ 找到参考文件: {os.path.basename(path_to_reference)}")
+            
             try:
+                # 检查文件是否存在
+                if not os.path.exists(file):
+                    print(f"[RefScore] ❌ 测试文件不存在: {file}")
+                    continue
+                if not os.path.exists(path_to_reference):
+                    print(f"[RefScore] ❌ 参考文件不存在: {path_to_reference}")
+                    continue
+                
                 # stoi 和 sisdr
+                print(f"[RefScore] 调用speechmetrics计算STOI/SISDR...")
                 scores = self.metrics(file, path_to_reference)
-                STOI[file_index] = scores['stoi'].mean()
-                SISDR[file_index] = scores['sisdr'].mean()
+                stoi_val = float(scores['stoi'].mean())  # 转换为Python float
+                sisdr_val = float(scores['sisdr'].mean())  # 转换为Python float
+                STOI[file_index] = stoi_val
+                SISDR[file_index] = sisdr_val
+                print(f"[RefScore] ✓ STOI={stoi_val:.4f}, SISDR={sisdr_val:.4f}")
                 
                 # pesq
                 if PESQ_AVAILABLE:
+                    print(f"[RefScore] 计算PESQ...")
                     ref, sr_ref = sf.read(path_to_reference)
                     est, sr_est = sf.read(file)
+                    print(f"[RefScore]   参考音频: sr={sr_ref}, len={len(ref)}")
+                    print(f"[RefScore]   测试音频: sr={sr_est}, len={len(est)}")
+                    
                     if sr_est != 16000:
                         est = librosa.resample(est, orig_sr=sr_est, target_sr=16000)
                     if sr_ref != 16000:
@@ -536,13 +582,19 @@ class OptimizedRefScore:
                     if rms_est > 0:
                         gain = rms_ref / rms_est
                         est = est * gain
-                        if file_index == 0:  # 只打印一次
-                            print(f"  PESQ电平平滑: gain={gain:.3f}, ref_rms={rms_ref:.6f}, est_rms={rms_est:.6f}")
+                        print(f"[RefScore]   PESQ电平平滑: gain={gain:.3f}")
                     
-                    PESQ[file_index] = pesq.pesq(fs=16000, ref=ref, deg=est, mode='wb')
+                    pesq_val = float(pesq.pesq(fs=16000, ref=ref, deg=est, mode='wb'))  # 转换为Python float
+                    PESQ[file_index] = pesq_val
+                    print(f"[RefScore] ✓ PESQ={pesq_val:.4f}")
+                else:
+                    print(f"[RefScore] ⚠️ PESQ不可用")
             except Exception as e:
-                print(f"RefScore计算失败 {file}: {e}")
+                print(f"[RefScore] ❌ 计算失败 {file_basename}: {e}")
+                import traceback
+                print(f"[RefScore] 错误详情: {traceback.format_exc()}")
         
+        print(f"\n[RefScore] 计算完成 - STOI: {STOI}, SISDR: {SISDR}, PESQ: {PESQ}")
         return {'STOI': STOI, 'SISDR': SISDR, 'pesq': PESQ}
 
 
@@ -1005,13 +1057,20 @@ class ParallelMOSCompute:
         except Exception as e:
             print(f"并行计算无参考指标失败: {e}")
 
-        # 确保有默认值
-        if 'dnsmos' in selected_metrics and 'OVRL' not in results:
-            results.update({'OVRL': [0.0]*file_num, 'SIG': [0.0]*file_num, 'BAK': [0.0]*file_num, 'P808_MOS': [0.0]*file_num})
+        # 确保有默认值 - 只填充缺失的键，不覆盖已有值
+        if 'dnsmos' in selected_metrics:
+            if 'OVRL' not in results:
+                results['OVRL'] = [0.0]*file_num
+            if 'SIG' not in results:
+                results['SIG'] = [0.0]*file_num
+            if 'BAK' not in results:
+                results['BAK'] = [0.0]*file_num
+            if 'P808_MOS' not in results:
+                results['P808_MOS'] = [0.0]*file_num
         if 'scoreq' in selected_metrics and 'scoreq' not in results:
-            results.update({'scoreq': [0.0]*file_num})
+            results['scoreq'] = [0.0]*file_num
         if 'utmos' in selected_metrics and 'utmos' not in results:
-            results.update({'utmos': [0.0]*file_num})
+            results['utmos'] = [0.0]*file_num
 
         return results
     
@@ -1025,63 +1084,81 @@ class ParallelMOSCompute:
         # 如果没有指定计算项目，使用默认全部
         if selected_metrics is None:
             selected_metrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf']
+        
+        # 保存到局部变量，避免闭包问题
+        metrics = selected_metrics.copy()
+        print(f"[compute_all_with_ref] 开始计算有参考指标: {metrics}")
 
-        def compute_ref():
+        # 直接调用，不使用内部线程池（避免线程池嵌套问题）
+        if any(m in metrics for m in ['pesq', 'stoi', 'sisdr']):
+            print(f"[compute_all_with_ref] 计算ref指标...")
             try:
                 if 'ref_score' in self.models:
                     ref_scores = self.models['ref_score'].get_mos(audio_files, ref_dir)
+                    print(f"[compute_all_with_ref] ref_score返回: {ref_scores}")
                     # 只保留用户选择的指标
-                    if 'pesq' not in selected_metrics:
+                    if 'pesq' not in metrics:
                         ref_scores.pop('pesq', None)
-                    if 'stoi' not in selected_metrics:
+                    if 'stoi' not in metrics:
                         ref_scores.pop('STOI', None)
-                    if 'sisdr' not in selected_metrics:
+                    if 'sisdr' not in metrics:
                         ref_scores.pop('SISDR', None)
-                    return ref_scores
+                    print(f"[compute_all_with_ref] 过滤后: {ref_scores}")
+                    results.update(ref_scores)
+                else:
+                    print(f"[compute_all_with_ref] ref_score模型未加载")
+                    results.update({'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num})
             except Exception as e:
-                print(f"RefScore计算失败: {e}")
-            return {'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num}
-
-        def compute_wer():
+                print(f"[compute_all_with_ref] RefScore计算失败: {e}")
+                import traceback
+                print(f"[compute_all_with_ref] 错误详情: {traceback.format_exc()}")
+                results.update({'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num})
+        
+        if 'wer' in metrics:
+            print(f"[compute_all_with_ref] 计算WER...")
             try:
                 if 'wer' in self.models:
-                    return self.models['wer'].get_wer(audio_files)
+                    wer_scores = self.models['wer'].get_wer(audio_files)
+                    print(f"[compute_all_with_ref] WER返回: {wer_scores}")
+                    results.update(wer_scores)
+                else:
+                    results.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
             except Exception as e:
-                print(f"WER计算失败: {e}")
-            return {'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num}
-
-        def compute_tcf():
+                print(f"[compute_all_with_ref] WER计算失败: {e}")
+                results.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
+        
+        if 'tcf' in metrics:
+            print(f"[compute_all_with_ref] 计算TCF...")
             try:
                 if 'tcf' in self.models:
-                    return self.models['tcf'].get_mos(audio_files, ref_dir)
+                    tcf_scores = self.models['tcf'].get_mos(audio_files, ref_dir)
+                    print(f"[compute_all_with_ref] TCF返回: {tcf_scores}")
+                    results.update(tcf_scores)
+                else:
+                    results.update({'tcf': [0.0]*file_num})
             except Exception as e:
-                print(f"TCF计算失败: {e}")
-            return {'tcf': [0.0]*file_num}
+                print(f"[compute_all_with_ref] TCF计算失败: {e}")
+                results.update({'tcf': [0.0]*file_num})
 
-        # 并行执行三个有参考指标
-        try:
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = []
-                if any(m in selected_metrics for m in ['pesq', 'stoi', 'sisdr']):
-                    futures.append(('ref', executor.submit(compute_ref)))
-                if 'wer' in selected_metrics:
-                    futures.append(('wer', executor.submit(compute_wer)))
-                if 'tcf' in selected_metrics:
-                    futures.append(('tcf', executor.submit(compute_tcf)))
+        print(f"[compute_all_with_ref] 最终结果(填充前): {results}")
+        
+        # 确保有默认值 - 只填充缺失的键，不覆盖已有值
+        if any(m in metrics for m in ['pesq', 'stoi', 'sisdr']):
+            if 'STOI' not in results:
+                results['STOI'] = [0.0]*file_num
+            if 'SISDR' not in results:
+                results['SISDR'] = [0.0]*file_num
+            if 'pesq' not in results:
+                results['pesq'] = [0.0]*file_num
+        if 'wer' in metrics:
+            if 'wer' not in results:
+                results['wer'] = [0.0]*file_num
+            if 'wcorr' not in results:
+                results['wcorr'] = [0.0]*file_num
+        if 'tcf' in metrics and 'tcf' not in results:
+            results['tcf'] = [0.0]*file_num
 
-                for name, future in futures:
-                    results.update(future.result())
-        except Exception as e:
-            print(f"并行计算有参考指标失败: {e}")
-
-        # 确保有默认值
-        if any(m in selected_metrics for m in ['pesq', 'stoi', 'sisdr']) and 'STOI' not in results:
-            results.update({'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num})
-        if 'wer' in selected_metrics and 'wer' not in results:
-            results.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
-        if 'tcf' in selected_metrics and 'tcf' not in results:
-            results.update({'tcf': [0.0]*file_num})
-
+        print(f"[compute_all_with_ref] 返回结果: {results}")
         return results
     
     def compute_final_scores(self, results: Dict, audio_files: List[str], has_reference: bool, selected_metrics: Optional[List[str]] = None) -> List[float]:
@@ -1234,18 +1311,27 @@ def compute_mos_scores_optimized(
         })
 
     # 计算有参考指标(并行)
+    print(f"[compute_mos_scores_optimized] has_reference={has_reference}, selected_metrics={selected_metrics}")
     if has_reference:
         ref_metrics = [m for m in selected_metrics if m in ['pesq', 'stoi', 'sisdr', 'wer', 'tcf']]
+        print(f"[compute_mos_scores_optimized] ref_metrics={ref_metrics}")
         if ref_metrics:
+            print(f"[compute_mos_scores_optimized] 调用compute_all_with_ref...")
             ref_results = parallel_compute.compute_all_with_ref(audio_files, ref_dir, ref_metrics)
+            print(f"[compute_mos_scores_optimized] ref_results类型={type(ref_results)}, id={id(ref_results)}")
+            print(f"[compute_mos_scores_optimized] ref_results={ref_results}")
+            print(f"[compute_mos_scores_optimized] 更新前的results={results}")
             results.update(ref_results)
+            print(f"[compute_mos_scores_optimized] 更新后的results={results}")
         else:
+            print(f"[compute_mos_scores_optimized] 无参考指标需要计算，填充0值")
             # 填充0值
             results.update({
                 'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num,
                 'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num, 'tcf': [0.0]*file_num
             })
     else:
+        print(f"[compute_mos_scores_optimized] 无参考音频，填充0值")
         # 填充0值
         results.update({
             'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num,

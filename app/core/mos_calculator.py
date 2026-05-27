@@ -490,14 +490,30 @@ class RefScore:
         SISDR = [0.0 for _ in range(file_num)]
         PESQ = [0.0 for _ in range(file_num)]
         file_index = 0
+        
+        print(f"\n[RefScore-原版] 开始计算，文件数: {file_num}, 参考目录: {ref_dir}")
+        
         for file in tqdm(file_list, desc='speechmetrics'):
+            file_basename = os.path.basename(file)
             path_to_reference = get_ref_file(file, ref_dir)
+            
+            if path_to_reference is None:
+                print(f"[RefScore-原版] ⚠️ 未找到参考文件 for {file_basename}")
+                file_index += 1
+                continue
+            
+            print(f"[RefScore-原版] 处理 {file_basename} -> ref: {os.path.basename(path_to_reference)}")
+            
             try:
                 # stoi 和 sisdr
                 scores = self.metrics(file, path_to_reference)
                 file_names[file_index] = file
-                STOI[file_index] = scores['stoi'].mean()
-                SISDR[file_index] = scores['sisdr'].mean()
+                stoi_val = scores['stoi'].mean()
+                sisdr_val = scores['sisdr'].mean()
+                STOI[file_index] = stoi_val
+                SISDR[file_index] = sisdr_val
+                print(f"[RefScore-原版]   ✓ STOI={stoi_val:.4f}, SISDR={sisdr_val:.4f}")
+                
                 # pesq
                 if PESQ_AVAILABLE:
                     ref, sr_ref = sf.read(path_to_reference)
@@ -508,12 +524,16 @@ class RefScore:
                         ref = librosa.resample(ref, orig_sr=sr_ref, target_sr=16000)
                     tmp = pesq.pesq(fs=16000, ref=ref, deg=est, mode='wb')
                     PESQ[file_index] = tmp
+                    print(f"[RefScore-原版]   ✓ PESQ={tmp:.4f}")
                 else:
                     PESQ[file_index] = 0.0
             except Exception as e:
-                print(f"RefScore计算失败 {file}: {e}")
+                print(f"[RefScore-原版] ❌ 计算失败 {file_basename}: {e}")
+                import traceback
+                print(f"[RefScore-原版] 错误详情: {traceback.format_exc()}")
             file_index += 1
 
+        print(f"\n[RefScore-原版] 计算完成 - STOI: {STOI}, SISDR: {SISDR}, PESQ: {PESQ}")
         data = {
             'STOI': STOI,
             'SISDR': SISDR,
