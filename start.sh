@@ -493,6 +493,34 @@ check_models() {
     fi
     echo ""
 
+    # 9. 检查timm模型 (UTMOS依赖)
+    echo "🔍 检查 timm 模型 (UTMOS依赖)..."
+    echo "   说明: tf_efficientnetv2_s.in21k_ft_in1k (UTMOS的多谱图模型依赖)"
+    echo ""
+    echo "   检查路径:"
+    echo "      项目路径: $SCRIPT_DIR/models/timm/"
+    echo ""
+
+    local timm_model_name="tf_efficientnetv2_s.in21k_ft_in1k"
+    local timm_model_path="$SCRIPT_DIR/models/timm/${timm_model_name}.safetensors"
+
+    if [ -f "$timm_model_path" ]; then
+        echo "   ✅ timm模型已就绪"
+        echo "      模型名称: $timm_model_name"
+        echo "      来源: 项目路径"
+        echo "      位置: $timm_model_path"
+        local timm_size=$(du -sh "$timm_model_path" 2>/dev/null | cut -f1)
+        echo "      大小: $timm_size"
+    else
+        echo "   ❌ timm模型缺失"
+        echo "      状态: 未找到"
+        echo "      模型名称: $timm_model_name"
+        echo "      期望路径: $timm_model_path"
+        echo "      说明: 该模型用于UTMOS的多谱图特征提取"
+        all_ready=false
+    fi
+    echo ""
+
     # 汇总
     echo "================================"
     if $all_ready; then
