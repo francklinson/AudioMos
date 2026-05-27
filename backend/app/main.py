@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"  调试模式: {settings.server.debug}")
     logger.info(f"  CUDA启用: {settings.cuda.enabled}")
     if settings.cuda.enabled:
-        logger.info(f"  GPU设备: {settings.cuda.device}")
+        logger.info(f"  GPU设备ID: {settings.cuda.device_id}")
     logger.info(f"  参考音频目录: {settings.paths.ref_dir}")
     logger.info(f"  上传目录: {settings.paths.upload_dir}")
     logger.info(f"  结果目录: {settings.paths.result_dir}")
