@@ -2,6 +2,7 @@
 AudioMOS FastAPI 主应用入口
 提供音频质量评估的RESTful API服务
 """
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
