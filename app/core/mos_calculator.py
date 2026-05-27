@@ -115,7 +115,7 @@ def can_convert_to_float(x):
     try:
         float(x)
         return True
-    except ValueError:
+    except (ValueError, TypeError):
         return False
 
 

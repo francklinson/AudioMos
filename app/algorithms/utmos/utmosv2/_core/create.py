@@ -16,6 +16,14 @@ if TYPE_CHECKING:
     from typing import Literal
 
 
+def get_project_root() -> Path:
+    """获取项目根目录"""
+    current_file = Path(__file__).resolve()
+    # 从 create.py 向上回溯到项目根目录
+    # app/algorithms/utmos/utmosv2/_core/create.py -> 项目根目录
+    return current_file.parent.parent.parent.parent.parent.parent
+
+
 def create_model(
     pretrained: bool = True,
     config: str = "fusion_stage3",
@@ -79,18 +87,39 @@ def create_model(
     if pretrained:
         print(f"\n[UTMOS.create_model] 步骤3/4: 加载预训练权重")
         if checkpoint_path is None:
-            checkpoint_path = (
+            # 优先检查项目目录下的 models/utmos/ 路径
+            project_root = get_project_root()
+            project_checkpoint_path = (
+                project_root
+                / "models"
+                / "utmos"
+                / config
+                / f"fold{fold}_s{seed}_best_model.pth"
+            )
+            
+            # 然后检查默认缓存路径
+            cache_checkpoint_path = (
                 _UTMOSV2_CHACHE
                 / "models"
                 / config
                 / f"fold{fold}_s{seed}_best_model.pth"
             )
-            print(f"  检查点路径: {checkpoint_path}")
-            if not checkpoint_path.exists():
-                print(f"  ⚠ 检查点不存在，开始下载...")
-                download_pretrained_weights_from_hf(config, fold)
+            
+            print(f"  查找本地检查点...")
+            print(f"    项目路径: {project_checkpoint_path}")
+            print(f"    缓存路径: {cache_checkpoint_path}")
+            
+            if project_checkpoint_path.exists():
+                checkpoint_path = project_checkpoint_path
+                print(f"  ✓ 找到项目路径检查点")
+            elif cache_checkpoint_path.exists():
+                checkpoint_path = cache_checkpoint_path
+                print(f"  ✓ 找到缓存路径检查点")
             else:
-                print(f"  ✓ 找到本地检查点")
+                print(f"  ⚠ 本地检查点不存在，尝试下载...")
+                download_pretrained_weights_from_hf(config, fold)
+                checkpoint_path = cache_checkpoint_path
+                
         if isinstance(checkpoint_path, str):
             checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():

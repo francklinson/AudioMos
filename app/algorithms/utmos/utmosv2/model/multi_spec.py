@@ -1,16 +1,88 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from safetensors.torch import load_file
 
 from utmosv2.dataset._utils import get_dataset_num
 
 if TYPE_CHECKING:
     from utmosv2._settings._config import Config
+
+
+def get_project_root() -> Path:
+    """获取项目根目录"""
+    current_file = Path(__file__).resolve()
+    # 从 multi_spec.py 向上回溯到项目根目录
+    # app/algorithms/utmos/utmosv2/model/multi_spec.py -> 项目根目录
+    return current_file.parent.parent.parent.parent.parent.parent
+
+
+def load_model_from_local(cfg: Config, device: torch.device = torch.device("cpu")):
+    """
+    从本地 models/timm 目录加载模型，避免从 Hugging Face 下载
+    
+    Args:
+        cfg: 配置对象
+        device: 加载设备
+    
+    Returns:
+        加载了预训练权重的模型
+    """
+    backbone_name = cfg.model.multi_spec.backbone
+    
+    # 首先创建模型架构 (pretrained=False 避免自动下载)
+    print(f"[load_model_from_local] 创建模型架构: {backbone_name} (pretrained=False)")
+    model = timm.create_model(
+        backbone_name,
+        pretrained=False,
+        num_classes=0,
+    )
+    
+    # 构建本地模型文件路径
+    project_root = get_project_root()
+    local_model_path = project_root / "models" / "timm" / f"{backbone_name}.safetensors"
+    
+    print(f"[load_model_from_local] 查找本地模型: {local_model_path}")
+    
+    if local_model_path.exists():
+        print(f"[load_model_from_local] 找到本地模型，开始加载权重...")
+        state_dict = load_file(str(local_model_path))
+        
+        # 过滤掉不需要的键（如 classifier，因为 num_classes=0）
+        filtered_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith('classifier.'):
+                # 跳过 classifier 层的权重
+                continue
+            filtered_state_dict[key] = value
+        
+        # 加载过滤后的权重
+        missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
+        
+        if missing_keys:
+            print(f"[load_model_from_local] 缺失的键: {missing_keys}")
+        if unexpected_keys:
+            print(f"[load_model_from_local] 忽略的键: {unexpected_keys}")
+        
+        print(f"[load_model_from_local] 本地权重加载完成")
+    else:
+        print(f"[load_model_from_local] ⚠ 本地模型不存在: {local_model_path}")
+        print(f"[load_model_from_local] 尝试从 Hugging Face 下载...")
+        # 如果本地不存在，尝试从 HF 加载 (会卡住如果无网络)
+        model = timm.create_model(
+            backbone_name,
+            pretrained=True,
+            num_classes=0,
+        )
+    
+    return model
 
 
 class MultiSpecModelV2(nn.Module):
@@ -27,16 +99,20 @@ class MultiSpecModelV2(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
-        self.backbones = nn.ModuleList(
-            [
-                timm.create_model(
-                    cfg.model.multi_spec.backbone,
-                    pretrained=True,
-                    num_classes=0,
-                )
-                for _ in range(len(cfg.dataset.specs))
-            ]
-        )
+        
+        print(f"[MultiSpecModelV2] 开始初始化...")
+        print(f"[MultiSpecModelV2] backbone名称: {cfg.model.multi_spec.backbone}")
+        print(f"[MultiSpecModelV2] specs数量: {len(cfg.dataset.specs)}")
+        print(f"[MultiSpecModelV2] 使用本地模型加载...")
+        
+        self.backbones = nn.ModuleList()
+        for i in range(len(cfg.dataset.specs)):
+            print(f"[MultiSpecModelV2] 创建 backbone {i+1}/{len(cfg.dataset.specs)}: {cfg.model.multi_spec.backbone}")
+            backbone = load_model_from_local(cfg)
+            self.backbones.append(backbone)
+            print(f"[MultiSpecModelV2] backbone {i+1} 创建完成")
+        
+        print(f"[MultiSpecModelV2] 所有 backbone 创建完成")
         for backbone in self.backbones:
             backbone.global_pool = nn.Identity()
 
@@ -128,16 +204,20 @@ class MultiSpecExtModel(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
-        self.backbones = nn.ModuleList(
-            [
-                timm.create_model(
-                    cfg.model.multi_spec.backbone,
-                    pretrained=True,
-                    num_classes=0,
-                )
-                for _ in range(len(cfg.dataset.specs))
-            ]
-        )
+        
+        print(f"[MultiSpecExtModel] 开始初始化...")
+        print(f"[MultiSpecExtModel] backbone名称: {cfg.model.multi_spec.backbone}")
+        print(f"[MultiSpecExtModel] specs数量: {len(cfg.dataset.specs)}")
+        print(f"[MultiSpecExtModel] 使用本地模型加载...")
+        
+        self.backbones = nn.ModuleList()
+        for i in range(len(cfg.dataset.specs)):
+            print(f"[MultiSpecExtModel] 创建 backbone {i+1}/{len(cfg.dataset.specs)}: {cfg.model.multi_spec.backbone}")
+            backbone = load_model_from_local(cfg)
+            self.backbones.append(backbone)
+            print(f"[MultiSpecExtModel] backbone {i+1} 创建完成")
+        
+        print(f"[MultiSpecExtModel] 所有 backbone 创建完成")
         for backbone in self.backbones:
             backbone.global_pool = nn.Identity()
 

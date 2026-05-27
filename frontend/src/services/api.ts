@@ -1,6 +1,15 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+// 根据环境选择API基础URL
+const getBaseURL = () => {
+  // 测试环境使用相对路径，让 MSW 可以拦截
+  if (process.env.NODE_ENV === 'test' || import.meta.env?.MODE === 'test') {
+    return '';
+  }
+  return import.meta.env.VITE_API_URL || '';
+};
+
+const API_BASE_URL = getBaseURL();
 
 // 创建axios实例
 const api: AxiosInstance = axios.create({
