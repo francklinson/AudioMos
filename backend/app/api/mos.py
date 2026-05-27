@@ -89,56 +89,91 @@ def init_models():
     """初始化所有评分模型"""
     global models
     
+    logger.info("=" * 60)
+    logger.info("[模型初始化] 开始加载MOS评分模型...")
+    logger.info("=" * 60)
+    
     if USE_OPTIMIZED:
-        logger.info("正在初始化优化版MOS评分模型...")
+        logger.info("[模型初始化] 使用优化版MOS计算模块")
+        logger.info("[模型初始化] 正在初始化并行计算模型...")
         try:
+            start_time = time.time()
             parallel_compute.init_models()
-            logger.info("✓ 优化版模型初始化完成")
+            elapsed = time.time() - start_time
+            logger.info(f"✅ 优化版模型初始化完成 (耗时: {elapsed:.2f}s)")
         except Exception as e:
-            logger.error(f"优化版模型初始化失败: {e}")
+            logger.error(f"❌ 优化版模型初始化失败: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+        logger.info("=" * 60)
         return
     
-    logger.info("正在初始化MOS评分模型...")
+    logger.info("[模型初始化] 使用标准版MOS计算模块")
     
     # 核心模型（必须）
-    try:
-        models["ref_score"] = RefScore()
-        logger.info("✓ RefScore 初始化成功")
-    except Exception as e:
-        logger.warning(f"RefScore 初始化失败: {e}")
+    logger.info("[模型初始化] 加载核心模型...")
     
     try:
-        models["dnsmos"] = DNSMOScore()
-        logger.info("✓ DNSMOScore 初始化成功")
+        logger.info("  [1/5] 正在加载 RefScore 模型...")
+        start_time = time.time()
+        models["ref_score"] = RefScore()
+        elapsed = time.time() - start_time
+        logger.info(f"  ✅ RefScore 加载完成 (耗时: {elapsed:.2f}s)")
     except Exception as e:
-        logger.warning(f"DNSMOScore 初始化失败: {e}")
+        logger.warning(f"  ⚠️ RefScore 加载失败: {e}")
+    
+    try:
+        logger.info("  [2/5] 正在加载 DNSMOScore 模型...")
+        start_time = time.time()
+        models["dnsmos"] = DNSMOScore()
+        elapsed = time.time() - start_time
+        logger.info(f"  ✅ DNSMOScore 加载完成 (耗时: {elapsed:.2f}s)")
+    except Exception as e:
+        logger.warning(f"  ⚠️ DNSMOScore 加载失败: {e}")
     
     # 可选模型
+    logger.info("[模型初始化] 加载可选模型...")
+    
     try:
+        logger.info("  [3/5] 正在加载 WerScore 模型...")
+        start_time = time.time()
         models["wer"] = WerScore()
-        logger.info("✓ WerScore 初始化成功")
+        elapsed = time.time() - start_time
+        logger.info(f"  ✅ WerScore 加载完成 (耗时: {elapsed:.2f}s)")
     except Exception as e:
-        logger.warning(f"WerScore 初始化失败: {e} (WER功能将不可用)")
+        logger.warning(f"  ⚠️ WerScore 加载失败: {e} (WER功能将不可用)")
     
     try:
+        logger.info("  [4/5] 正在加载 NisqaMosScore 模型...")
+        start_time = time.time()
         models["nisqa"] = NisqaMosScore()
-        logger.info("✓ NisqaMosScore 初始化成功")
+        elapsed = time.time() - start_time
+        logger.info(f"  ✅ NisqaMosScore 加载完成 (耗时: {elapsed:.2f}s)")
     except Exception as e:
-        logger.warning(f"NisqaMosScore 初始化失败: {e} (NISQA功能将不可用)")
+        logger.warning(f"  ⚠️ NisqaMosScore 加载失败: {e} (NISQA功能将不可用)")
     
     try:
+        logger.info("  [5/5] 正在加载 ToneColorFidelityScore 模型...")
+        start_time = time.time()
         models["tcf"] = ToneColorFidelityScore()
-        logger.info("✓ ToneColorFidelityScore 初始化成功")
+        elapsed = time.time() - start_time
+        logger.info(f"  ✅ ToneColorFidelityScore 加载完成 (耗时: {elapsed:.2f}s)")
     except Exception as e:
-        logger.warning(f"ToneColorFidelityScore 初始化失败: {e} (音色还原度功能将不可用)")
+        logger.warning(f"  ⚠️ ToneColorFidelityScore 加载失败: {e} (音色还原度功能将不可用)")
     
     try:
+        logger.info("  [6/6] 正在加载 ScoreqScore 模型...")
+        start_time = time.time()
         models["scoreq"] = ScoreqScore()
-        logger.info("✓ ScoreqScore 初始化成功")
+        elapsed = time.time() - start_time
+        logger.info(f"  ✅ ScoreqScore 加载完成 (耗时: {elapsed:.2f}s)")
     except Exception as e:
-        logger.warning(f"ScoreqScore 初始化失败: {e} (Scoreq功能将不可用)")
+        logger.warning(f"  ⚠️ ScoreqScore 加载失败: {e} (Scoreq功能将不可用)")
     
-    logger.info("MOS评分模型初始化完成")
+    loaded_count = len(models)
+    logger.info("=" * 60)
+    logger.info(f"[模型初始化] 完成! 成功加载 {loaded_count} 个模型")
+    logger.info("=" * 60)
 
 
 class TaskResponse(BaseModel):
@@ -540,14 +575,24 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
         评分结果字典
     """
     file_num = len(audio_files)
-    logger.info(f"开始计算MOS分数，文件数量: {file_num}, 优化模式: {USE_OPTIMIZED}, 选择项目: {selected_metrics}")
+    total_start_time = time.time()
+
+    logger.info("=" * 60)
+    logger.info("[MOS计算] 开始计算MOS分数")
+    logger.info("=" * 60)
+    logger.info(f"[MOS计算] 文件数量: {file_num}")
+    logger.info(f"[MOS计算] 优化模式: {USE_OPTIMIZED}")
+    logger.info(f"[MOS计算] 参考音频: {'有' if has_reference else '无'}")
+    logger.info(f"[MOS计算] 计算项目: {selected_metrics}")
 
     # 如果没有指定计算项目，使用默认全部
     if selected_metrics is None:
         selected_metrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos']
+        logger.info(f"[MOS计算] 使用默认计算项目: {selected_metrics}")
 
     # 使用优化版计算
     if USE_OPTIMIZED:
+        logger.info("[MOS计算] 使用优化版并行计算...")
         try:
             start_time = time.time()
             result = compute_mos_scores_optimized(audio_files, ref_dir, has_reference, selected_metrics)
@@ -555,8 +600,12 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
 
             # 记录性能统计
             perf_report = get_performance_report()
-            logger.info(f"MOS计算完成，总耗时: {elapsed:.2f}s")
-            logger.info(f"性能报告: {perf_report}")
+            logger.info("=" * 60)
+            logger.info("[MOS计算] ✅ 优化版计算完成")
+            logger.info(f"[MOS计算] 计算耗时: {elapsed:.2f}s")
+            logger.info(f"[MOS计算] 平均每文件: {elapsed/file_num:.2f}s")
+            logger.info(f"[MOS计算] 性能报告: {perf_report}")
+            logger.info("=" * 60)
 
             # 保存性能统计到全局
             performance_stats['last_report'] = perf_report
@@ -564,20 +613,29 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
 
             return result
         except Exception as e:
-            logger.error(f"优化版计算失败，回退到原版: {e}")
+            logger.error(f"[MOS计算] ❌ 优化版计算失败: {e}")
+            logger.info("[MOS计算] 回退到原版串行计算...")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
             # 回退到原版计算
 
     # 原版串行计算逻辑
+    logger.info("[MOS计算] 使用原版串行计算...")
     result = {}
+    calc_start_time = time.time()
 
     # 有参考指标
     if has_reference:
+        logger.info("[MOS计算] 计算有参考指标...")
+        
         # PESQ, STOI, SISDR
         if any(m in selected_metrics for m in ['pesq', 'stoi', 'sisdr']):
             if "ref_score" in models:
-                logger.info("计算参考相关指标(STOI, SISDR, PESQ)...")
+                logger.info("  [1/6] 计算参考相关指标(STOI, SISDR, PESQ)...")
                 try:
+                    start_time = time.time()
                     ref_scores = models["ref_score"].get_mos(audio_files, ref_dir)
+                    elapsed = time.time() - start_time
                     # 只保留用户选择的指标
                     if 'pesq' not in selected_metrics:
                         ref_scores.pop('pesq', None)
@@ -586,10 +644,12 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
                     if 'sisdr' not in selected_metrics:
                         ref_scores.pop('SISDR', None)
                     result.update(ref_scores)
+                    logger.info(f"    ✅ 参考指标计算完成 (耗时: {elapsed:.2f}s)")
                 except Exception as e:
-                    logger.warning(f"RefScore计算失败: {e}")
+                    logger.warning(f"    ⚠️ RefScore计算失败: {e}")
                     result.update({"STOI": [0.0]*file_num, "SISDR": [0.0]*file_num, "pesq": [0.0]*file_num})
             else:
+                logger.warning("  [1/6] RefScore模型未加载，跳过")
                 result.update({"STOI": [0.0]*file_num, "SISDR": [0.0]*file_num, "pesq": [0.0]*file_num})
         else:
             result.update({"STOI": [0.0]*file_num, "SISDR": [0.0]*file_num, "pesq": [0.0]*file_num})
@@ -597,14 +657,18 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
         # WER
         if 'wer' in selected_metrics:
             if "wer" in models:
-                logger.info("计算WER...")
+                logger.info("  [2/6] 计算WER...")
                 try:
+                    start_time = time.time()
                     wer_scores = models["wer"].get_wer(audio_files)
+                    elapsed = time.time() - start_time
                     result.update(wer_scores)
+                    logger.info(f"    ✅ WER计算完成 (耗时: {elapsed:.2f}s)")
                 except Exception as e:
-                    logger.warning(f"WER计算失败: {e}")
+                    logger.warning(f"    ⚠️ WER计算失败: {e}")
                     result.update({"wer": [0.0]*file_num, "wcorr": [0.0]*file_num})
             else:
+                logger.warning("  [2/6] WER模型未加载，跳过")
                 result.update({"wer": [0.0]*file_num, "wcorr": [0.0]*file_num})
         else:
             result.update({"wer": [0.0]*file_num, "wcorr": [0.0]*file_num})
@@ -612,36 +676,46 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
         # TCF
         if 'tcf' in selected_metrics:
             if "tcf" in models:
-                logger.info("计算音色还原度...")
+                logger.info("  [3/6] 计算音色还原度(TCF)...")
                 try:
+                    start_time = time.time()
                     tcf_scores = models["tcf"].get_mos(audio_files, ref_dir)
+                    elapsed = time.time() - start_time
                     result.update(tcf_scores)
+                    logger.info(f"    ✅ TCF计算完成 (耗时: {elapsed:.2f}s)")
                 except Exception as e:
-                    logger.warning(f"音色还原度计算失败: {e}")
+                    logger.warning(f"    ⚠️ TCF计算失败: {e}")
                     result.update({"tcf": [0.0]*file_num})
             else:
+                logger.warning("  [3/6] TCF模型未加载，跳过")
                 result.update({"tcf": [0.0]*file_num})
         else:
             result.update({"tcf": [0.0]*file_num})
     else:
-        logger.info("无参考音频，跳过参考相关指标")
+        logger.info("[MOS计算] 无参考音频，跳过参考相关指标")
         result.update({
             "STOI": [0.0]*file_num, "SISDR": [0.0]*file_num, "pesq": [0.0]*file_num,
             "wer": [0.0]*file_num, "wcorr": [0.0]*file_num, "tcf": [0.0]*file_num
         })
 
     # 无参考指标
+    logger.info("[MOS计算] 计算无参考指标...")
+    
     # DNSMOS
     if 'dnsmos' in selected_metrics:
         if "dnsmos" in models:
-            logger.info("计算DNSMOS...")
+            logger.info("  [4/6] 计算DNSMOS...")
             try:
+                start_time = time.time()
                 dnsmos_scores = models["dnsmos"].get_mos(audio_files)
+                elapsed = time.time() - start_time
                 result.update(dnsmos_scores)
+                logger.info(f"    ✅ DNSMOS计算完成 (耗时: {elapsed:.2f}s)")
             except Exception as e:
-                logger.warning(f"DNSMOS计算失败: {e}")
+                logger.warning(f"    ⚠️ DNSMOS计算失败: {e}")
                 result.update({"OVRL": [0.0]*file_num, "SIG": [0.0]*file_num, "BAK": [0.0]*file_num, "P808_MOS": [0.0]*file_num})
         else:
+            logger.warning("  [4/6] DNSMOS模型未加载，跳过")
             result.update({"OVRL": [0.0]*file_num, "SIG": [0.0]*file_num, "BAK": [0.0]*file_num, "P808_MOS": [0.0]*file_num})
     else:
         result.update({"OVRL": [0.0]*file_num, "SIG": [0.0]*file_num, "BAK": [0.0]*file_num, "P808_MOS": [0.0]*file_num})
@@ -649,15 +723,19 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
     # NISQA
     if 'nisqa' in selected_metrics:
         if "nisqa" in models:
-            logger.info("计算NISQA...")
+            logger.info("  [5/6] 计算NISQA...")
             try:
+                start_time = time.time()
                 nisqa_scores = models["nisqa"].get_mos(audio_files)
+                elapsed = time.time() - start_time
                 result.update(nisqa_scores)
+                logger.info(f"    ✅ NISQA计算完成 (耗时: {elapsed:.2f}s)")
             except Exception as e:
-                logger.warning(f"NISQA计算失败: {e}")
+                logger.warning(f"    ⚠️ NISQA计算失败: {e}")
                 result.update({"mos_pred": [0.0]*file_num, "noi_pred": [0.0]*file_num, "dis_pred": [0.0]*file_num,
                               "col_pred": [0.0]*file_num, "loud_pred": [0.0]*file_num})
         else:
+            logger.warning("  [5/6] NISQA模型未加载，跳过")
             result.update({"mos_pred": [0.0]*file_num, "noi_pred": [0.0]*file_num, "dis_pred": [0.0]*file_num,
                           "col_pred": [0.0]*file_num, "loud_pred": [0.0]*file_num})
     else:
@@ -667,36 +745,51 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
     # Scoreq
     if 'scoreq' in selected_metrics:
         if "scoreq" in models:
-            logger.info("计算Scoreq...")
+            logger.info("  [6/6] 计算Scoreq...")
             try:
+                start_time = time.time()
                 scoreq_scores = models["scoreq"].get_mos(audio_files)
+                elapsed = time.time() - start_time
                 result.update(scoreq_scores)
+                logger.info(f"    ✅ Scoreq计算完成 (耗时: {elapsed:.2f}s)")
             except Exception as e:
-                logger.warning(f"Scoreq计算失败: {e}")
+                logger.warning(f"    ⚠️ Scoreq计算失败: {e}")
                 result.update({"scoreq": [0.0]*file_num})
         else:
+            logger.warning("  [6/6] Scoreq模型未加载，跳过")
             result.update({"scoreq": [0.0]*file_num})
     else:
         result.update({"scoreq": [0.0]*file_num})
 
     # UTMOS
     if 'utmos' in selected_metrics:
-        # UTMOS在优化版中处理，原版暂不实现
+        logger.info("  [UTMOS] UTMOS在优化版中处理，原版暂不实现")
         result.update({"utmos": [0.0]*file_num})
     else:
         result.update({"utmos": [0.0]*file_num})
 
+    # 计算总耗时
+    total_elapsed = time.time() - calc_start_time
+    logger.info("=" * 60)
+    logger.info("[MOS计算] ✅ 所有指标计算完成")
+    logger.info(f"[MOS计算] 总耗时: {total_elapsed:.2f}s")
+    logger.info(f"[MOS计算] 平均每文件: {total_elapsed/file_num:.2f}s")
+    logger.info("=" * 60)
+
     # 验证结果长度
+    logger.info("[MOS计算] 验证结果数据...")
     for key, value in result.items():
         if isinstance(value, list) and len(value) != file_num:
-            logger.warning(f"结果列表长度不匹配: {key} 期望 {file_num} 个, 实际 {len(value)} 个")
+            logger.warning(f"  ⚠️ 结果列表长度不匹配: {key} 期望 {file_num} 个, 实际 {len(value)} 个")
             if len(value) < file_num:
                 value.extend([0.0] * (file_num - len(value)))
             else:
                 value = value[:file_num]
             result[key] = value
+    logger.info("  ✅ 结果数据验证完成")
 
     # 计算最终得分
+    logger.info("[MOS计算] 计算最终MOS得分...")
     values = np.array(list(result.values())).T
     final_scores = []
     for i in range(len(values)):
