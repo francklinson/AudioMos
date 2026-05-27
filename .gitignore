@@ -215,3 +215,19 @@ site/
 # 测试输出
 test_output/
 test-results/
+
+# ===== 备份目录 =====
+*_backup/
+backup/
+
+# ===== 前端测试相关 =====
+frontend/playwright-report/
+frontend/e2e/
+
+# ===== 数据目录（用户数据）=====
+data/
+models/
+records/
+
+# ===== 其他 =====
+需求.txt
