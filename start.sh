@@ -77,6 +77,156 @@ read_nested_yaml() {
     echo "$default"
 }
 
+# 检测 host 是否支持的函数
+check_host_support() {
+    local host="$1"
+    local port="${2:-8000}"
+    
+    # 使用 Python 检测，并捕获退出码
+    python3 << EOF
+import socket
+import sys
+try:
+    socket.getaddrinfo('$host', $port, socket.AF_INET, socket.SOCK_STREAM)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('$host', 0))
+    s.close()
+    sys.exit(0)
+except Exception as e:
+    sys.exit(1)
+EOF
+    local exit_code=$?
+    return $exit_code
+}
+
+# 获取最佳 host
+get_best_host() {
+    # 优先尝试 127.0.0.1，如果不支持则尝试 0.0.0.0
+    if check_host_support "127.0.0.1"; then
+        echo "127.0.0.1"
+    elif check_host_support "0.0.0.0"; then
+        echo "0.0.0.0"
+    else
+        echo "127.0.0.1"  # 默认返回最安全的
+    fi
+}
+
+# 获取服务器IP的函数
+get_server_ip() {
+    # 方法1: 通过UDP连接外部地址获取
+    local ip=$(python3 -c "
+import socket
+import sys
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(2)
+    s.connect(('8.8.8.8', 80))
+    ip = s.getsockname()[0]
+    s.close()
+    print(ip)
+    sys.exit(0)
+except:
+    sys.exit(1)
+" 2>/dev/null)
+    
+    if [ -n "$ip" ]; then
+        echo "$ip"
+        return
+    fi
+    
+    # 方法2: 通过hostname获取
+    local hostname=$(hostname)
+    ip=$(python3 -c "
+import socket
+import sys
+try:
+    ip = socket.gethostbyname('$hostname')
+    if ip and ip != '127.0.0.1':
+        print(ip)
+        sys.exit(0)
+except:
+    pass
+sys.exit(1)
+" 2>/dev/null)
+    
+    echo "$ip"
+}
+
+# 获取适合服务器的最佳host
+get_best_host_for_server() {
+    # 优先尝试 0.0.0.0
+    if check_host_support "0.0.0.0"; then
+        echo "0.0.0.0"
+        return
+    fi
+    
+    # 尝试获取服务器实际IP
+    local server_ip=$(get_server_ip)
+    if [ -n "$server_ip" ] && check_host_support "$server_ip"; then
+        echo "$server_ip"
+        return
+    fi
+    
+    # 最后使用 127.0.0.1
+    echo "127.0.0.1"
+}
+
+# 验证并修复 host 配置
+validate_host() {
+    local host="$1"
+    local service_name="$2"
+    
+    # 如果配置的是 "auto"，自动选择最佳host
+    if [ "$host" = "auto" ] || [ "$host" = "AUTO" ] || [ "$host" = "Auto" ]; then
+        local new_host=$(get_best_host_for_server)
+        if [ "$new_host" = "0.0.0.0" ]; then
+            echo "ℹ️  $service_name 使用 auto 模式，自动选择 host: $new_host (支持外部访问)" >&2
+        elif [ "$new_host" != "127.0.0.1" ] && [ "$new_host" != "localhost" ]; then
+            echo "ℹ️  $service_name 使用 auto 模式，自动选择 host: $new_host (服务器实际IP)" >&2
+        else
+            echo "⚠️  $service_name 使用 auto 模式，但无法获取公网IP，使用: $new_host (仅本地访问)" >&2
+        fi
+        echo "$new_host"
+        return
+    fi
+    
+    # 如果配置的是 0.0.0.0，检查是否支持
+    if [ "$host" = "0.0.0.0" ]; then
+        if ! check_host_support "0.0.0.0"; then
+            # 尝试获取服务器实际IP
+            local server_ip=$(get_server_ip)
+            if [ -n "$server_ip" ] && check_host_support "$server_ip"; then
+                echo "⚠️  当前系统不支持 0.0.0.0，已将 $service_name 的 host 自动调整为服务器实际IP: $server_ip" >&2
+                echo "   如需使用 0.0.0.0，请检查 /etc/hosts 或系统网络配置" >&2
+                echo "$server_ip"
+                return
+            else
+                local new_host="127.0.0.1"
+                echo "⚠️  当前系统不支持 0.0.0.0，且无法获取服务器IP，已将 $service_name 的 host 自动调整为 $new_host" >&2
+                echo "   注意: 此配置仅允许本机访问！" >&2
+                echo "$new_host"
+                return
+            fi
+        else
+            # 支持 0.0.0.0，直接使用
+            echo "$host"
+            return
+        fi
+    fi
+    
+    # 检查配置的 host 是否支持
+    if ! check_host_support "$host"; then
+        local new_host=$(get_best_host_for_server)
+        echo "⚠️  配置的 host '$host' 在当前系统不可用，已将 $service_name 的 host 自动调整为 $new_host" >&2
+        echo "$new_host"
+        return
+    fi
+    
+    # 配置正常，直接使用
+    echo "$host"
+}
+
 # 读取配置（优先使用环境变量，其次配置文件，最后默认值）
 BACKEND_HOST="${AUDIOMOS_BACKEND_HOST:-$(read_nested_yaml "$CONFIG_FILE" "server" "backend" "host" "0.0.0.0")}"
 BACKEND_PORT="${AUDIOMOS_BACKEND_PORT:-$(read_nested_yaml "$CONFIG_FILE" "server" "backend" "port" "8000")}"
@@ -90,6 +240,26 @@ fi
 if [ -n "$AUDIOMOS_PORT" ]; then
     BACKEND_PORT="$AUDIOMOS_PORT"
 fi
+
+# 显示配置信息
+echo ""
+echo "================================"
+echo "  服务配置"
+echo "================================"
+echo ""
+echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
+echo "  前端: $FRONTEND_HOST:$FRONTEND_PORT"
+echo ""
+
+# 如果配置的是 auto，进行自动检测
+if [ "$BACKEND_HOST" = "auto" ]; then
+    BACKEND_HOST=$(validate_host "$BACKEND_HOST" "后端服务")
+fi
+if [ "$FRONTEND_HOST" = "auto" ]; then
+    FRONTEND_HOST=$(validate_host "$FRONTEND_HOST" "前端服务")
+fi
+
+echo ""
 
 # PID 文件路径
 BACKEND_PID_FILE="$SCRIPT_DIR/.backend.pid"
@@ -614,7 +784,44 @@ start_services() {
         BACKEND_PID=$!
         echo "$BACKEND_PID" > "$BACKEND_PID_FILE"
         echo "后端服务已启动, PID: $BACKEND_PID"
-        sleep 3
+        
+        # 等待后端服务真正启动
+        echo ""
+        echo "等待后端服务就绪..."
+        local backend_ready=false
+        local backend_check_count=0
+        local backend_max_wait=30
+        
+        while [ $backend_check_count -lt $backend_max_wait ]; do
+            # 检查进程是否还在运行
+            if ! ps -p "$BACKEND_PID" > /dev/null 2>&1; then
+                echo "❌ 后端进程已退出，启动失败"
+                echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/backend.log"
+                rm -f "$BACKEND_PID_FILE"
+                return 1
+            fi
+            
+            # 检查端口是否监听
+            if lsof -i :"$BACKEND_PORT" > /dev/null 2>&1; then
+                # 尝试访问健康检查接口
+                if curl -s "http://$BACKEND_HOST:$BACKEND_PORT/health" > /dev/null 2>&1; then
+                    echo "✅ 后端服务已就绪"
+                    backend_ready=true
+                    break
+                fi
+            fi
+            
+            sleep 1
+            backend_check_count=$((backend_check_count + 1))
+            printf "\r  检查中... %d/%d 秒" "$backend_check_count" "$backend_max_wait"
+        done
+        
+        echo ""
+        
+        if [ "$backend_ready" = false ]; then
+            echo "⚠️  后端服务启动超时，可能仍在初始化中"
+            echo "查看日志: tail -f $SCRIPT_DIR/logs/backend.log"
+        fi
     fi
 
     # 确保回到项目根目录
@@ -630,21 +837,73 @@ start_services() {
     fi
 
     # 启动前端
+    local frontend_ready=false
     if [ "$status" = "stopped" ] || [ "$status" = "backend_only" ]; then
         echo ""
         echo "启动前端服务..."
         echo "  地址: http://$FRONTEND_HOST:$FRONTEND_PORT"
         cd frontend
-        # 使用环境变量或修改 vite 配置来设置端口
-        nohup npx vite --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$SCRIPT_DIR/logs/frontend.log" 2>&1 &
+        # 设置环境变量供 Vite 配置读取
+        export AUDIOMOS_FRONTEND_HOST="$FRONTEND_HOST"
+        export AUDIOMOS_FRONTEND_PORT="$FRONTEND_PORT"
+        # 不再传递 --host 参数，让 Vite 使用配置文件中的设置
+        # Vite 配置会将 0.0.0.0 转换为 true，避免 Node.js 解析问题
+        nohup npx vite > "$SCRIPT_DIR/logs/frontend.log" 2>&1 &
         FRONTEND_PID=$!
         echo "$FRONTEND_PID" > "$FRONTEND_PID_FILE"
         echo "前端服务已启动, PID: $FRONTEND_PID"
+        
+        # 等待前端服务真正启动
+        echo ""
+        echo "等待前端服务就绪..."
+        local frontend_check_count=0
+        local frontend_max_wait=30
+        
+        while [ $frontend_check_count -lt $frontend_max_wait ]; do
+            # 检查进程是否还在运行
+            if ! ps -p "$FRONTEND_PID" > /dev/null 2>&1; then
+                echo "❌ 前端进程已退出，启动失败"
+                echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/frontend.log"
+                rm -f "$FRONTEND_PID_FILE"
+                return 1
+            fi
+            
+            # 检查端口是否监听
+            if lsof -i :"$FRONTEND_PORT" > /dev/null 2>&1; then
+                # 尝试访问前端页面
+                if curl -s "http://$FRONTEND_HOST:$FRONTEND_PORT" > /dev/null 2>&1; then
+                    echo "✅ 前端服务已就绪"
+                    frontend_ready=true
+                    break
+                fi
+            fi
+            
+            sleep 1
+            frontend_check_count=$((frontend_check_count + 1))
+            printf "\r  检查中... %d/%d 秒" "$frontend_check_count" "$frontend_max_wait"
+        done
+        
+        echo ""
+        
+        if [ "$frontend_ready" = false ]; then
+            echo "⚠️  前端服务启动超时，可能仍在初始化中"
+            echo "查看日志: tail -f $SCRIPT_DIR/logs/frontend.log"
+        fi
     fi
 
     echo ""
     echo "================================"
-    echo "  AudioMOS 启动成功!"
+    
+    # 最终状态检查
+    if [ "$backend_ready" = true ] && [ "$frontend_ready" = true ]; then
+        echo "  ✅ AudioMOS 启动成功!"
+    elif [ "$backend_ready" = true ]; then
+        echo "  ⚠️  AudioMOS 部分启动 (后端正常，前端可能仍在初始化)"
+    elif [ "$frontend_ready" = true ]; then
+        echo "  ⚠️  AudioMOS 部分启动 (前端正常，后端可能仍在初始化)"
+    else
+        echo "  ⚠️  AudioMOS 启动状态未知，请检查日志"
+    fi
     echo "================================"
     echo ""
     echo "🌐 前端访问: http://$FRONTEND_HOST:$FRONTEND_PORT"
@@ -688,7 +947,7 @@ stop_services() {
         backend_stopped=true
     fi
 
-    # 停止前端
+    # 停止前端 - 不仅通过 PID 文件，还查找所有 Vite 进程
     if [ -f "$FRONTEND_PID_FILE" ]; then
         local frontend_pid=$(cat "$FRONTEND_PID_FILE")
         if ps -p "$frontend_pid" > /dev/null 2>&1; then
@@ -707,9 +966,62 @@ stop_services() {
         frontend_stopped=true
     fi
 
+    # 额外检查：查找并停止所有项目相关的 Vite 和 Python 进程
+    echo ""
+    echo "检查残留进程..."
+
+    # 查找项目目录下的 Vite 进程
+    local vite_pids=$(pgrep -f "vite" | while read pid; do
+        if pwdx "$pid" 2>/dev/null | grep -q "$SCRIPT_DIR/frontend"; then
+            echo "$pid"
+        fi
+    done)
+
+    if [ -n "$vite_pids" ]; then
+        echo "发现残留的 Vite 进程，正在停止..."
+        for pid in $vite_pids; do
+            echo "  停止 Vite 进程 (PID: $pid)"
+            kill -9 "$pid" 2>/dev/null || true
+        done
+        frontend_stopped=true
+    fi
+
+    # 查找项目目录下的 Python 后端进程
+    local python_pids=$(pgrep -f "python.*run\.py" | while read pid; do
+        if pwdx "$pid" 2>/dev/null | grep -q "$SCRIPT_DIR/backend"; then
+            echo "$pid"
+        fi
+    done)
+
+    if [ -n "$python_pids" ]; then
+        echo "发现残留的 Python 后端进程，正在停止..."
+        for pid in $python_pids; do
+            echo "  停止 Python 进程 (PID: $pid)"
+            kill -9 "$pid" 2>/dev/null || true
+        done
+        backend_stopped=true
+    fi
+
     if ! $backend_stopped && ! $frontend_stopped; then
         echo "没有运行中的服务"
     fi
+
+    # 等待端口释放
+    echo ""
+    echo "等待端口释放..."
+    local ports=($BACKEND_PORT $FRONTEND_PORT)
+    for port in "${ports[@]}"; do
+        local count=0
+        while lsof -i :"$port" > /dev/null 2>&1 && [ $count -lt 10 ]; do
+            sleep 1
+            count=$((count + 1))
+        done
+        if [ $count -ge 10 ]; then
+            echo "⚠️  端口 $port 可能仍被占用"
+        else
+            echo "✅ 端口 $port 已释放"
+        fi
+    done
 
     echo ""
     echo "================================"

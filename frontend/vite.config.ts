@@ -78,8 +78,28 @@ const frontendConfig = getFrontendConfig()
 console.log(`前端配置: host=${frontendConfig.host}, port=${frontendConfig.port}`)
 console.log(`后端代理: http://${backendConfig.host}:${backendConfig.port}`)
 
+// 处理 host 配置，确保兼容性
+// 如果 host 是 0.0.0.0，在 Vite 中使用 true 表示监听所有接口
+// 这样可以避免 Node.js dns.lookup 解析 0.0.0.0 失败的问题
+function getViteHost(host: string): string | boolean {
+  if (host === '0.0.0.0' || host === '::') {
+    // 使用 true 表示监听所有接口，Vite 内部会正确处理
+    return true
+  }
+  if (host === 'auto') {
+    // auto 模式也监听所有接口
+    return true
+  }
+  return host
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  
+  // 获取 Vite 可用的 host 配置
+  const viteHost = getViteHost(frontendConfig.host)
+  
+  console.log(`Vite server config: host=${viteHost === true ? '0.0.0.0 (all interfaces)' : viteHost}, port=${frontendConfig.port}`)
   
   return {
     plugins: [react()],
@@ -89,7 +109,7 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      host: frontendConfig.host,
+      host: viteHost,
       port: frontendConfig.port,
       proxy: {
         '/api': {
