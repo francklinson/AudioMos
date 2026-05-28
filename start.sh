@@ -271,15 +271,25 @@ show_help() {
     echo "  AudioMOS 服务管理脚本"
     echo "================================"
     echo ""
-    echo "用法: ./start.sh [命令]"
+    echo "用法: ./start.sh [命令] [选项]"
     echo ""
     echo "命令:"
-    echo "  start    启动前后端服务"
-    echo "  stop     停止前后端服务"
-    echo "  restart  重启前后端服务"
-    echo "  status   查看服务状态"
-    echo "  models   检查模型文件状态"
-    echo "  help     显示帮助信息"
+    echo "  start           启动前后端服务（分离模式）"
+    echo "  unified         启动前后端一体服务（推荐部署）"
+    echo "  stop            停止前后端服务"
+    echo "  restart         重启前后端服务"
+    echo "  status          查看服务状态"
+    echo "  models          检查模型文件状态"
+    echo "  build-frontend  构建前端静态文件"
+    echo "  help            显示帮助信息"
+    echo ""
+    echo "选项:"
+    echo "  --port <port>   指定端口（仅 unified 模式）"
+    echo "  --host <host>   指定地址（仅 unified 模式）"
+    echo ""
+    echo "模式说明:"
+    echo "  start   - 前后端分离模式，适合开发（2个端口）"
+    echo "  unified - 前后端一体模式，适合部署（1个端口）"
     echo ""
     echo "当前配置:"
     echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
@@ -1030,6 +1040,243 @@ stop_services() {
     echo ""
 }
 
+# 构建前端静态文件
+build_frontend() {
+    echo "================================"
+    echo "  构建前端静态文件"
+    echo "================================"
+    echo ""
+    
+    # 检查前端目录
+    if [ ! -d "$SCRIPT_DIR/frontend" ]; then
+        echo "❌ 前端目录不存在: $SCRIPT_DIR/frontend"
+        return 1
+    fi
+    
+    # 激活虚拟环境
+    source "$SCRIPT_DIR/.venv/bin/activate"
+    
+    cd "$SCRIPT_DIR/frontend"
+    
+    # 检查 node_modules
+    if [ ! -d "node_modules" ]; then
+        echo "📦 安装前端依赖..."
+        npm install
+        if [ $? -ne 0 ]; then
+            echo "❌ 安装依赖失败"
+            return 1
+        fi
+    fi
+    
+    # 构建前端
+    echo "🔨 构建前端..."
+    npm run build:prod
+    
+    if [ $? -ne 0 ]; then
+        echo "❌ 构建失败"
+        return 1
+    fi
+    
+    # 检查构建输出
+    if [ -f "$SCRIPT_DIR/backend/static/index.html" ]; then
+        echo "✅ 前端构建成功"
+        echo "   输出目录: $SCRIPT_DIR/backend/static/"
+        return 0
+    else
+        echo "❌ 构建输出不存在"
+        return 1
+    fi
+}
+
+# 启动前后端一体服务
+start_unified() {
+    # 解析参数
+    local unified_port="$BACKEND_PORT"
+    local unified_host="$BACKEND_HOST"
+    
+    # 解析 --port 和 --host 参数
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --port)
+                unified_port="$2"
+                shift 2
+                ;;
+            --host)
+                unified_host="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+    
+    echo "================================"
+    echo "  启动 AudioMOS 前后端一体服务"
+    echo "================================"
+    echo ""
+    echo "项目路径: $SCRIPT_DIR"
+    echo ""
+    echo "配置:"
+    echo "  监听地址: $unified_host:$unified_port"
+    echo "  模式: 前后端一体（单服务）"
+    echo ""
+    
+    # 检查虚拟环境
+    if [ ! -d ".venv" ]; then
+        echo "正在创建虚拟环境..."
+        python3 -m venv .venv
+    fi
+    
+    # 激活虚拟环境
+    echo "激活虚拟环境..."
+    source .venv/bin/activate
+    
+    # 检查依赖
+    if ! pip show fastapi > /dev/null 2>&1; then
+        echo "正在安装Python依赖..."
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    fi
+    
+    # 检查前端是否已构建
+    if [ ! -f "$SCRIPT_DIR/backend/static/index.html" ]; then
+        echo ""
+        echo "⚠️  未检测到前端构建文件"
+        echo ""
+        
+        # 检查 node_modules
+        if [ ! -d "$SCRIPT_DIR/frontend/node_modules" ]; then
+            echo "📦 安装前端依赖..."
+            cd "$SCRIPT_DIR/frontend"
+            npm install
+            cd "$SCRIPT_DIR"
+        fi
+        
+        echo "🔨 构建前端..."
+        cd "$SCRIPT_DIR/frontend"
+        npm run build:prod
+        cd "$SCRIPT_DIR"
+        
+        if [ ! -f "$SCRIPT_DIR/backend/static/index.html" ]; then
+            echo "❌ 前端构建失败"
+            return 1
+        fi
+        echo "✅ 前端构建成功"
+    else
+        echo "✅ 检测到前端构建文件"
+    fi
+    
+    # 检查模型文件
+    echo ""
+    check_models
+    local models_status=$?
+    
+    if [ $models_status -ne 0 ]; then
+        echo ""
+        echo "⚠️  模型检查未通过,是否继续启动? (y/N)"
+        read -r response
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            echo "启动已取消"
+            return 1
+        fi
+        echo "继续启动(部分功能可能不可用)..."
+        echo ""
+    fi
+    
+    # 停止已有服务
+    stop_services > /dev/null 2>&1
+    
+    # 启动一体服务
+    echo ""
+    echo "启动服务..."
+    export AUDIOMOS_BACKEND_HOST="$unified_host"
+    export AUDIOMOS_BACKEND_PORT="$unified_port"
+    
+    cd "$SCRIPT_DIR/backend"
+    nohup python -c "
+import sys
+sys.path.insert(0, '.')
+import uvicorn
+from app.core.logging_config import logger
+
+logger.info('=' * 60)
+logger.info('AudioMOS 前后端一体模式启动')
+logger.info('=' * 60)
+logger.info(f'监听地址: $unified_host:$unified_port')
+
+uvicorn.run(
+    'app.main:app',
+    host='$unified_host',
+    port=$unified_port,
+    reload=False,
+    access_log=True
+)
+" > "$SCRIPT_DIR/logs/unified.log" 2>&1 &
+    
+    UNIFIED_PID=$!
+    echo "$UNIFIED_PID" > "$SCRIPT_DIR/.unified.pid"
+    
+    echo "服务已启动, PID: $UNIFIED_PID"
+    
+    # 等待服务就绪
+    echo ""
+    echo "等待服务就绪..."
+    local check_count=0
+    local max_wait=30
+    
+    while [ $check_count -lt $max_wait ]; do
+        if ! ps -p "$UNIFIED_PID" > /dev/null 2>&1; then
+            echo "❌ 服务进程已退出，启动失败"
+            echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/unified.log"
+            rm -f "$SCRIPT_DIR/.unified.pid"
+            return 1
+        fi
+        
+        if curl -s "http://$unified_host:$unified_port/health" > /dev/null 2>&1; then
+            echo ""
+            echo "================================"
+            echo "  ✅ AudioMOS 启动成功!"
+            echo "================================"
+            echo ""
+            echo "🌐 访问地址: http://$unified_host:$unified_port"
+            echo "📚 API文档:  http://$unified_host:$unified_port/docs"
+            echo ""
+            echo "默认登录账号:"
+            echo "  用户名: admin"
+            echo "  密码:   tp123456"
+            echo ""
+            return 0
+        fi
+        
+        sleep 1
+        check_count=$((check_count + 1))
+        printf "\r  检查中... %d/%d 秒" "$check_count" "$max_wait"
+    done
+    
+    echo ""
+    echo "⚠️  服务启动超时，可能仍在初始化中"
+    echo "查看日志: tail -f $SCRIPT_DIR/logs/unified.log"
+    return 0
+}
+
+# 停止一体服务
+stop_unified() {
+    if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
+        local pid=$(cat "$SCRIPT_DIR/.unified.pid")
+        if ps -p "$pid" > /dev/null 2>&1; then
+            echo "停止前后端一体服务 (PID: $pid)..."
+            kill "$pid" 2>/dev/null
+            sleep 2
+            if ps -p "$pid" > /dev/null 2>&1; then
+                kill -9 "$pid" 2>/dev/null
+            fi
+            echo "✅ 服务已停止"
+        fi
+        rm -f "$SCRIPT_DIR/.unified.pid"
+    fi
+}
+
 # 重启服务
 restart_services() {
     echo "================================"
@@ -1037,6 +1284,7 @@ restart_services() {
     echo "================================"
     echo ""
     stop_services
+    stop_unified
     sleep 2
     start_services
 }
@@ -1049,17 +1297,34 @@ case "${1:-start}" in
     start)
         start_services
         ;;
+    unified)
+        shift
+        start_unified "$@"
+        ;;
     stop)
         stop_services
+        stop_unified
         ;;
     restart)
         restart_services
         ;;
     status)
         show_status
+        # 检查一体服务状态
+        if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
+            local pid=$(cat "$SCRIPT_DIR/.unified.pid")
+            if ps -p "$pid" > /dev/null 2>&1; then
+                echo ""
+                echo "前后端一体服务:"
+                echo "  ✅ 运行中 (PID: $pid)"
+            fi
+        fi
         ;;
     models)
         check_models
+        ;;
+    build-frontend)
+        build_frontend
         ;;
     help|--help|-h)
         show_help

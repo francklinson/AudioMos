@@ -5,6 +5,8 @@ AudioMOS FastAPI 主应用入口
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
@@ -142,6 +144,59 @@ async def health_check():
 # 注册路由
 app.include_router(auth.router, prefix="/api")
 app.include_router(mos.router, prefix="/api")
+
+
+# ========== 前后端一体模式：托管前端静态文件 ==========
+# 检查是否存在前端构建文件
+STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
+
+if os.path.exists(STATIC_DIR) and os.path.exists(INDEX_HTML):
+    logger.info("检测到前端构建文件，启用前后端一体模式")
+    
+    # 挂载静态文件目录
+    app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
+    
+    # 其他静态资源目录
+    for static_subdir in ["images", "fonts", "icons"]:
+        subdir_path = os.path.join(STATIC_DIR, static_subdir)
+        if os.path.exists(subdir_path):
+            app.mount(f"/{static_subdir}", StaticFiles(directory=subdir_path), name=static_subdir)
+    
+    # 根路径返回前端首页
+    @app.get("/")
+    async def serve_index():
+        return FileResponse(INDEX_HTML)
+    
+    # 所有其他路径也返回前端首页（支持前端路由）
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # 排除 API 路径
+        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+            return {"detail": "Not Found"}
+        
+        # 检查是否是静态文件请求
+        static_file = os.path.join(STATIC_DIR, full_path)
+        if os.path.exists(static_file) and os.path.isfile(static_file):
+            return FileResponse(static_file)
+        
+        # 否则返回 index.html（前端路由处理）
+        return FileResponse(INDEX_HTML)
+    
+    logger.info(f"静态文件目录: {STATIC_DIR}")
+else:
+    logger.info("未检测到前端构建文件，仅 API 模式运行")
+    
+    # 原有的根路径响应
+    @app.get("/")
+    async def root():
+        return {
+            "name": "AudioMOS API",
+            "version": "1.0.0",
+            "description": "音频质量评估系统",
+            "docs": "/docs",
+            "mode": "api-only"
+        }
 
 
 if __name__ == "__main__":
