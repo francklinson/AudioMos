@@ -274,22 +274,22 @@ show_help() {
     echo "用法: ./start.sh [命令] [选项]"
     echo ""
     echo "命令:"
-    echo "  start           启动前后端服务（分离模式）"
-    echo "  unified         启动前后端一体服务（推荐部署）"
-    echo "  stop            停止前后端服务"
-    echo "  restart         重启前后端服务"
+    echo "  start           启动服务（默认前后端一体模式）"
+    echo "  dev             启动前后端分离模式（适合开发）"
+    echo "  stop            停止所有服务"
+    echo "  restart         重启服务"
     echo "  status          查看服务状态"
     echo "  models          检查模型文件状态"
     echo "  build-frontend  构建前端静态文件"
     echo "  help            显示帮助信息"
     echo ""
     echo "选项:"
-    echo "  --port <port>   指定端口（仅 unified 模式）"
-    echo "  --host <host>   指定地址（仅 unified 模式）"
+    echo "  --port <port>   指定端口"
+    echo "  --host <host>   指定地址"
     echo ""
     echo "模式说明:"
-    echo "  start   - 前后端分离模式，适合开发（2个端口）"
-    echo "  unified - 前后端一体模式，适合部署（1个端口）"
+    echo "  start - 前后端一体模式（单服务单端口，推荐部署）"
+    echo "  dev   - 前后端分离模式（2个端口，适合开发）"
     echo ""
     echo "当前配置:"
     echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
@@ -1295,18 +1295,28 @@ mkdir -p "$SCRIPT_DIR/logs"
 # 主逻辑
 case "${1:-start}" in
     start)
-        start_services
-        ;;
-    unified)
+        # 默认使用前后端一体模式（适合部署）
         shift
         start_unified "$@"
+        ;;
+    dev)
+        # 使用前后端分离模式（适合开发）
+        echo "================================"
+        echo "  启动开发模式（前后端分离）"
+        echo "================================"
+        echo ""
+        start_services
         ;;
     stop)
         stop_services
         stop_unified
         ;;
     restart)
-        restart_services
+        stop_services
+        stop_unified
+        sleep 2
+        shift
+        start_unified "$@"
         ;;
     status)
         show_status
