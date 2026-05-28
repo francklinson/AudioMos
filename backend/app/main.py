@@ -116,19 +116,6 @@ app.add_middleware(
 )
 
 
-@app.get("/")
-async def root():
-    """
-    根路径 - 服务信息
-    """
-    return {
-        "name": "AudioMOS API",
-        "version": "1.0.0",
-        "description": "音频质量评估系统",
-        "docs": "/docs"
-    }
-
-
 @app.get("/health")
 async def health_check():
     """
@@ -148,7 +135,9 @@ app.include_router(mos.router, prefix="/api")
 
 # ========== 前后端一体模式：托管前端静态文件 ==========
 # 检查是否存在前端构建文件
-STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+# 使用绝对路径，确保在任何工作目录下都能正确找到静态文件
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+STATIC_DIR = os.path.join(_PROJECT_ROOT, "backend", "static")
 INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
 
 if os.path.exists(STATIC_DIR) and os.path.exists(INDEX_HTML):

@@ -655,7 +655,7 @@ const Home: React.FC = () => {
                     onChange: (page, pageSize) => {
                       setTaskPagination({ current: page, pageSize: pageSize || 5 });
                     },
-                    onShowSizeChange: (current, size) => {
+                    onShowSizeChange: (_current, size) => {
                       setTaskPagination({ current: 1, pageSize: size });
                     },
                   }}
@@ -719,7 +719,7 @@ const Home: React.FC = () => {
                 onChange: (page, pageSize) => {
                   setResultPagination({ current: page, pageSize: pageSize || 10 });
                 },
-                onShowSizeChange: (current, size) => {
+                onShowSizeChange: (_current, size) => {
                   setResultPagination({ current: 1, pageSize: size });
                 },
               }}
