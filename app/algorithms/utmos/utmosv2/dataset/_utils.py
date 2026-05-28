@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 def load_audio(cfg: Config, file: Path) -> np.ndarray:
     try:
-        y, sr = librosa.load(file, sr=None)
+        y, sr = librosa.load(str(file), sr=None)
         y = librosa.resample(y, orig_sr=sr, target_sr=cfg.sr)
     except Exception:
         y = np.load(file)

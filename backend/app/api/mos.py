@@ -37,22 +37,35 @@ sys.path.insert(0, os.path.join(project_root, 'app', 'algorithms'))
 sys.path.insert(0, os.path.join(project_root, 'app', 'core'))
 
 # 优先使用优化版,如果失败则回退到原版
+# 注意: 优化版模块已从 app/algorithms/tcf/tcf_calculator.py 迁移到 app/core/calculator/mos_calculator.py
 try:
-    from tcf.tcf_calculator import (
+    from calculator.mos_calculator import (
         compute_mos_scores_optimized,
         get_performance_report,
         reset_performance_tracking,
         parallel_compute
     )
     USE_OPTIMIZED = True
-    logger.info("✓ 使用优化版MOS计算模块")
+    logger.info("✓ 使用优化版MOS计算模块 (from app.core.calculator)")
 except ImportError as e:
-    logger.warning(f"优化版MOS模块加载失败,使用原版: {e}")
-    from mos_calculator import (
-        ToneColorFidelityScore, DNSMOScore, NisqaMosScore,
-        RefScore, WerScore, ScoreqScore, can_convert_to_float
-    )
-    USE_OPTIMIZED = False
+    logger.warning(f"优化版MOS模块加载失败,尝试旧路径: {e}")
+    try:
+        # 尝试旧路径（向后兼容）
+        from tcf.tcf_calculator import (
+            compute_mos_scores_optimized,
+            get_performance_report,
+            reset_performance_tracking,
+            parallel_compute
+        )
+        USE_OPTIMIZED = True
+        logger.info("✓ 使用优化版MOS计算模块 (from tcf - 已弃用)")
+    except ImportError as e2:
+        logger.warning(f"优化版MOS模块加载失败,使用原版: {e2}")
+        from mos_calculator import (
+            ToneColorFidelityScore, DNSMOScore, NisqaMosScore,
+            RefScore, WerScore, ScoreqScore, can_convert_to_float
+        )
+        USE_OPTIMIZED = False
 
 try:
     from audio_cut import cut_all_audio_files_from_list

@@ -1205,7 +1205,7 @@ from app.core.logging_config import logger
 logger.info('=' * 60)
 logger.info('AudioMOS 前后端一体模式启动')
 logger.info('=' * 60)
-logger.info(f'监听地址: $unified_host:$unified_port')
+logger.info('监听地址: ' + '$unified_host' + ':' + str($unified_port))
 
 uvicorn.run(
     'app.main:app',
