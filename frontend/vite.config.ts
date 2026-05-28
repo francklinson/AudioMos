@@ -75,8 +75,20 @@ function getFrontendConfig() {
 const backendConfig = getBackendConfig()
 const frontendConfig = getFrontendConfig()
 
+// 处理后端代理地址：如果 host 是 0.0.0.0 或 auto，使用 localhost 进行代理
+// 因为 Node.js 的 HTTP 代理无法直接连接到 0.0.0.0
+function getProxyTarget(host: string, port: number): string {
+  if (host === '0.0.0.0' || host === 'auto' || host === '::') {
+    return `http://localhost:${port}`
+  }
+  return `http://${host}:${port}`
+}
+
+const proxyTarget = getProxyTarget(backendConfig.host, backendConfig.port)
+
 console.log(`前端配置: host=${frontendConfig.host}, port=${frontendConfig.port}`)
-console.log(`后端代理: http://${backendConfig.host}:${backendConfig.port}`)
+console.log(`后端配置: host=${backendConfig.host}, port=${backendConfig.port}`)
+console.log(`后端代理: ${proxyTarget}`)
 
 // 处理 host 配置，确保兼容性
 // 如果 host 是 0.0.0.0，在 Vite 中使用 true 表示监听所有接口
@@ -113,14 +125,16 @@ export default defineConfig(({ mode }) => {
       port: frontendConfig.port,
       proxy: {
         '/api': {
-          target: `http://${backendConfig.host}:${backendConfig.port}`,
+          target: proxyTarget,
           changeOrigin: true,
         },
       },
     },
     define: {
       // 将配置注入到前端
-      __BACKEND_URL__: JSON.stringify(`http://${backendConfig.host}:${backendConfig.port}`),
+      // 注意：这里使用 window.location 相关的逻辑在前端动态构建 URL
+      // 避免硬编码 host，确保在不同部署环境下都能正常工作
+      __BACKEND_URL__: JSON.stringify(`http://${backendConfig.host === '0.0.0.0' || backendConfig.host === 'auto' ? 'localhost' : backendConfig.host}:${backendConfig.port}`),
     },
   }
 })
