@@ -1016,7 +1016,15 @@ stop_services() {
         echo "没有运行中的服务"
     fi
 
-    # 等待端口释放
+    echo ""
+    echo "================================"
+    echo "  分离模式服务已停止"
+    echo "================================"
+    echo ""
+}
+
+# 等待端口释放
+wait_for_ports() {
     echo ""
     echo "等待端口释放..."
     local ports=($BACKEND_PORT $FRONTEND_PORT)
@@ -1032,12 +1040,6 @@ stop_services() {
             echo "✅ 端口 $port 已释放"
         fi
     done
-
-    echo ""
-    echo "================================"
-    echo "  服务已停止"
-    echo "================================"
-    echo ""
 }
 
 # 构建前端静态文件
@@ -1262,18 +1264,54 @@ uvicorn.run(
 
 # 停止一体服务
 stop_unified() {
+    local pid_stopped=false
+    
     if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
         local pid=$(cat "$SCRIPT_DIR/.unified.pid")
         if ps -p "$pid" > /dev/null 2>&1; then
             echo "停止前后端一体服务 (PID: $pid)..."
+            # 先尝试温和终止
             kill "$pid" 2>/dev/null
-            sleep 2
+            # 等待进程结束，最多等待5秒
+            local count=0
+            while ps -p "$pid" > /dev/null 2>&1 && [ $count -lt 5 ]; do
+                sleep 1
+                count=$((count + 1))
+            done
+            # 如果还在运行，强制终止
             if ps -p "$pid" > /dev/null 2>&1; then
+                echo "  进程未响应，强制终止..."
                 kill -9 "$pid" 2>/dev/null
+                sleep 1
             fi
-            echo "✅ 服务已停止"
+            # 验证进程是否已终止
+            if ps -p "$pid" > /dev/null 2>&1; then
+                echo "⚠️  警告: 进程 $pid 可能仍在运行"
+            else
+                echo "✅ 服务已停止"
+                pid_stopped=true
+            fi
+        else
+            pid_stopped=true
         fi
         rm -f "$SCRIPT_DIR/.unified.pid"
+    fi
+    
+    # 额外检查：查找并停止所有项目相关的 Python 一体服务进程
+    if [ "$pid_stopped" = false ]; then
+        local python_pids=$(pgrep -f "uvicorn.*app.main:app" | while read pid; do
+            if pwdx "$pid" 2>/dev/null | grep -q "$SCRIPT_DIR/backend"; then
+                echo "$pid"
+            fi
+        done)
+        
+        if [ -n "$python_pids" ]; then
+            echo "发现残留的一体服务进程，正在停止..."
+            for pid in $python_pids; do
+                echo "  停止 Python 进程 (PID: $pid)"
+                kill -9 "$pid" 2>/dev/null || true
+            done
+        fi
     fi
 }
 
@@ -1310,10 +1348,17 @@ case "${1:-start}" in
     stop)
         stop_services
         stop_unified
+        wait_for_ports
+        echo ""
+        echo "================================"
+        echo "  服务已停止"
+        echo "================================"
+        echo ""
         ;;
     restart)
         stop_services
         stop_unified
+        wait_for_ports
         sleep 2
         shift
         start_unified "$@"

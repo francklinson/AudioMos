@@ -59,7 +59,8 @@ logging:
   # 日志级别: DEBUG, INFO, WARNING, ERROR
   level: "INFO"
   # 日志文件路径(相对于项目根目录)
-  file: "./logs/backend.log"
+  # 注意: 前后端一体模式使用 unified.log，分离模式使用 backend.log
+  file: "./logs/unified.log"
   # 日志文件最大大小(MB)
   max_size: 10
   # 保留的日志文件数量
