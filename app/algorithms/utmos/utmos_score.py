@@ -30,38 +30,38 @@ torch.backends.cudnn.enabled = True
 
 class UTMOSCore:
     """UTMOS评分核心类"""
-    
+
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
         self._log("=" * 60)
         self._log("[UTMOS] 开始初始化UTMOS模型")
         self._log("=" * 60)
-        
+
         if not UTMOS_AVAILABLE:
             raise ImportError("utmosv2未安装")
-        
+
         # 记录开始时间
         init_start = time.time()
-        
+
         # 检查CUDA可用性
         self._log("\n[UTMOS] 步骤1/3: 检查运行环境")
         if torch.cuda.is_available():
-            device = 'cuda'
+            self.device = 'cuda'
             device_name = torch.cuda.get_device_name(0)
             self._log(f"  ✓ CUDA可用: {device_name}")
-            self._log(f"  ✓ 使用设备: {device}")
+            self._log(f"  ✓ 使用设备: {self.device}")
         else:
-            device = 'cpu'
+            self.device = 'cpu'
             self._log(f"  ⚠ CUDA不可用，使用CPU模式")
-            self._log(f"  ✓ 使用设备: {device}")
-        
+            self._log(f"  ✓ 使用设备: {self.device}")
+
         # 检查模型路径
         self._log("\n[UTMOS] 步骤2/3: 检查模型路径")
         from utmosv2.utils._constants import _UTMOSV2_CHACHE
         model_dir = _UTMOSV2_CHACHE / "models" / "fusion_stage3"
         self._log(f"  模型缓存路径: {_UTMOSV2_CHACHE}")
         self._log(f"  模型目录: {model_dir}")
-        
+
         if model_dir.exists():
             model_files = list(model_dir.glob("*.pth"))
             self._log(f"  ✓ 找到 {len(model_files)} 个模型文件:")
@@ -70,17 +70,17 @@ class UTMOSCore:
                 self._log(f"    - {f.name} ({size_mb:.1f} MB)")
         else:
             self._log(f"  ⚠ 模型目录不存在，将尝试下载")
-        
+
         # 创建模型
         self._log("\n[UTMOS] 步骤3/3: 创建UTMOSv2模型")
         self._log(f"  配置: fusion_stage3")
         self._log(f"  使用fold: 0")
-        
+
         try:
-            self.model = utmosv2.create_model(pretrained=True, device=device)
+            self.model = utmosv2.create_model(pretrained=True, device=self.device)
             init_time = time.time() - init_start
             self._log(f"\n✓ UTMOS模型初始化完成 (耗时: {init_time:.2f}s)")
-            self._log(f"  设备: {device}")
+            self._log(f"  设备: {self.device}")
             self._log(f"  模型类型: SSLMultiSpecExtModelV2")
             self.model.eval()
         except Exception as e:
@@ -116,9 +116,9 @@ class UTMOSCore:
             file_size = os.path.getsize(file_path) / 1024  # KB
             self._log(f"  文件大小: {file_size:.1f} KB")
             
-            # 预测
+            # 预测 - 使用初始化时的设备
             predict_start = time.time()
-            mos = self.model.predict(input_path=file_path, verbose=False)
+            mos = self.model.predict(input_path=file_path, device=self.device, verbose=False)
             predict_time = time.time() - predict_start
             
             self._log(f"  ✓ 预测完成: MOS={mos:.4f} (耗时: {predict_time:.3f}s)")

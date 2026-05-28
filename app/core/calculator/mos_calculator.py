@@ -1038,14 +1038,24 @@ class ParallelMOSCompute:
             return {'scoreq': [0.0]*file_num}
 
         def compute_utmos():
+            print(f"[DEBUG UTMOS] 开始计算UTMOS, models中是否有utmos: {'utmos' in self.models}")
             try:
                 if 'utmos' in self.models:
-                    return self.models['utmos'].predict_files(audio_files)
+                    print(f"[DEBUG UTMOS] 调用predict_files, 文件数: {len(audio_files)}")
+                    result = self.models['utmos'].predict_files(audio_files)
+                    print(f"[DEBUG UTMOS] predict_files返回: {result}")
+                    return result
+                else:
+                    print(f"[DEBUG UTMOS] models中没有utmos, 可用models: {list(self.models.keys())}")
             except Exception as e:
-                print(f"UTMOS计算失败: {e}")
+                print(f"[DEBUG UTMOS] UTMOS计算失败: {e}")
+                import traceback
+                traceback.print_exc()
             return {'utmos': [0.0]*file_num}
 
         # 使用线程池并行执行
+        print(f"[DEBUG] 开始并行计算无参考指标: {selected_metrics}")
+        print(f"[DEBUG] 可用models: {list(self.models.keys())}")
         try:
             with ThreadPoolExecutor(max_workers=3) as executor:
                 futures = []
@@ -1054,12 +1064,18 @@ class ParallelMOSCompute:
                 if 'scoreq' in selected_metrics:
                     futures.append(('scoreq', executor.submit(compute_scoreq)))
                 if 'utmos' in selected_metrics:
+                    print(f"[DEBUG] 提交UTMOS计算任务")
                     futures.append(('utmos', executor.submit(compute_utmos)))
 
                 for name, future in futures:
-                    results.update(future.result())
+                    print(f"[DEBUG] 获取{name}结果...")
+                    result = future.result()
+                    print(f"[DEBUG] {name}结果: {result}")
+                    results.update(result)
         except Exception as e:
-            print(f"并行计算无参考指标失败: {e}")
+            print(f"[DEBUG] 并行计算无参考指标失败: {e}")
+            import traceback
+            traceback.print_exc()
 
         # 确保有默认值 - 只填充缺失的键，不覆盖已有值
         if 'dnsmos' in selected_metrics:
@@ -1119,13 +1135,16 @@ class ParallelMOSCompute:
                 results.update({'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num})
         
         if 'wer' in metrics:
-            print(f"[compute_all_with_ref] 计算WER...")
+            print(f"[DEBUG WER] 计算WER...")
+            print(f"[DEBUG WER] models中是否有wer: {'wer' in self.models}")
             try:
                 if 'wer' in self.models:
+                    print(f"[DEBUG WER] 调用get_wer, 文件数: {len(audio_files)}")
                     wer_scores = self.models['wer'].get_wer(audio_files)
-                    print(f"[compute_all_with_ref] WER返回: {wer_scores}")
+                    print(f"[DEBUG WER] WER返回: {wer_scores}")
                     results.update(wer_scores)
                 else:
+                    print(f"[DEBUG WER] models中没有wer, 可用models: {list(self.models.keys())}")
                     results.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
             except Exception as e:
                 print(f"[compute_all_with_ref] WER计算失败: {e}")
