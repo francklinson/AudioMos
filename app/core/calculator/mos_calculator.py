@@ -18,7 +18,9 @@ from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
 # 添加本地包路径 - 从 algorithms 目录导入
-_ALGORITHMS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'algorithms')
+# 当前文件位置: app/core/calculator/mos_calculator.py
+# 需要到达: app/algorithms/
+_ALGORITHMS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'algorithms')
 sys.path.insert(0, _ALGORITHMS_DIR)
 sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'speechmetrics'))
 sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'nisqa'))
