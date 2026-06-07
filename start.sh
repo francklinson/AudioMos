@@ -701,7 +701,239 @@ check_models() {
     fi
     echo ""
 
+    # ========================
+    # 10. 检查降噪算法环境与模型
+    # ========================
+    echo "🔍 检查降噪算法环境与模型..."
+    echo "   说明: 包含 SpeechBrain / ClearerVoice / DCCRN / FullSubNet 等"
+    echo ""
+
+    local denoise_all_ok=true
+
+    # 10a. 检查 Python 依赖库
+    echo "   📦 依赖库检查:"
+    local denoise_deps=(
+        "speechbrain:SpeechBrain 深度学习语音工具包"
+        "torch:PyTorch 深度学习框架"
+        "librosa:音频信号处理库"
+        "soundfile:音频文件读写"
+        "onnxruntime:ONNX Runtime 推理引擎"
+        "pesq:PESQ 语音质量评估"
+        "pystoi:STOI 短时可懂度评估"
+    )
+    for dep_entry in "${denoise_deps[@]}"; do
+        local dep_module="${dep_entry%%:*}"
+        local dep_desc="${dep_entry##*:}"
+        if source .venv/bin/activate && python -c "import $dep_module" 2>/dev/null; then
+            echo "      ✅ $dep_module ($dep_desc)"
+        else
+            echo "      ❌ $dep_module ($dep_desc)"
+            denoise_all_ok=false
+            all_ready=false
+        fi
+    done
+
+    # modelscope 单独检查（已知有 datasets 兼容性问题）
+    if source .venv/bin/activate && python -c "
+import datasets
+if not hasattr(datasets, 'LargeList'):
+    class _LargeListStub(list): pass
+    datasets.LargeList = _LargeListStub
+import modelscope
+print('OK')
+" 2>/dev/null | grep -q "OK"; then
+        echo "      ✅ modelscope (ModelScope 模型库)"
+    else
+        echo "      ⚠️  modelscope (ModelScope 模型库) — 已打兼容补丁，按需使用"
+    fi
+
+    echo ""
+
+    # 10b. 检查 SpeechBrain 模型
+    echo "   🧠 SpeechBrain 降噪模型:"
+    local sb_model_dir="$SCRIPT_DIR/models/speechbrain"
+
+    local sb_models=(
+        "metricgan-plus-voicebank/enhance_model.ckpt:MetricGAN+ 语音增强"
+        "sepformer-wham-enhancement/encoder.ckpt:SepFormer WHAM 语音分离"
+        "sepformer-whamr-enhancement/encoder.ckpt:SepFormer WHAMR 语音分离"
+    )
+    for model_entry in "${sb_models[@]}"; do
+        local model_file="${model_entry%%:*}"
+        local model_desc="${model_entry##*:}"
+        local full_path="$sb_model_dir/$model_file"
+        if [ -f "$full_path" ]; then
+            local model_size=$(du -sh "$(dirname "$full_path")" 2>/dev/null | cut -f1)
+            echo "      ✅ $model_desc ($model_size)"
+        else
+            echo "      ⚠️  $model_desc — 首次使用自动下载"
+        fi
+    done
+    echo ""
+
+    # 10c. 检查 ClearerVoice 模型 (FRCRN/MossFormer/MossFormer2)
+    echo "   🎙️  ClearerVoice 降噪模型 (阿里达摩院):"
+    local cv_model_dir="$SCRIPT_DIR/models/clearervoice"
+
+    local cv_models=(
+        "frcrn/configuration.json:FRCRN 实时语音增强"
+        "mossformer/mossformer_separation_16k.pth:MossFormer 语音分离"
+        "mossformer2/configuration.json:MossFormer2 语音分离"
+    )
+    local cv_ok=true
+    for model_entry in "${cv_models[@]}"; do
+        local model_file="${model_entry%%:*}"
+        local model_desc="${model_entry##*:}"
+        local full_path="$cv_model_dir/$model_file"
+        if [ -f "$full_path" ]; then
+            local model_size=$(du -sh "$(dirname "$full_path")" 2>/dev/null | cut -f1)
+            echo "      ✅ $model_desc ($model_size)"
+        else
+            echo "      ⚠️  $model_desc — 首次使用需从 ModelScope 下载"
+            cv_ok=false
+        fi
+    done
+
+    # 检查 ClearerVoice 回退模型 (SpeechBrain)
+    if [ -d "$cv_model_dir/speechbrain_fallback" ] && [ "$(ls -A "$cv_model_dir/speechbrain_fallback" 2>/dev/null)" ]; then
+        echo "      ✅ SpeechBrain 回退模型已缓存"
+    fi
+
+    if ! $cv_ok; then
+        echo "      ℹ️  缺失模型将在首次调用时自动在线下载"
+    fi
+    echo ""
+
+    # 10d. 检查 DCCRN 模型
+    echo "   🔄 DCCRN 降噪模型:"
+    local dccrn_model_dir="$SCRIPT_DIR/models/dccrn"
+    local dccrn_ok=false
+
+    if [ -f "$dccrn_model_dir/sb/enhance_model.ckpt" ]; then
+        local sb_size=$(du -sh "$dccrn_model_dir/sb" 2>/dev/null | cut -f1)
+        echo "      ✅ SpeechBrain 替代模型 (MetricGAN+) ($sb_size)"
+        dccrn_ok=true
+    fi
+
+    # 检查 ModelScope 本地模型
+    if [ -d "$dccrn_model_dir/modelscope" ] && [ "$(ls -A "$dccrn_model_dir/modelscope" 2>/dev/null)" ]; then
+        local ms_size=$(du -sh "$dccrn_model_dir/modelscope" 2>/dev/null | cut -f1)
+        echo "      ✅ ModelScope 本地模型 ($ms_size)"
+        dccrn_ok=true
+    fi
+
+    if [ -d "$dccrn_model_dir/huggingface" ] && [ "$(ls -A "$dccrn_model_dir/huggingface" 2>/dev/null)" ]; then
+        local hf_size=$(du -sh "$dccrn_model_dir/huggingface" 2>/dev/null | cut -f1)
+        echo "      ✅ HuggingFace 本地模型 ($hf_size)"
+        dccrn_ok=true
+    fi
+
+    if ! $dccrn_ok; then
+        echo "      ⚠️  DCCRN 专用模型缺失，将回退到 MetricGAN+/谱减法"
+    fi
+    echo ""
+
+    # 10e. 检查 FullSubNet 模型
+    echo "   🌐 FullSubNet 降噪模型:"
+    local fsn_model_dir="$SCRIPT_DIR/models/fullsubnet"
+    local fsn_ok=false
+
+    if [ -f "$fsn_model_dir/speechbrain/enhance_model.ckpt" ]; then
+        local sb_size=$(du -sh "$fsn_model_dir/speechbrain" 2>/dev/null | cut -f1)
+        echo "      ✅ SpeechBrain 替代模型 (MetricGAN+) ($sb_size)"
+        fsn_ok=true
+    fi
+
+    if [ -f "$fsn_model_dir/wham/encoder.ckpt" ]; then
+        local wham_size=$(du -sh "$fsn_model_dir/wham" 2>/dev/null | cut -f1)
+        echo "      ✅ SepFormer WHAM 替代模型 ($wham_size)"
+        fsn_ok=true
+    fi
+
+    if ! $fsn_ok; then
+        echo "      ⚠️  FullSubNet 专用模型缺失 (HF上不存在)，使用替代模型"
+    fi
+    echo ""
+
+    # 10f. 检查降噪评估模块依赖
+    echo "   📊 降噪评估模块依赖:"
+    local eval_deps=(
+        "pesq:PESQ 有参考语音质量评估"
+        "pystoi:STOI 短时客观可懂度"
+    )
+    for dep_entry in "${eval_deps[@]}"; do
+        local dep_module="${dep_entry%%:*}"
+        local dep_desc="${dep_entry##*:}"
+        if source .venv/bin/activate && python -c "import $dep_module" 2>/dev/null; then
+            echo "      ✅ $dep_module ($dep_desc)"
+        else
+            echo "      ❌ $dep_module ($dep_desc)"
+            denoise_all_ok=false
+            all_ready=false
+        fi
+    done
+
+    # UTMOS (已在上面检查过，这里确认模块路径)
+    local utmos_denoise_ok=true
+    if source .venv/bin/activate && python -c "
+import sys
+sys.path.insert(0, '$SCRIPT_DIR/app/algorithms')
+from utmos.utmos_score import UTMOSCore
+print('OK')
+" 2>/dev/null | grep -q "OK"; then
+        echo "      ✅ UTMOS 降噪评估模块"
+    else
+        echo "      ⚠️  UTMOS 评估模块不可用"
+        utmos_denoise_ok=false
+    fi
+
+    # DNSMOS ONNX (降噪评估用)
+    local dnsmos_onnx_dir="$SCRIPT_DIR/app/algorithms/dnsmos"
+    if [ -f "$dnsmos_onnx_dir/pDNSMOS/sig_bak_ovr.onnx" ] && [ -f "$dnsmos_onnx_dir/DNSMOS/model_v8.onnx" ]; then
+        echo "      ✅ DNSMOS ONNX 模型 (降噪评估)"
+    else
+        echo "      ⚠️  DNSMOS ONNX 模型不可用"
+        utmos_denoise_ok=false
+    fi
+
+    # NISQA 降噪评估
+    local nisqa_weight_path="$SCRIPT_DIR/app/algorithms/nisqa/weights/nisqa_3000.tar"
+    if [ -f "$nisqa_weight_path" ]; then
+        local nisqa_weight_size=$(du -sh "$nisqa_weight_path" 2>/dev/null | cut -f1)
+        echo "      ✅ NISQA 权重 (降噪评估, $nisqa_weight_size)"
+    else
+        echo "      ⚠️  NISQA 权重不可用"
+    fi
+    echo ""
+
+    # 10g. CUDA 检查
+    echo "   🖥️  CUDA 设备检查:"
+    if source .venv/bin/activate && python -c "
+import torch
+print(f'CUDA:{torch.cuda.is_available()}:{torch.cuda.device_count()}:{torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')
+" 2>/dev/null | grep -q "CUDA:True"; then
+        local cuda_info=$(source .venv/bin/activate && python -c "
+import torch
+print(f'{torch.cuda.get_device_name(0)} (CUDA {torch.version.cuda})')
+" 2>/dev/null)
+        echo "      ✅ CUDA 可用: $cuda_info"
+    else
+        echo "      ⚠️  CUDA 不可用，降噪算法将以 CPU 模式运行 (速度较慢)"
+    fi
+    echo ""
+
+    # 降噪汇总
+    echo "   降噪算法汇总:"
+    if $denoise_all_ok; then
+        echo "      ✅ 降噪算法核心依赖已就绪"
+    else
+        echo "      ⚠️  部分降噪算法依赖缺失 (详见上方检查)"
+    fi
+    echo ""
+
+    # ========================
     # 汇总
+    # ========================
     echo "================================"
     if $all_ready; then
         echo "  ✅ 所有核心模型已就绪"
@@ -709,7 +941,7 @@ check_models() {
         echo "  ⚠️  部分模型缺失"
         echo ""
         echo "请运行以下命令下载缺失的模型:"
-        echo "  python download_models.py"
+        echo "  python download_denoise_models.py"
     fi
     echo "================================"
     echo ""

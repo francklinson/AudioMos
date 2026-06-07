@@ -475,6 +475,12 @@ async def process_audio_task(queue_task):
         df_data = {"文件名": file_names}
 
         logger.info(f"生成报告 - 文件数量: {len(file_names)}, 结果项数量: {len(results)}, 选择指标: {selected_metrics}")
+        
+        # 调试：打印results中的tcf值
+        if 'tcf' in results:
+            logger.info(f"【调试】results中tcf的值: {results['tcf']}")
+        else:
+            logger.info(f"【调试】results中不包含tcf键，所有键: {list(results.keys())}")
 
         # 定义指标名称映射（结果键名 -> 显示名称）
         metric_name_map = {
@@ -623,6 +629,12 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
             # 保存性能统计到全局
             performance_stats['last_report'] = perf_report
             performance_stats['total_time'] = elapsed
+
+            # 调试：检查返回结果中的tcf
+            if 'tcf' in result:
+                logger.info(f"【调试】compute_mos_scores_optimized返回的tcf: {result['tcf']}")
+            else:
+                logger.info(f"【调试】compute_mos_scores_optimized返回的结果中没有tcf键")
 
             return result
         except Exception as e:

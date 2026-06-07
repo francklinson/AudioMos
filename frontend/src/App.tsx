@@ -4,6 +4,8 @@ import { Spin } from 'antd';
 import { useAuth } from './contexts/AuthContext';
 import Login from './pages/Login';
 import Home from './pages/Home';
+import Denoise from './pages/Denoise';
+import Restoration from './pages/Restoration';
 
 // 配置React Router未来标志
 const routerFutureConfig = {
@@ -76,6 +78,22 @@ const App: React.FC = () => {
           element={
             <ProtectedRoute>
               <Home />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/denoise"
+          element={
+            <ProtectedRoute>
+              <Denoise />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/restoration"
+          element={
+            <ProtectedRoute>
+              <Restoration />
             </ProtectedRoute>
           }
         />

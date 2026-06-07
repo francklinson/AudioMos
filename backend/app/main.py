@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.logging_config import logger
-from app.api import auth, mos
+from app.api import auth, mos, denoise, restoration
 
 
 @asynccontextmanager
@@ -58,6 +58,28 @@ async def lifespan(app: FastAPI):
         logger.info("  ✅ MOS模型初始化成功")
     except Exception as e:
         logger.error(f"  ❌ MOS模型初始化失败: {e}")
+        import traceback
+        logger.error(f"  错误详情: {traceback.format_exc()}")
+    
+    # 初始化降噪算法
+    logger.info("[降噪算法初始化]")
+    try:
+        logger.info("  正在初始化降噪算法...")
+        denoise.init_denoisers()
+        logger.info("  ✅ 降噪算法初始化成功")
+    except Exception as e:
+        logger.error(f"  ❌ 降噪算法初始化失败: {e}")
+        import traceback
+        logger.error(f"  错误详情: {traceback.format_exc()}")
+
+    # 初始化音频修复算法
+    logger.info("[音频修复算法初始化]")
+    try:
+        logger.info("  正在初始化音频修复算法...")
+        restoration.init_restoration()
+        logger.info("  ✅ 音频修复算法初始化成功")
+    except Exception as e:
+        logger.error(f"  ❌ 音频修复算法初始化失败: {e}")
         import traceback
         logger.error(f"  错误详情: {traceback.format_exc()}")
     
@@ -131,6 +153,8 @@ async def health_check():
 # 注册路由
 app.include_router(auth.router, prefix="/api")
 app.include_router(mos.router, prefix="/api")
+app.include_router(denoise.router, prefix="/api")
+app.include_router(restoration.router, prefix="/api")
 
 
 # ========== 前后端一体模式：托管前端静态文件 ==========

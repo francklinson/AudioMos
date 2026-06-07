@@ -1,0 +1,430 @@
+"""
+降噪算法标准测评基准
+
+提供统一的算法测评框架，支持:
+- 多算法对比评测
+- 标准测试数据集
+- 可重复的评测流程
+- 结果汇总与报告生成
+
+使用方式:
+    runner = BenchmarkRunner()
+    results = runner.run_benchmark(
+        algorithms=["speechbrain_metricgan", "spectral_subtraction"],
+        test_files=["path/to/noisy1.wav"],
+        reference_files=["path/to/clean1.wav"]
+    )
+    runner.print_summary(results)
+"""
+
+import os
+import sys
+import json
+import time
+import logging
+from typing import List, Dict, Optional, Tuple, Callable
+from dataclasses import dataclass, field
+from collections import defaultdict
+
+import numpy as np
+import soundfile as sf
+
+from .base import BaseDenoiser, DenoiseResult
+from .registry import DenoiserRegistry
+from .evaluator import DenoiseMetrics, DenoiseEvaluation, DenoiseEvaluator
+from .dataset_dns import DNSDataset, DNSMixConfig
+
+logger = logging.getLogger(__name__)
+
+
+# ===========================
+# 数据类
+# ===========================
+
+
+@dataclass
+class AlgorithmBenchmarkResult:
+    """单个算法的测评结果"""
+
+    algorithm_name: str
+    n_files: int
+    metrics: Dict[str, Dict[str, float]] = field(default_factory=dict)  # metric_name -> {mean, std, median, min, max}
+    rtf: float = 0.0
+    avg_processing_time: float = 0.0
+    details: List[DenoiseEvaluation] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+
+@dataclass
+class BenchmarkResult:
+    """完整测评结果"""
+
+    timestamp: str
+    dataset_info: Dict
+    algorithms: Dict[str, AlgorithmBenchmarkResult] = field(default_factory=dict)
+    ranking: Dict[str, List[Tuple[str, float]]] = field(default_factory=dict)  # metric -> [(algo, score)]
+
+
+# ===========================
+# 测评运行器
+# ===========================
+
+
+class BenchmarkRunner:
+    """
+    降噪算法测评运行器
+
+    统一接口进行多算法对比测评。
+    """
+
+    def __init__(self, output_dir: str = "./data/benchmark_results", device: str = "cuda"):
+        """
+        初始化测评运行器
+
+        Args:
+            output_dir: 结果输出目录
+            device: 计算设备
+        """
+        self.output_dir = output_dir
+        self.device = device
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 初始化评估器
+        try:
+            self.evaluator = DenoiseEvaluator(device=device)
+        except Exception as e:
+            logger.warning(f"评估器初始化失败（部分指标不可用）: {e}")
+            self.evaluator = None
+
+    def run_benchmark(
+        self,
+        algorithms: List[str],
+        test_files: List[str],
+        reference_files: Optional[List[str]] = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> BenchmarkResult:
+        """
+        运行标准测评
+
+        Args:
+            algorithms: 算法名称列表
+            test_files: 测试音频文件列表（带噪）
+            reference_files: 参考音频文件列表（干净，可选）
+            progress_callback: 进度回调
+
+        Returns:
+            BenchmarkResult 对象
+        """
+        result = BenchmarkResult(
+            timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+            dataset_info={
+                "n_files": len(test_files),
+                "has_reference": reference_files is not None and len(reference_files) > 0,
+            },
+        )
+
+        total_tasks = len(algorithms) * len(test_files)
+        completed = 0
+
+        for algo_name in algorithms:
+            algo_result = AlgorithmBenchmarkResult(algorithm_name=algo_name, n_files=len(test_files))
+
+            # 初始化算法
+            denoiser = DenoiserRegistry.get(algo_name, device=self.device)
+            if denoiser is None:
+                algo_result.errors.append(f"无法加载算法: {algo_name}")
+                result.algorithms[algo_name] = algo_result
+                continue
+
+            try:
+                denoiser.initialize()
+            except Exception as e:
+                algo_result.errors.append(f"算法初始化失败: {e}")
+                result.algorithms[algo_name] = algo_result
+                continue
+
+            # 处理所有文件
+            evaluations = []
+            processing_times = []
+
+            for i, test_file in enumerate(test_files):
+                try:
+                    # 执行降噪
+                    output_path = os.path.join(self.output_dir, f"{algo_name}_output_{i}.wav")
+                    process_result = denoiser.denoise_file(test_file, output_path)
+
+                    # 评估 (evaluate_file返回DenoiseMetrics)
+                    if reference_files and i < len(reference_files):
+                        ev_metrics = self.evaluator.evaluate_file(
+                            output_path,
+                            reference_files[i],
+                            process_result.processing_time,
+                        )
+                    else:
+                        ev_metrics = self.evaluator.evaluate_without_reference(
+                            process_result.audio, process_result.processing_time
+                        )
+
+                    evaluations.append(ev_metrics)
+                    processing_times.append(process_result.processing_time)
+
+                except Exception as e:
+                    algo_result.errors.append(f"处理失败 {test_file}: {e}")
+                    logger.warning(f"处理失败: {e}")
+
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total_tasks, algo_name)
+
+            # 计算汇总统计
+            algo_result.details = evaluations
+            algo_result.avg_processing_time = np.mean(processing_times) if processing_times else 0
+            algo_result.metrics = self._compute_aggregate_metrics(evaluations)
+            algo_result.rtf = (
+                0 if not processing_times else np.mean(processing_times)
+            )
+
+            result.algorithms[algo_name] = algo_result
+
+        # 计算排名
+        result.ranking = self._compute_ranking(result)
+
+        return result
+
+    def _compute_aggregate_metrics(self, evaluations) -> Dict[str, Dict[str, float]]:
+        """计算聚合指标统计 (接受DenoiseMetrics或DenoiseEvaluation列表)"""
+        if not evaluations:
+            return {}
+
+        # 收集各指标值
+        metric_values = defaultdict(list)
+
+        for ev in evaluations:
+            # 支持DenoiseMetrics和DenoiseEvaluation两种类型
+            if hasattr(ev, 'metrics') and ev.metrics is not None:
+                m = ev.metrics
+            else:
+                m = ev  # DenoiseMetrics本身就是指标对象
+
+            for key in ["pesq", "stoi", "sisdr", "dnsmos_ovrl", "dnsmos_sig", "dnsmos_bak"]:
+                val = getattr(m, key, None)
+                if val is not None and not np.isnan(val) and not np.isinf(val):
+                    metric_values[key].append(val)
+
+            proc_time = getattr(m, 'processing_time', 0) or getattr(ev, 'processing_time', 0)
+            if proc_time:
+                metric_values["processing_time"].append(proc_time)
+
+        # 计算统计量
+        stats = {}
+        for metric_name, values in metric_values.items():
+            if values:
+                arr = np.array(values)
+                stats[metric_name] = {
+                    "mean": round(float(np.mean(arr)), 4),
+                    "std": round(float(np.std(arr)), 4),
+                    "median": round(float(np.median(arr)), 4),
+                    "min": round(float(np.min(arr)), 4),
+                    "max": round(float(np.max(arr)), 4),
+                }
+
+        return stats
+
+    def _compute_ranking(self, result: BenchmarkResult) -> Dict[str, List[Tuple[str, float]]]:
+        """计算各指标的算法排名"""
+        rankings = {}
+
+        # 需要排序的指标（更高更好）
+        higher_better = ["pesq", "stoi", "sisdr", "dnsmos_ovrl"]
+        # 需要排序的指标（更低更好）
+        lower_better = ["processing_time"]
+
+        for metric in higher_better + lower_better:
+            algo_scores = []
+            for algo_name, algo_result in result.algorithms.items():
+                if metric in algo_result.metrics:
+                    score = algo_result.metrics[metric].get("mean", 0)
+                    algo_scores.append((algo_name, score))
+
+            if algo_scores:
+                reverse = metric in higher_better
+                algo_scores.sort(key=lambda x: x[1], reverse=reverse)
+                rankings[metric] = algo_scores
+
+        return rankings
+
+    def run_on_simple_dataset(self, algorithms: List[str]) -> BenchmarkResult:
+        """
+        使用项目内置测试数据运行快速测评
+
+        Args:
+            algorithms: 算法列表
+
+        Returns:
+            BenchmarkResult
+        """
+        dataset = DNSDataset()
+        test_files, ref_files = dataset.prepare_simple_test_set()
+
+        if not test_files:
+            print("未找到测试文件，使用合成数据")
+            # 生成简单的合成测试数据
+            test_files, ref_files = self._generate_synthetic_test_set()
+
+        return self.run_benchmark(algorithms, test_files, ref_files)
+
+    def _generate_synthetic_test_set(self, n_files: int = 10) -> Tuple[List[str], List[str]]:
+        """生成合成测试数据集"""
+        test_dir = os.path.join(self.output_dir, "synthetic_test")
+        os.makedirs(test_dir, exist_ok=True)
+
+        test_files = []
+        ref_files = []
+
+        for i in range(n_files):
+            sr = 16000
+            duration = np.random.uniform(2.0, 5.0)
+            t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+
+            # 生成简单的合成语音（多个正弦波叠加模拟语音）
+            clean = (
+                0.3 * np.sin(2 * np.pi * 200 * t)
+                + 0.2 * np.sin(2 * np.pi * 500 * t)
+                + 0.15 * np.sin(2 * np.pi * 1000 * t)
+                + 0.1 * np.sin(2 * np.pi * 2000 * t)
+            )
+
+            # 添加噪声
+            noise_type = np.random.choice(["white", "pink", "babble"])
+            if noise_type == "white":
+                noise = np.random.randn(len(t)) * 0.1
+            elif noise_type == "pink":
+                # 粉红噪声模拟
+                noise = np.cumsum(np.random.randn(len(t))) * 0.001
+            else:
+                # babble-like噪声
+                noise = 0.1 * np.sin(2 * np.pi * 100 * t) * np.random.randn(len(t))
+
+            noisy = clean + noise * np.random.uniform(0.5, 2.0)
+
+            clean_path = os.path.join(test_dir, f"synthetic_clean_{i:04d}.wav")
+            noisy_path = os.path.join(test_dir, f"synthetic_noisy_{i:04d}.wav")
+
+            sf.write(clean_path, clean, sr)
+            sf.write(noisy_path, noisy, sr)
+
+            test_files.append(noisy_path)
+            ref_files.append(clean_path)
+
+        return test_files, ref_files
+
+    def print_summary(self, result: BenchmarkResult):
+        """打印测评结果摘要"""
+        print("\n" + "=" * 80)
+        print(f"  降噪算法测评结果")
+        print(f"  时间: {result.timestamp}")
+        print(f"  文件数: {result.dataset_info.get('n_files', 0)}")
+        print("=" * 80)
+
+        # 算法汇总表
+        print(f"\n{'算法':<30} {'PESQ':>8} {'STOI':>8} {'SI-SDR':>8} {'DNSMOS':>8} {'耗时(s)':>8}")
+        print("-" * 75)
+
+        for algo_name, algo_result in result.algorithms.items():
+            metrics = algo_result.metrics
+            pesq = metrics.get("pesq", {}).get("mean", "-")
+            stoi = metrics.get("stoi", {}).get("mean", "-")
+            sisdr = metrics.get("sisdr", {}).get("mean", "-")
+            dnsmos = metrics.get("dnsmos_ovrl", {}).get("mean", "-")
+            proc_time = metrics.get("processing_time", {}).get("mean", "-")
+
+            pesq_str = f"{pesq:.2f}" if isinstance(pesq, (int, float)) else str(pesq)
+            stoi_str = f"{stoi:.3f}" if isinstance(stoi, (int, float)) else str(stoi)
+            sisdr_str = f"{sisdr:.1f}" if isinstance(sisdr, (int, float)) else str(sisdr)
+            dnsmos_str = f"{dnsmos:.2f}" if isinstance(dnsmos, (int, float)) else str(dnsmos)
+            time_str = f"{proc_time:.2f}" if isinstance(proc_time, (int, float)) else str(proc_time)
+
+            print(f"{algo_name:<30} {pesq_str:>8} {stoi_str:>8} {sisdr_str:>8} {dnsmos_str:>8} {time_str:>8}")
+
+        # 排名
+        if result.ranking:
+            print(f"\n{'指标':<15} {'第1名':<25} {'第2名':<25} {'第3名':<25}")
+            print("-" * 80)
+            for metric, rank_list in result.ranking.items():
+                if rank_list:
+                    metric_name = {
+                        "pesq": "PESQ",
+                        "stoi": "STOI",
+                        "sisdr": "SI-SDR",
+                        "dnsmos_ovrl": "DNSMOS",
+                        "processing_time": "速度",
+                    }.get(metric, metric)
+
+                    row = f"{metric_name:<15}"
+                    for i in range(min(3, len(rank_list))):
+                        algo, score = rank_list[i]
+                        if isinstance(score, float):
+                            row += f" {algo}({score:.2f})"
+                        else:
+                            row += f" {algo}"
+                    print(row)
+
+        print("=" * 80)
+
+    def export_results(self, result: BenchmarkResult, output_file: Optional[str] = None) -> str:
+        """
+        导出测评结果为JSON
+
+        Args:
+            result: 测评结果
+            output_file: 输出文件路径
+
+        Returns:
+            输出文件路径
+        """
+        if output_file is None:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            output_file = os.path.join(self.output_dir, f"benchmark_{timestamp}.json")
+
+        def convert_to_serializable(obj):
+            if isinstance(obj, np.floating):
+                return float(obj)
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, (DenoiseMetrics, DenoiseEvaluation)):
+                return obj.__dict__ if hasattr(obj, "__dict__") else str(obj)
+            return str(obj)
+
+        serializable = json.loads(json.dumps(result, default=convert_to_serializable))
+
+        with open(output_file, "w") as f:
+            json.dump(serializable, f, indent=2, ensure_ascii=False)
+
+        return output_file
+
+
+def run_quick_benchmark(algorithms: Optional[List[str]] = None) -> BenchmarkResult:
+    """
+    快速测评便捷函数
+
+    Args:
+        algorithms: 算法列表，默认使用所有已注册算法
+
+    Returns:
+        BenchmarkResult
+    """
+    if algorithms is None:
+        algorithms = DenoiserRegistry.list_denoisers()
+
+    runner = BenchmarkRunner()
+    result = runner.run_on_simple_dataset(algorithms)
+    runner.print_summary(result)
+
+    return result
+
+
+if __name__ == "__main__":
+    # 快速测试
+    result = run_quick_benchmark()

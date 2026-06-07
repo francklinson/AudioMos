@@ -51,8 +51,16 @@ jieba==0.42.1
 # ===== WeNet 语音识别 =====
 wenetruntime==1.14.0
 
-# ===== ModelScope (用于音色还原度评估) =====
+# ===== ModelScope (用于音色还原度评估和ClearerVoice) =====
 modelscope==1.15.0
+
+# ===== SpeechBrain (用于语音增强) =====
+speechbrain==1.0.2
+huggingface-hub==0.23.4
+transformers==4.42.4
+
+# ===== ClearerVoice-Studio (阿里语音处理) =====
+# 通过ModelScope使用，无需单独安装
 
 # ===== Scoreq =====
 scoreq==0.0.3
@@ -158,3 +166,13 @@ tomli==2.2.1
 # ===== 音频标注 =====
 TextGrid==1.6.1
 dtw-python==1.5.1
+
+# ===== 音频修复 (2026-06-06新增) =====
+# SpeechBrain - 用于去混响和超分辨率
+# modelscope - 用于DCCRN和FullSubNet算法加载
+# 注: nisqa安装可能需要额外步骤，通过 pip install nisqa 安装
+# 注: clearervoice需从GitHub安装: pip install git+https://github.com/alibaba-damo-academy/ClearerVoice-Studio.git
+
+# ===== DNS Challenge数据集 (2026-06-06新增) =====
+# 标准降噪评测基准数据集，需从官方渠道下载:
+# https://github.com/microsoft/DNS-Challenge

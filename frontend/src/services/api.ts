@@ -127,4 +127,140 @@ export const mosApi = {
   },
 };
 
+// 降噪测评相关API
+export const denoiseApi = {
+  getAlgorithms: async () => {
+    const response = await api.get('/api/denoise/algorithms');
+    return response.data;
+  },
+  
+  uploadFiles: async (files: FileList, referenceFiles: FileList | null, algorithms: string[]) => {
+    const formData = new FormData();
+    
+    // 添加带噪音频文件
+    Array.from(files).forEach((file) => {
+      formData.append('files', file);
+    });
+    
+    // 添加参考音频文件
+    if (referenceFiles) {
+      Array.from(referenceFiles).forEach((file) => {
+        formData.append('reference_files', file);
+      });
+    }
+    
+    // 添加算法选择
+    formData.append('algorithms', JSON.stringify(algorithms));
+    
+    const response = await api.post('/api/denoise/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+  
+  processTask: async (taskId: string) => {
+    const response = await api.post(`/api/denoise/process/${taskId}`);
+    return response.data;
+  },
+  
+  getTaskStatus: async (taskId: string) => {
+    const response = await api.get(`/api/denoise/tasks/${taskId}`);
+    return response.data;
+  },
+  
+  getTasks: async () => {
+    const response = await api.get('/api/denoise/tasks');
+    return response.data;
+  },
+  
+  downloadReport: async (taskId: string, format: 'excel' | 'html' | 'markdown' = 'excel') => {
+    const response = await api.get(`/api/denoise/download/${taskId}?format=${format}`, {
+      responseType: 'blob',
+    });
+    
+    // 创建下载链接
+    const blob = new Blob([response.data]);
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    
+    // 设置文件名
+    const extension = format === 'excel' ? 'xlsx' : format;
+    link.download = `降噪测评报告_${taskId.slice(0, 8)}.${extension}`;
+    
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    
+    return response.data;
+  },
+  
+  deleteTask: async (taskId: string) => {
+    const response = await api.delete(`/api/denoise/tasks/${taskId}`);
+    return response.data;
+  },
+};
+
+// 音频修复相关API
+export const restorationApi = {
+  getAlgorithms: async () => {
+    const response = await api.get('/api/restoration/algorithms');
+    return response.data;
+  },
+
+  uploadFile: async (file: File, algorithm: string) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('algorithm', algorithm);
+
+    const response = await api.post('/api/restoration/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
+  processTask: async (taskId: string) => {
+    const response = await api.post(`/api/restoration/process/${taskId}`);
+    return response.data;
+  },
+
+  getTaskStatus: async (taskId: string) => {
+    const response = await api.get(`/api/restoration/tasks/${taskId}`);
+    return response.data;
+  },
+
+  getTasks: async () => {
+    const response = await api.get('/api/restoration/tasks');
+    return response.data;
+  },
+
+  downloadResult: async (taskId: string) => {
+    const response = await api.get(`/api/restoration/download/${taskId}`, {
+      responseType: 'blob',
+    });
+
+    const blob = new Blob([response.data]);
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `修复结果_${taskId.slice(0, 8)}.wav`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+
+    return response.data;
+  },
+
+  deleteTask: async (taskId: string) => {
+    const response = await api.delete(`/api/restoration/tasks/${taskId}`);
+    return response.data;
+  },
+};
+
 export default api;

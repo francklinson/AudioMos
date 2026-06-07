@@ -19,7 +19,9 @@ import {
   Drawer,
   Checkbox,
   Collapse,
-  Tooltip
+  Tooltip,
+  Tabs,
+  Alert
 } from 'antd';
 import {
   SoundOutlined,
@@ -32,14 +34,15 @@ import {
   CloseCircleOutlined,
   SyncOutlined,
   BarChartOutlined,
-  InfoCircleOutlined,
   LogoutOutlined,
   EyeOutlined,
-  SettingOutlined
+  SettingOutlined,
+  ExperimentOutlined,
+  ToolOutlined
 } from '@ant-design/icons';
 import type { UploadFile, UploadProps } from 'antd/es/upload';
 import { useAuth } from '../contexts/AuthContext';
-import { mosApi } from '../services/api';
+import { mosApi, denoiseApi, restorationApi } from '../services/api';
 import dayjs from 'dayjs';
 import './Home.css';
 
@@ -47,23 +50,12 @@ const { Header, Content, Footer } = Layout;
 const { Title, Text } = Typography;
 const { Panel } = Collapse;
 
-// 计算项目配置选项
-interface MetricConfig {
-  key: string;
-  label: string;
-  description: string;
-  category: 'ref' | 'no_ref';
-  defaultChecked: boolean;
-}
-
-const METRIC_OPTIONS: MetricConfig[] = [
-  // 有参考指标
+const METRIC_OPTIONS = [
   { key: 'pesq', label: 'PESQ', description: '语音质量感知评估', category: 'ref', defaultChecked: true },
   { key: 'stoi', label: 'STOI', description: '短时客观可懂度', category: 'ref', defaultChecked: true },
   { key: 'sisdr', label: 'SISDR', description: '尺度不变信噪比', category: 'ref', defaultChecked: true },
   { key: 'wer', label: 'WER', description: '词错误率', category: 'ref', defaultChecked: true },
   { key: 'tcf', label: '音色还原度', description: '基于说话人验证模型的音色相似度', category: 'ref', defaultChecked: true },
-  // 无参考指标
   { key: 'dnsmos', label: 'DNSMOS', description: '深度噪声抑制MOS评分', category: 'no_ref', defaultChecked: true },
   { key: 'nisqa', label: 'NISQA', description: '语音质量神经网络评估', category: 'no_ref', defaultChecked: true },
   { key: 'scoreq', label: 'Scoreq', description: '基于深度学习的语音质量评估', category: 'no_ref', defaultChecked: true },
@@ -89,34 +81,79 @@ interface TaskResult {
   total_files: number;
 }
 
+interface DenoiseAlgorithm {
+  name: string;
+  description: string;
+  type: string;
+  pros: string[];
+  cons: string[];
+  initialized: boolean;
+}
+
+interface DenoiseTask {
+  task_id: string;
+  status: string;
+  progress: number;
+  message: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RestorationAlgorithm {
+  name: string;
+  display_name: string;
+  description: string;
+  type: string;
+  advantages: string[];
+  limitations: string[];
+  initialized: boolean;
+}
+
+interface RestorationTask {
+  task_id: string;
+  algorithm: string;
+  filename: string;
+  status: string;
+  created_at: string;
+  progress: number;
+  message: string;
+  result_file: string | null;
+  processing_time: number | null;
+  metadata: Record<string, any> | null;
+}
+
 const Home: React.FC = () => {
   const { user, logout } = useAuth();
+  const [activeTab, setActiveTab] = useState('mos');
+
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
-
-  // 结果展示相关状态
   const [resultDrawerVisible, setResultDrawerVisible] = useState(false);
   const [selectedTaskResult, setSelectedTaskResult] = useState<TaskResult | null>(null);
   const [resultLoading, setResultLoading] = useState(false);
-  // 结果表格分页状态
-  const [resultPagination, setResultPagination] = useState({
-    current: 1,
-    pageSize: 10,
-  });
-  // 任务列表分页状态
-  const [taskPagination, setTaskPagination] = useState({
-    current: 1,
-    pageSize: 5,
-  });
-
-  // 计算项目配置状态
+  const [resultPagination, setResultPagination] = useState({ current: 1, pageSize: 10 });
+  const [taskPagination, setTaskPagination] = useState({ current: 1, pageSize: 5 });
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(
     METRIC_OPTIONS.filter(m => m.defaultChecked).map(m => m.key)
   );
   const [configPanelVisible, setConfigPanelVisible] = useState(false);
 
-  // 加载任务列表
+  const [denoiseAlgorithms, setDenoiseAlgorithms] = useState<DenoiseAlgorithm[]>([]);
+  const [selectedDenoiseAlgorithms, setSelectedDenoiseAlgorithms] = useState<string[]>([]);
+  const [denoiseNoisyFiles, setDenoiseNoisyFiles] = useState<FileList | null>(null);
+  const [denoiseReferenceFiles, setDenoiseReferenceFiles] = useState<FileList | null>(null);
+  const [hasDenoiseReference, setHasDenoiseReference] = useState(false);
+  const [denoiseTasks, setDenoiseTasks] = useState<DenoiseTask[]>([]);
+  const [denoiseLoading, setDenoiseLoading] = useState(false);
+  const [denoiseCurrentTask, setDenoiseCurrentTask] = useState<DenoiseTask | null>(null);
+
+  const [restorationAlgorithms, setRestorationAlgorithms] = useState<RestorationAlgorithm[]>([]);
+  const [selectedRestorationAlgorithm, setSelectedRestorationAlgorithm] = useState('');
+  const [restorationFile, setRestorationFile] = useState<File | null>(null);
+  const [restorationTasks, setRestorationTasks] = useState<RestorationTask[]>([]);
+  const [restorationLoading, setRestorationLoading] = useState(false);
+
   const loadTasks = async () => {
     try {
       const data = await mosApi.getTasks();
@@ -126,13 +163,77 @@ const Home: React.FC = () => {
     }
   };
 
+  const loadDenoiseAlgorithms = async () => {
+    try {
+      const data = await denoiseApi.getAlgorithms();
+      setDenoiseAlgorithms(data);
+    } catch (error) {
+      console.error('加载降噪算法失败:', error);
+    }
+  };
+
+  const loadDenoiseTasks = async () => {
+    try {
+      const data = await denoiseApi.getTasks();
+      setDenoiseTasks(data);
+    } catch (error) {
+      console.error('加载降噪任务失败:', error);
+    }
+  };
+
+  const loadRestorationAlgorithms = async () => {
+    try {
+      const data = await restorationApi.getAlgorithms();
+      setRestorationAlgorithms(data);
+      if (data.length > 0 && !selectedRestorationAlgorithm) {
+        setSelectedRestorationAlgorithm(data[0].name);
+      }
+    } catch (error) {
+      console.error('加载修复算法失败:', error);
+    }
+  };
+
+  const loadRestorationTasks = async () => {
+    try {
+      const data = await restorationApi.getTasks();
+      setRestorationTasks(data || []);
+    } catch (error) {
+      console.error('加载修复任务失败:', error);
+    }
+  };
+
   useEffect(() => {
     loadTasks();
-    const interval = setInterval(loadTasks, 5000);
+    loadDenoiseAlgorithms();
+    loadDenoiseTasks();
+    loadRestorationAlgorithms();
+    loadRestorationTasks();
+
+    const interval = setInterval(() => {
+      loadTasks();
+      loadDenoiseTasks();
+      loadRestorationTasks();
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
-
+  useEffect(() => {
+    if (!denoiseCurrentTask || denoiseCurrentTask.status === 'completed' || denoiseCurrentTask.status === 'failed') {
+      return;
+    }
+    const interval = setInterval(async () => {
+      try {
+        const status = await denoiseApi.getTaskStatus(denoiseCurrentTask.task_id);
+        setDenoiseCurrentTask(status);
+        if (status.status === 'completed' || status.status === 'failed') {
+          loadDenoiseTasks();
+        }
+      } catch (err) {
+        console.error('获取降噪任务状态失败:', err);
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [denoiseCurrentTask]);
 
   const handleUpload = async () => {
     if (fileList.length === 0) {
@@ -168,14 +269,10 @@ const Home: React.FC = () => {
       message.success(data.message);
       setFileList([]);
 
-      // 自动开始处理
       const processData = await mosApi.startProcess(data.task_id);
       message.success(`任务已提交到队列，排队位置: ${processData.queue_position || 1}`);
 
-      // 清空文件列表，允许继续提交新任务
       setFileList([]);
-
-      // 刷新任务列表
       await loadTasks();
     } catch (error: any) {
       message.error(error.response?.data?.detail || '上传失败');
@@ -202,7 +299,6 @@ const Home: React.FC = () => {
 
   const handleViewResults = async (taskId: string) => {
     setResultLoading(true);
-    // 重置分页状态
     setResultPagination({ current: 1, pageSize: 10 });
     try {
       const data = await mosApi.getTaskResults(taskId);
@@ -243,14 +339,9 @@ const Home: React.FC = () => {
       newFileList.splice(index, 1);
       setFileList(newFileList);
     },
-    beforeUpload: () => {
-      // 阻止自动上传，改为手动控制
-      return false;
-    },
+    beforeUpload: () => false,
     onChange: (info) => {
-      // 使用 onChange 来更新文件列表，确保多文件上传时能正确捕获所有文件
       const newFileList = info.fileList.filter((f) => {
-        // 只保留状态为 uploading 或 done 的文件（即用户选择的文件）
         return f.status === 'uploading' || f.status === 'done' || !f.status;
       });
       setFileList(newFileList);
@@ -274,6 +365,117 @@ const Home: React.FC = () => {
         return <Tag icon={<CloseCircleOutlined />} color="error">失败</Tag>;
       default:
         return <Tag>未知</Tag>;
+    }
+  };
+
+  const handleDenoiseSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!denoiseNoisyFiles || denoiseNoisyFiles.length === 0) {
+      message.error('请上传带噪音频文件');
+      return;
+    }
+
+    if (selectedDenoiseAlgorithms.length === 0) {
+      message.error('请至少选择一个降噪算法');
+      return;
+    }
+
+    setDenoiseLoading(true);
+
+    try {
+      const uploadResult = await denoiseApi.uploadFiles(
+        denoiseNoisyFiles,
+        hasDenoiseReference ? denoiseReferenceFiles : null,
+        selectedDenoiseAlgorithms
+      );
+
+      await denoiseApi.processTask(uploadResult.task_id);
+
+      setDenoiseCurrentTask({
+        task_id: uploadResult.task_id,
+        status: 'queued',
+        progress: 0,
+        message: '任务已加入队列',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+
+      loadDenoiseTasks();
+      message.success('降噪测评任务已提交');
+    } catch (err: any) {
+      message.error('提交任务失败: ' + err.message);
+    } finally {
+      setDenoiseLoading(false);
+    }
+  };
+
+  const handleDenoiseDownload = async (taskId: string, format: 'excel' | 'html' | 'markdown') => {
+    try {
+      await denoiseApi.downloadReport(taskId, format);
+      message.success('报告下载成功');
+    } catch (err: any) {
+      message.error('下载报告失败: ' + err.message);
+    }
+  };
+
+  const handleDenoiseDeleteTask = async (taskId: string) => {
+    if (!window.confirm('确定要删除这个任务吗？')) return;
+
+    try {
+      await denoiseApi.deleteTask(taskId);
+      loadDenoiseTasks();
+      if (denoiseCurrentTask?.task_id === taskId) {
+        setDenoiseCurrentTask(null);
+      }
+      message.success('删除成功');
+    } catch (err: any) {
+      message.error('删除任务失败: ' + err.message);
+    }
+  };
+
+  const handleRestorationSubmit = async () => {
+    if (!restorationFile) {
+      message.error('请选择音频文件');
+      return;
+    }
+    if (!selectedRestorationAlgorithm) {
+      message.error('请选择修复算法');
+      return;
+    }
+
+    setRestorationLoading(true);
+
+    try {
+      const uploadResult = await restorationApi.uploadFile(restorationFile, selectedRestorationAlgorithm);
+      await restorationApi.processTask(uploadResult.task_id);
+      message.success('任务已提交，正在处理...');
+      setRestorationFile(null);
+      loadRestorationTasks();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '操作失败');
+    } finally {
+      setRestorationLoading(false);
+    }
+  };
+
+  const handleRestorationDownload = async (taskId: string) => {
+    try {
+      await restorationApi.downloadResult(taskId);
+      message.success('下载成功');
+    } catch (err: any) {
+      message.error('下载失败');
+    }
+  };
+
+  const handleRestorationDelete = async (taskId: string) => {
+    if (!window.confirm('确定要删除该任务吗？')) return;
+    try {
+      await restorationApi.deleteTask(taskId);
+      loadRestorationTasks();
+      message.success('删除成功');
+    } catch (err: any) {
+      message.error('删除失败');
     }
   };
 
@@ -345,18 +547,565 @@ const Home: React.FC = () => {
     },
   ];
 
+  const denoiseColumns = [
+    {
+      title: '任务ID',
+      dataIndex: 'task_id',
+      key: 'task_id',
+      render: (id: string) => id.slice(0, 8) + '...',
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      render: getStatusTag,
+    },
+    {
+      title: '进度',
+      dataIndex: 'progress',
+      key: 'progress',
+      render: (progress: number) => <Progress percent={progress} size="small" />,
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      render: (date: string) => dayjs(date).format('MM-DD HH:mm'),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      render: (_: any, record: DenoiseTask) => (
+        <Space>
+          {record.status === 'completed' && (
+            <>
+              <Button size="small" onClick={() => handleDenoiseDownload(record.task_id, 'excel')}>
+                Excel
+              </Button>
+              <Button size="small" onClick={() => handleDenoiseDownload(record.task_id, 'html')}>
+                HTML
+              </Button>
+              <Button size="small" onClick={() => handleDenoiseDownload(record.task_id, 'markdown')}>
+                Markdown
+              </Button>
+            </>
+          )}
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            size="small"
+            onClick={() => handleDenoiseDeleteTask(record.task_id)}
+          >
+            删除
+          </Button>
+        </Space>
+      ),
+    },
+  ];
+
+  const restorationColumns = [
+    {
+      title: '文件名',
+      dataIndex: 'filename',
+      key: 'filename',
+      render: (name: string) => name.slice(0, 20) + (name.length > 20 ? '...' : ''),
+    },
+    {
+      title: '算法',
+      dataIndex: 'algorithm',
+      key: 'algorithm',
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      render: getStatusTag,
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      render: (date: string) => dayjs(date).format('MM-DD HH:mm'),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      render: (_: any, record: RestorationTask) => (
+        <Space>
+          {record.status === 'completed' && (
+            <Button
+              type="primary"
+              icon={<DownloadOutlined />}
+              size="small"
+              onClick={() => handleRestorationDownload(record.task_id)}
+            >
+              下载
+            </Button>
+          )}
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            size="small"
+            onClick={() => handleRestorationDelete(record.task_id)}
+          >
+            删除
+          </Button>
+        </Space>
+      ),
+    },
+  ];
+
+  const renderMosTab = () => (
+    <div>
+      <Row gutter={[24, 24]}>
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><UploadOutlined /><span>上传音频文件</span></Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+          >
+            <Alert
+              message="使用说明"
+              description="支持上传 .wav 和 .mp3 格式的音频文件，系统会自动进行音频切分、对齐并计算多种MOS评分指标"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+
+            <Upload.Dragger {...uploadProps} style={{ marginBottom: 16 }}>
+              <p className="ant-upload-drag-icon">
+                <SoundOutlined style={{ color: '#667eea' }} />
+              </p>
+              <p className="ant-upload-text">点击或拖拽文件到此处上传</p>
+              <p className="ant-upload-hint">支持单个或批量上传,文件格式: .wav, .mp3</p>
+            </Upload.Dragger>
+
+            <Card
+              size="small"
+              style={{ marginBottom: 16, background: '#fafafa' }}
+              title={<Space><SettingOutlined /><span>计算项目配置</span><Tag color="blue">{selectedMetrics.length} 项已选</Tag></Space>}
+              extra={<Button type="link" size="small" onClick={() => setConfigPanelVisible(!configPanelVisible)}>{configPanelVisible ? '收起' : '展开'}</Button>}
+            >
+              {configPanelVisible && (
+                <div>
+                  <div style={{ marginBottom: 12 }}>
+                    <Space>
+                      <Button size="small" onClick={() => setSelectedMetrics(METRIC_OPTIONS.map(m => m.key))}>全选</Button>
+                      <Button size="small" onClick={() => setSelectedMetrics([])}>全不选</Button>
+                      <Button size="small" onClick={() => setSelectedMetrics(METRIC_OPTIONS.filter(m => m.defaultChecked).map(m => m.key))}>恢复默认</Button>
+                    </Space>
+                  </div>
+
+                  <Checkbox.Group
+                    value={selectedMetrics}
+                    onChange={(values) => setSelectedMetrics(values as string[])}
+                  >
+                    <Collapse ghost defaultActiveKey={['ref', 'no_ref']}>
+                      <Panel header={<Text strong>有参考音频指标 (需要参考音频)</Text>} key="ref">
+                        <Row gutter={[16, 8]}>
+                          {METRIC_OPTIONS.filter(m => m.category === 'ref').map(metric => (
+                            <Col span={12} key={metric.key}>
+                              <Tooltip title={metric.description}>
+                                <Checkbox value={metric.key}>
+                                  <Text strong>{metric.label}</Text>
+                                  <br />
+                                  <Text type="secondary" style={{ fontSize: 12 }}>{metric.description}</Text>
+                                </Checkbox>
+                              </Tooltip>
+                            </Col>
+                          ))}
+                        </Row>
+                      </Panel>
+
+                      <Panel header={<Text strong>无参考音频指标 (无需参考音频)</Text>} key="no_ref">
+                        <Row gutter={[16, 8]}>
+                          {METRIC_OPTIONS.filter(m => m.category === 'no_ref').map(metric => (
+                            <Col span={12} key={metric.key}>
+                              <Tooltip title={metric.description}>
+                                <Checkbox value={metric.key}>
+                                  <Text strong>{metric.label}</Text>
+                                  <br />
+                                  <Text type="secondary" style={{ fontSize: 12 }}>{metric.description}</Text>
+                                </Checkbox>
+                              </Tooltip>
+                            </Col>
+                          ))}
+                        </Row>
+                      </Panel>
+                    </Collapse>
+                  </Checkbox.Group>
+                </div>
+              )}
+
+              {!configPanelVisible && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {selectedMetrics.map(key => {
+                    const metric = METRIC_OPTIONS.find(m => m.key === key);
+                    return metric ? <Tag key={key} color="blue">{metric.label}</Tag> : null;
+                  })}
+                </div>
+              )}
+            </Card>
+
+            <Button
+              type="primary"
+              onClick={handleUpload}
+              loading={uploading}
+              disabled={fileList.length === 0 || selectedMetrics.length === 0}
+              block
+              size="large"
+              icon={uploading ? <SyncOutlined spin /> : <UploadOutlined />}
+              style={{
+                background: fileList.length === 0 || selectedMetrics.length === 0
+                  ? 'linear-gradient(135deg, #d9d9d9 0%, #bfbfbf 100%)'
+                  : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                border: 'none',
+                borderRadius: 10,
+                height: 48,
+                fontSize: 16,
+                fontWeight: 500,
+              }}
+            >
+              {uploading ? '上传处理中...' : fileList.length === 0 ? '请选择音频文件' : selectedMetrics.length === 0 ? '请至少选择一项计算指标' : `开始上传并处理 (${fileList.length} 个文件)`}
+            </Button>
+          </Card>
+        </Col>
+
+        <Col span={24}>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={8}>
+              <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
+                <Statistic title="总任务数" value={tasks.length} prefix={<BarChartOutlined />} />
+              </Card>
+            </Col>
+            <Col xs={24} md={8}>
+              <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
+                <Statistic title="已完成" value={tasks.filter(t => t.status === 'completed').length} valueStyle={{ color: '#3f8600' }} prefix={<CheckCircleOutlined />} />
+              </Card>
+            </Col>
+            <Col xs={24} md={8}>
+              <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
+                <Statistic title="处理中" value={tasks.filter(t => t.status === 'processing').length} valueStyle={{ color: '#1890ff' }} prefix={<SyncOutlined spin />} />
+              </Card>
+            </Col>
+          </Row>
+        </Col>
+
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><FileExcelOutlined /><span>任务列表</span></Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+            extra={<Button onClick={loadTasks} icon={<SyncOutlined />}>刷新</Button>}
+          >
+            {tasks.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无任务" />
+            ) : (
+              <Table
+                dataSource={tasks}
+                columns={columns}
+                rowKey="task_id"
+                size="small"
+                pagination={{
+                  current: taskPagination.current,
+                  pageSize: taskPagination.pageSize,
+                  showSizeChanger: true,
+                  pageSizeOptions: [5, 10, 20, 50],
+                  showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 条`,
+                  onChange: (page, pageSize) => {
+                    setTaskPagination({ current: page, pageSize: pageSize || 5 });
+                  },
+                  onShowSizeChange: (_current, size) => {
+                    setTaskPagination({ current: 1, pageSize: size });
+                  },
+                }}
+              />
+            )}
+          </Card>
+        </Col>
+      </Row>
+    </div>
+  );
+
+  const renderDenoiseTab = () => (
+    <div>
+      <Row gutter={[24, 24]}>
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><ExperimentOutlined /><span>降噪算法测评</span></Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+          >
+            <Alert
+              message="使用说明"
+              description="上传带噪音频文件，选择降噪算法进行测评，系统会计算PESQ、STOI、SI-SDR等指标"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+
+            <div style={{ marginBottom: 16 }}>
+              <Title level={5}>选择降噪算法</Title>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                {denoiseAlgorithms.map(algo => (
+                  <Card
+                    key={algo.name}
+                    size="small"
+                    style={{
+                      width: 280,
+                      cursor: algo.initialized ? 'pointer' : 'not-allowed',
+                      border: selectedDenoiseAlgorithms.includes(algo.name) ? '2px solid #667eea' : '1px solid #d9d9d9',
+                      opacity: algo.initialized ? 1 : 0.6,
+                    }}
+                    onClick={() => {
+                      if (algo.initialized) {
+                        setSelectedDenoiseAlgorithms(prev =>
+                          prev.includes(algo.name)
+                            ? prev.filter(a => a !== algo.name)
+                            : [...prev, algo.name]
+                        );
+                      }
+                    }}
+                  >
+                    <Space direction="vertical" size="small">
+                      <Space>
+                        <Checkbox
+                          checked={selectedDenoiseAlgorithms.includes(algo.name)}
+                          disabled={!algo.initialized}
+                        />
+                        <Text strong>{algo.name}</Text>
+                        <Tag color={algo.type === '深度学习' ? 'blue' : 'green'}>{algo.type}</Tag>
+                      </Space>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{algo.description}</Text>
+                      {!algo.initialized && <Tag color="red">未初始化</Tag>}
+                    </Space>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <Title level={5}>上传音频文件</Title>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <div>
+                  <Text>带噪音频文件 (必填)</Text>
+                  <input
+                    type="file"
+                    accept=".wav,.mp3"
+                    multiple
+                    onChange={(e) => setDenoiseNoisyFiles(e.target.files)}
+                    style={{ marginLeft: 16 }}
+                  />
+                  {denoiseNoisyFiles && <Text type="secondary" style={{ marginLeft: 8 }}>已选择 {denoiseNoisyFiles.length} 个文件</Text>}
+                </div>
+
+                <Checkbox
+                  checked={hasDenoiseReference}
+                  onChange={(e) => setHasDenoiseReference(e.target.checked)}
+                >
+                  我有参考音频(干净语音)
+                </Checkbox>
+
+                {hasDenoiseReference && (
+                  <div>
+                    <Text>参考音频文件 (可选)</Text>
+                    <input
+                      type="file"
+                      accept=".wav,.mp3"
+                      multiple
+                      onChange={(e) => setDenoiseReferenceFiles(e.target.files)}
+                      style={{ marginLeft: 16 }}
+                    />
+                    {denoiseReferenceFiles && <Text type="secondary" style={{ marginLeft: 8 }}>已选择 {denoiseReferenceFiles.length} 个文件</Text>}
+                  </div>
+                )}
+              </Space>
+            </div>
+
+            <Button
+              type="primary"
+              onClick={handleDenoiseSubmit}
+              loading={denoiseLoading}
+              disabled={!denoiseNoisyFiles || selectedDenoiseAlgorithms.length === 0}
+              block
+              size="large"
+              icon={<ExperimentOutlined />}
+              style={{
+                background: !denoiseNoisyFiles || selectedDenoiseAlgorithms.length === 0
+                  ? 'linear-gradient(135deg, #d9d9d9 0%, #bfbfbf 100%)'
+                  : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                border: 'none',
+                borderRadius: 10,
+                height: 48,
+              }}
+            >
+              {denoiseLoading ? '提交中...' : '开始测评'}
+            </Button>
+          </Card>
+        </Col>
+
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><FileExcelOutlined /><span>降噪测评任务列表</span></Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+            extra={<Button onClick={loadDenoiseTasks} icon={<SyncOutlined />}>刷新</Button>}
+          >
+            {denoiseTasks.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无降噪测评任务" />
+            ) : (
+              <Table
+                dataSource={denoiseTasks}
+                columns={denoiseColumns}
+                rowKey="task_id"
+                size="small"
+                pagination={{ pageSize: 5 }}
+              />
+            )}
+          </Card>
+        </Col>
+      </Row>
+    </div>
+  );
+
+  const renderRestorationTab = () => (
+    <div>
+      <Row gutter={[24, 24]}>
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><ToolOutlined /><span>音频修复</span></Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+          >
+            <Alert
+              message="使用说明"
+              description="上传音频文件，选择修复算法进行处理。支持去混响、超分辨率等音频修复功能"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+
+            <div style={{ marginBottom: 16 }}>
+              <Title level={5}>选择修复算法</Title>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                {restorationAlgorithms.map(algo => (
+                  <Card
+                    key={algo.name}
+                    size="small"
+                    style={{
+                      width: 280,
+                      cursor: 'pointer',
+                      border: selectedRestorationAlgorithm === algo.name ? '2px solid #667eea' : '1px solid #d9d9d9',
+                    }}
+                    onClick={() => setSelectedRestorationAlgorithm(algo.name)}
+                  >
+                    <Space direction="vertical" size="small">
+                      <Space>
+                        <Text strong>{algo.display_name}</Text>
+                        <Tag color={algo.type === '深度学习' ? 'blue' : 'green'}>{algo.type}</Tag>
+                      </Space>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{algo.description}</Text>
+                    </Space>
+                  </Card>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <Title level={5}>上传音频文件</Title>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <input
+                  type="file"
+                  accept=".wav,.mp3,.flac"
+                  onChange={(e) => setRestorationFile(e.target.files?.[0] || null)}
+                />
+                {restorationFile && (
+                  <Text type="secondary">
+                    已选择: {restorationFile.name} ({(restorationFile.size / 1024).toFixed(1)} KB)
+                  </Text>
+                )}
+              </Space>
+            </div>
+
+            <Button
+              type="primary"
+              onClick={handleRestorationSubmit}
+              loading={restorationLoading}
+              disabled={!restorationFile || !selectedRestorationAlgorithm}
+              block
+              size="large"
+              icon={<ToolOutlined />}
+              style={{
+                background: !restorationFile || !selectedRestorationAlgorithm
+                  ? 'linear-gradient(135deg, #d9d9d9 0%, #bfbfbf 100%)'
+                  : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                border: 'none',
+                borderRadius: 10,
+                height: 48,
+              }}
+            >
+              {restorationLoading ? '处理中...' : '开始修复'}
+            </Button>
+          </Card>
+        </Col>
+
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><FileExcelOutlined /><span>音频修复任务列表</span></Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+            extra={<Button onClick={loadRestorationTasks} icon={<SyncOutlined />}>刷新</Button>}
+          >
+            {restorationTasks.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无修复任务" />
+            ) : (
+              <Table
+                dataSource={restorationTasks}
+                columns={restorationColumns}
+                rowKey="task_id"
+                size="small"
+                pagination={{ pageSize: 5 }}
+              />
+            )}
+          </Card>
+        </Col>
+      </Row>
+    </div>
+  );
+
+  const tabItems = [
+    {
+      key: 'mos',
+      label: <Space><SoundOutlined />MOS评分</Space>,
+      children: renderMosTab(),
+    },
+    {
+      key: 'denoise',
+      label: <Space><ExperimentOutlined />降噪测评</Space>,
+      children: renderDenoiseTab(),
+    },
+    {
+      key: 'restoration',
+      label: <Space><ToolOutlined />音频修复</Space>,
+      children: renderRestorationTab(),
+    },
+  ];
+
   return (
     <Layout className="home-container" style={{ minHeight: '100vh' }}>
-      {/* 动态背景 */}
       <div className="home-background">
-        {/* 渐变圆形 */}
         <div className="bg-gradient-circle circle-1"></div>
         <div className="bg-gradient-circle circle-2"></div>
         <div className="bg-gradient-circle circle-3"></div>
         <div className="bg-gradient-circle circle-4"></div>
         <div className="bg-gradient-circle circle-5"></div>
 
-        {/* 浮动装饰元素 */}
         <div className="floating-elements">
           <div className="float-item float-1"></div>
           <div className="float-item float-2"></div>
@@ -365,10 +1114,8 @@ const Home: React.FC = () => {
           <div className="float-item float-5"></div>
         </div>
 
-        {/* 网格背景 */}
         <div className="grid-pattern"></div>
 
-        {/* 粒子效果 */}
         <div className="particles">
           {[...Array(10)].map((_, i) => (
             <div key={i} className="particle"></div>
@@ -406,264 +1153,15 @@ const Home: React.FC = () => {
 
       <Content className="home-content" style={{ padding: 24, background: 'transparent' }}>
         <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-        <Row gutter={[24, 24]}>
-          {/* 第一行：上传区域 */}
-          <Col span={24}>
-            <Card
-              className="home-card"
-              title={
-                <Space>
-                  <UploadOutlined />
-                  <span>上传音频文件</span>
-                </Space>
-              }
-              variant="borderless"
-              style={{ borderRadius: 12 }}
-            >
-              <div style={{
-                marginBottom: 16,
-                padding: '16px 20px',
-                background: 'linear-gradient(135deg, #f0f5ff 0%, #e6f0ff 100%)',
-                borderRadius: 12,
-                border: '1px solid #d6e4ff',
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 12
-              }}>
-                <InfoCircleOutlined style={{ fontSize: 20, color: '#667eea', marginTop: 2 }} />
-                <div>
-                  <div style={{ fontWeight: 600, color: '#1d39c4', marginBottom: 6, fontSize: 15 }}>
-                    使用说明
-                  </div>
-                  <div style={{ color: '#4c5b8a', lineHeight: 1.6, fontSize: 14 }}>
-                    支持上传 <Tag color="blue" style={{ margin: '0 4px' }}>.wav</Tag> 和 <Tag color="blue" style={{ margin: '0 4px' }}>.mp3</Tag> 格式的音频文件
-                    <br />
-                    系统会自动进行音频切分、对齐并计算多种MOS评分指标
-                  </div>
-                </div>
-              </div>
-
-              <Upload.Dragger {...uploadProps} style={{ marginBottom: 16 }}>
-                <p className="ant-upload-drag-icon">
-                  <SoundOutlined style={{ color: '#667eea' }} />
-                </p>
-                <p className="ant-upload-text">点击或拖拽文件到此处上传</p>
-                <p className="ant-upload-hint">
-                  支持单个或批量上传,文件格式: .wav, .mp3
-                </p>
-              </Upload.Dragger>
-
-              {/* 计算项目配置面板 */}
-              <Card
-                size="small"
-                style={{ marginBottom: 16, background: '#fafafa' }}
-                title={
-                  <Space>
-                    <SettingOutlined />
-                    <span>计算项目配置</span>
-                    <Tag color="blue">{selectedMetrics.length} 项已选</Tag>
-                  </Space>
-                }
-                extra={
-                  <Button
-                    type="link"
-                    size="small"
-                    onClick={() => setConfigPanelVisible(!configPanelVisible)}
-                  >
-                    {configPanelVisible ? '收起' : '展开'}
-                  </Button>
-                }
-              >
-                {configPanelVisible && (
-                  <div>
-                    <div style={{ marginBottom: 12 }}>
-                      <Space>
-                        <Button
-                          size="small"
-                          onClick={() => setSelectedMetrics(METRIC_OPTIONS.map(m => m.key))}
-                        >
-                          全选
-                        </Button>
-                        <Button
-                          size="small"
-                          onClick={() => setSelectedMetrics([])}
-                        >
-                          全不选
-                        </Button>
-                        <Button
-                          size="small"
-                          onClick={() => setSelectedMetrics(METRIC_OPTIONS.filter(m => m.defaultChecked).map(m => m.key))}
-                        >
-                          恢复默认
-                        </Button>
-                      </Space>
-                    </div>
-
-                    <Checkbox.Group
-                      value={selectedMetrics}
-                      onChange={(values) => setSelectedMetrics(values as string[])}
-                    >
-                      <Collapse ghost defaultActiveKey={['ref', 'no_ref']}>
-                        <Panel header={<Text strong>有参考音频指标 (需要参考音频)</Text>} key="ref">
-                          <Row gutter={[16, 8]}>
-                            {METRIC_OPTIONS.filter(m => m.category === 'ref').map(metric => (
-                              <Col span={12} key={metric.key}>
-                                <Tooltip title={metric.description}>
-                                  <Checkbox value={metric.key}>
-                                    <Text strong>{metric.label}</Text>
-                                    <br />
-                                    <Text type="secondary" style={{ fontSize: 12 }}>{metric.description}</Text>
-                                  </Checkbox>
-                                </Tooltip>
-                              </Col>
-                            ))}
-                          </Row>
-                        </Panel>
-
-                        <Panel header={<Text strong>无参考音频指标 (无需参考音频)</Text>} key="no_ref">
-                          <Row gutter={[16, 8]}>
-                            {METRIC_OPTIONS.filter(m => m.category === 'no_ref').map(metric => (
-                              <Col span={12} key={metric.key}>
-                                <Tooltip title={metric.description}>
-                                  <Checkbox value={metric.key}>
-                                    <Text strong>{metric.label}</Text>
-                                    <br />
-                                    <Text type="secondary" style={{ fontSize: 12 }}>{metric.description}</Text>
-                                  </Checkbox>
-                                </Tooltip>
-                              </Col>
-                            ))}
-                          </Row>
-                        </Panel>
-                      </Collapse>
-                    </Checkbox.Group>
-                  </div>
-                )}
-
-                {!configPanelVisible && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {selectedMetrics.map(key => {
-                      const metric = METRIC_OPTIONS.find(m => m.key === key);
-                      return metric ? (
-                        <Tag key={key} color="blue">{metric.label}</Tag>
-                      ) : null;
-                    })}
-                  </div>
-                )}
-              </Card>
-
-              <Button
-                type="primary"
-                onClick={handleUpload}
-                loading={uploading}
-                disabled={fileList.length === 0 || selectedMetrics.length === 0}
-                block
-                size="large"
-                icon={uploading ? <SyncOutlined spin /> : <UploadOutlined />}
-                style={{
-                  background: fileList.length === 0 || selectedMetrics.length === 0
-                    ? 'linear-gradient(135deg, #d9d9d9 0%, #bfbfbf 100%)'
-                    : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                  border: 'none',
-                  borderRadius: 10,
-                  height: 48,
-                  fontSize: 16,
-                  fontWeight: 500,
-                  boxShadow: fileList.length === 0 || selectedMetrics.length === 0
-                    ? 'none'
-                    : '0 4px 15px rgba(102, 126, 234, 0.4)',
-                  transition: 'all 0.3s ease'
-                }}
-              >
-                {uploading ? '上传处理中...' : fileList.length === 0 ? '请选择音频文件' : selectedMetrics.length === 0 ? '请至少选择一项计算指标' : `开始上传并处理 (${fileList.length} 个文件)`}
-              </Button>
-
-
-            </Card>
-          </Col>
-
-          {/* 第二行：统计信息 */}
-          <Col span={24}>
-            <Row gutter={[16, 16]}>
-              <Col xs={24} md={8}>
-                <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
-                  <Statistic
-                    title="总任务数"
-                    value={tasks.length}
-                    prefix={<BarChartOutlined />}
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} md={8}>
-                <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
-                  <Statistic
-                    title="已完成"
-                    value={tasks.filter(t => t.status === 'completed').length}
-                    valueStyle={{ color: '#3f8600' }}
-                    prefix={<CheckCircleOutlined />}
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} md={8}>
-                <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
-                  <Statistic
-                    title="处理中"
-                    value={tasks.filter(t => t.status === 'processing').length}
-                    valueStyle={{ color: '#1890ff' }}
-                    prefix={<SyncOutlined spin />}
-                  />
-                </Card>
-              </Col>
-            </Row>
-          </Col>
-
-          {/* 第三行：任务列表 */}
-          <Col span={24}>
-            <Card
-              className="home-card"
-              title={
-                <Space>
-                  <FileExcelOutlined />
-                  <span>任务列表</span>
-                </Space>
-              }
-              variant="borderless"
-              style={{ borderRadius: 12 }}
-              extra={
-                <Button onClick={loadTasks} icon={<SyncOutlined />}>
-                  刷新
-                </Button>
-              }
-            >
-              {tasks.length === 0 ? (
-                <Empty
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="暂无任务"
-                />
-              ) : (
-                <Table
-                  dataSource={tasks}
-                  columns={columns}
-                  rowKey="task_id"
-                  size="small"
-                  pagination={{
-                    current: taskPagination.current,
-                    pageSize: taskPagination.pageSize,
-                    showSizeChanger: true,
-                    pageSizeOptions: [5, 10, 20, 50],
-                    showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条 / 共 ${total} 条`,
-                    onChange: (page, pageSize) => {
-                      setTaskPagination({ current: page, pageSize: pageSize || 5 });
-                    },
-                    onShowSizeChange: (_current, size) => {
-                      setTaskPagination({ current: 1, pageSize: size });
-                    },
-                  }}
-                />
-              )}
-            </Card>
-          </Col>
-        </Row>
+          <Tabs
+            activeKey={activeTab}
+            onChange={setActiveTab}
+            items={tabItems}
+            size="large"
+            style={{
+              background: 'transparent',
+            }}
+          />
         </div>
       </Content>
 
@@ -673,7 +1171,6 @@ const Home: React.FC = () => {
         </Text>
       </Footer>
 
-      {/* 结果展示抽屉 */}
       <Drawer
         title="MOS评分结果详情"
         placement="right"
