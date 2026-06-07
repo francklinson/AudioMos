@@ -396,10 +396,22 @@ const Denoise: React.FC = () => {
             </ul>
           </div>
           <div className="info-card">
-            <h4>🔧 支持的算法</h4>
+            <h4>🔧 ClearVoice-Studio 系列</h4>
             <ul>
-              <li><strong>深度学习</strong>: MetricGAN+, SepFormer, FRCRN, MossFormer</li>
+              <li><strong>FRCRN SE (16K)</strong>: 实时语音增强，轻量高效</li>
+              <li><strong>MossFormer2 SE (48K)</strong>: 高保真降噪，最优质量</li>
+              <li><strong>MossFormerGAN SE (16K)</strong>: GAN增强，SOTA指标</li>
+              <li><strong>MossFormer2 SS (16K)</strong>: 语音分离，多说话人</li>
+              <li><strong>MossFormer2 SR (48K)</strong>: 超分辨率 16k→48k</li>
+            </ul>
+          </div>
+          <div className="info-card">
+            <h4>🤖 其他深度学习模型</h4>
+            <ul>
+              <li><strong>SpeechBrain</strong>: MetricGAN+, SepFormer</li>
               <li><strong>传统方法</strong>: 谱减法, 维纳滤波</li>
+              <li><strong>DCCRN</strong>: 复数卷积循环网络</li>
+              <li><strong>FullSubNet</strong>: 全带子带融合网络</li>
             </ul>
           </div>
           <div className="info-card">

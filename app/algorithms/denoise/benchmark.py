@@ -371,6 +371,270 @@ class BenchmarkRunner:
 
         print("=" * 80)
 
+    def run_with_statistics(
+        self,
+        algorithms: List[str],
+        test_files: List[str],
+        reference_files: Optional[List[str]] = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> Tuple[BenchmarkResult, Optional[any]]:
+        """
+        运行带统计显著性检验的测评
+
+        Args:
+            algorithms: 算法列表
+            test_files: 测试文件列表
+            reference_files: 参考文件列表
+            progress_callback: 进度回调
+
+        Returns:
+            (BenchmarkResult, 统计报告或None)
+        """
+        from .significance import StatisticalAnalyzer
+
+        # 运行基础测评
+        benchmark_result = self.run_benchmark(algorithms, test_files, reference_files, progress_callback)
+
+        if len(algorithms) < 2:
+            logger.warning("至少需要2个算法才能进行统计检验")
+            return benchmark_result, None
+
+        # 统计检验
+        analyzer = StatisticalAnalyzer()
+        algo_scores = {}
+
+        for algo_name, algo_result in benchmark_result.algorithms.items():
+            scores = {}
+            for metric, stats in algo_result.metrics.items():
+                metric_values = []
+                for detail in algo_result.details:
+                    if hasattr(detail, 'metrics'):
+                        val = getattr(detail.metrics, metric, None)
+                    else:
+                        val = getattr(detail, metric, None)
+                    if val is not None and not np.isnan(val) and not np.isinf(val):
+                        metric_values.append(val)
+                if metric_values:
+                    scores[metric] = metric_values
+            if scores:
+                algo_scores[algo_name] = scores
+
+        comparison = None
+        if len(algo_scores) >= 2:
+            algo_names = sorted(algo_scores.keys())
+            comparison = analyzer.compare_algorithms(
+                algo_scores[algo_names[0]],
+                algo_scores[algo_names[1]],
+                name_a=algo_names[0],
+                name_b=algo_names[1],
+            )
+
+        # 保存统计报告
+        if comparison:
+            stats_path = os.path.join(self.output_dir, f"statistical_report_{int(time.time())}.json")
+            with open(stats_path, "w") as f:
+                json.dump(comparison.to_dict(), f, indent=2, ensure_ascii=False)
+            logger.info(f"统计报告已保存: {stats_path}")
+
+        return benchmark_result, comparison
+
+    def run_with_visualization(
+        self, result: BenchmarkResult, chart_dir: Optional[str] = None
+    ) -> List[str]:
+        """
+        为测评结果生成可视化图表
+
+        Args:
+            result: BenchmarkResult 对象
+            chart_dir: 图表输出目录
+
+        Returns:
+            图表文件路径列表
+        """
+        from .visualizer import BenchmarkVisualizer
+
+        if chart_dir is None:
+            chart_dir = os.path.join(self.output_dir, "charts")
+
+        viz = BenchmarkVisualizer(output_dir=chart_dir)
+        chart_files = []
+
+        # 提取得分和汇总
+        algo_scores = {}
+        algo_means = {}
+        for algo_name, algo_result in result.algorithms.items():
+            algo_means[algo_name] = {}
+            for metric, stats in algo_result.metrics.items():
+                algo_means[algo_name][metric] = stats.get("mean", 0)
+                if metric not in algo_scores:
+                    algo_scores[metric] = {}
+                algo_scores[metric][algo_name] = stats.get("mean", 0)
+
+        # 雷达图
+        if len(algo_means) > 1:
+            path = viz.radar_chart(algo_means)
+            if path:
+                chart_files.append(path)
+
+        # 各指标箱线图
+        for metric in ["pesq", "stoi", "sisdr", "dnsmos_ovrl"]:
+            scores_dict = {}
+            for algo_name, algo_result in result.algorithms.items():
+                values = []
+                for detail in algo_result.details:
+                    if hasattr(detail, 'metrics'):
+                        val = getattr(detail.metrics, metric, None)
+                    else:
+                        val = getattr(detail, metric, None)
+                    if val is not None and not np.isnan(val) and not np.isinf(val):
+                        values.append(val)
+                if values:
+                    scores_dict[algo_name] = values
+
+            if len(scores_dict) > 1:
+                path = viz.box_plot(scores_dict, metric)
+                if path:
+                    chart_files.append(path)
+
+        # 柱状图
+        for metric in ["pesq", "stoi", "sisdr"]:
+            summary_dict = {}
+            for algo_name, algo_result in result.algorithms.items():
+                if metric in algo_result.metrics:
+                    summary_dict[algo_name] = {metric: algo_result.metrics[metric]}
+            if len(summary_dict) > 1:
+                path = viz.bar_chart_with_ci(summary_dict, metric)
+                if path:
+                    chart_files.append(path)
+
+        # 仪表盘
+        dashboard_path = viz.generate_dashboard_html(
+            algo_means, chart_files=chart_files,
+            save_path=os.path.join(chart_dir, "dashboard.html"),
+        )
+        if dashboard_path:
+            chart_files.append(dashboard_path)
+
+        logger.info(f"生成 {len(chart_files)} 个可视化图表")
+        return chart_files
+
+    def run_full_benchmark(
+        self,
+        algorithms: List[str],
+        test_files: List[str],
+        reference_files: Optional[List[str]] = None,
+        enable_statistics: bool = True,
+        enable_visualization: bool = True,
+        progress_callback: Optional[Callable] = None,
+    ) -> Dict:
+        """
+        运行完整测评流程（含统计+可视化）
+
+        Args:
+            algorithms: 算法列表
+            test_files: 测试文件列表
+            reference_files: 参考文件列表
+            enable_statistics: 是否启用统计检验
+            enable_visualization: 是否启用可视化
+            progress_callback: 进度回调
+
+        Returns:
+            包含 benchmark_result, stats, charts 的字典
+        """
+        if enable_statistics:
+            benchmark_result, stats = self.run_with_statistics(
+                algorithms, test_files, reference_files, progress_callback
+            )
+        else:
+            benchmark_result = self.run_benchmark(algorithms, test_files, reference_files, progress_callback)
+            stats = None
+
+        charts = []
+        if enable_visualization:
+            charts = self.run_with_visualization(benchmark_result)
+
+        # 保存完整结果
+        json_path = self.export_results(benchmark_result)
+
+        return {
+            "benchmark_result": benchmark_result,
+            "statistical_report": stats,
+            "chart_files": charts,
+            "json_export": json_path,
+        }
+
+    def analyze_robustness(
+        self,
+        benchmark_result: BenchmarkResult,
+        sample_metadata: Optional[Dict[str, Dict]] = None,
+    ) -> Dict:
+        """
+        鲁棒性分析: 按噪声类型和SNR级别分组分析
+
+        Args:
+            benchmark_result: 基准测试结果
+            sample_metadata: 样本元数据 {file_index: {noise_type, snr_db}}
+
+        Returns:
+            鲁棒性分析报告
+        """
+        report = {
+            "by_noise_type": {},
+            "by_snr": {},
+            "summary": "",
+        }
+
+        if not sample_metadata:
+            report["summary"] = "需要提供样本元数据以进行鲁棒性分析"
+            return report
+
+        # 从详细信息中提取指标并按组分类
+        for algo_name, algo_result in benchmark_result.algorithms.items():
+            noise_groups = defaultdict(list)
+            snr_groups = defaultdict(list)
+
+            for i, detail in enumerate(algo_result.details):
+                metadata = sample_metadata.get(str(i), sample_metadata.get(i, {}))
+                noise_type = metadata.get("noise_type", "unknown")
+                snr_db = metadata.get("snr_db", None)
+
+                metrics_obj = detail.metrics if hasattr(detail, 'metrics') else detail
+
+                for metric in ["pesq", "stoi", "sisdr", "dnsmos_ovrl"]:
+                    val = getattr(metrics_obj, metric, None)
+                    if val is not None and not np.isnan(val) and not np.isinf(val):
+                        noise_groups[f"{metric}_{noise_type}"].append(val)
+                        if snr_db is not None:
+                            snr_groups[f"{metric}_{snr_db}dB"].append(val)
+
+            # 汇总噪声类型
+            for group_key, values in noise_groups.items():
+                if values:
+                    report["by_noise_type"][f"{algo_name}/{group_key}"] = {
+                        "mean": round(float(np.mean(values)), 4),
+                        "std": round(float(np.std(values)), 4),
+                        "n": len(values),
+                    }
+
+            # 汇总SNR
+            for group_key, values in snr_groups.items():
+                if values:
+                    report["by_snr"][f"{algo_name}/{group_key}"] = {
+                        "mean": round(float(np.mean(values)), 4),
+                        "std": round(float(np.std(values)), 4),
+                        "n": len(values),
+                    }
+
+        # 生成摘要
+        lines = ["鲁棒性分析摘要"]
+        if report["by_noise_type"]:
+            lines.append(f"  噪声类型分组数: {len(set(k.split('/')[0] for k in report['by_noise_type']))}")
+        if report["by_snr"]:
+            lines.append(f"  SNR级别分组数: {len(set(k.split('/')[0] for k in report['by_snr']))}")
+        report["summary"] = "\n".join(lines)
+
+        return report
+
     def export_results(self, result: BenchmarkResult, output_file: Optional[str] = None) -> str:
         """
         导出测评结果为JSON

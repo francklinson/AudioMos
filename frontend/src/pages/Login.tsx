@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Form, Input, Button, Typography, message } from 'antd';
 import { SoundOutlined, LockOutlined, UserOutlined, AudioOutlined, BarChartOutlined, CheckCircleOutlined, CustomerServiceFilled, PlayCircleFilled, PauseCircleFilled, SoundFilled } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
@@ -8,7 +7,6 @@ import './Login.css';
 const { Title, Text } = Typography;
 
 const Login: React.FC = () => {
-  const navigate = useNavigate();
   const { login } = useAuth();
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -22,9 +20,10 @@ const Login: React.FC = () => {
     try {
       await login(values.username, values.password);
       message.success('登录成功');
-      navigate('/');
+      // 登录成功后，PublicRoute 会自动检测 isAuthenticated 并跳转到 /
     } catch (error: any) {
-      message.error(error.response?.data?.detail || '登录失败');
+      const errMsg = error?.response?.data?.detail || error?.message || '登录失败';
+      message.error(errMsg);
     } finally {
       setLoading(false);
     }

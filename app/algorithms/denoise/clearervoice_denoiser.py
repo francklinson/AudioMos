@@ -1,693 +1,483 @@
 """
-ClearerVoice-Studio语音增强算法
-阿里巴巴开源的先进语音处理工具包
-包含FRCRN、MossFormer等模型
+ClearVoice-Studio 语音增强/分离/超分辨率算法适配器
+基于阿里巴巴开源的 ClearerVoice-Studio 工具包 (clearvoice >= 0.1.0)
+
+支持全部5个预训练模型:
+  - FRCRN_SE_16K:         16kHz 实时语音增强 (轻量高效)
+  - MossFormer2_SE_48K:   48kHz 语音增强 (最高质量)
+  - MossFormerGAN_SE_16K: 16kHz GAN语音增强 (SOTA性能)
+  - MossFormer2_SS_16K:   16kHz 语音分离 (多说话人)
+  - MossFormer2_SR_48K:   48kHz 语音超分辨率 (16k→48k)
+
+模型来源: HuggingFace alibabasglab/{model_name}
+本地缓存: {project_root}/models/clearvoice/{model_name}/
 """
 
 import numpy as np
-import torch
 import librosa
-from typing import Optional
-import time
 import os
+import time
+import tempfile
+import soundfile as sf
+from typing import Optional, Dict, Any
+import logging
 
 from .base import BaseDenoiser, DenoiseResult
 from .registry import DenoiserRegistry
 
+logger = logging.getLogger(__name__)
 
-def _patch_modelscope_compat():
-    """在导入 modelscope 前应用 datasets 兼容性补丁"""
-    try:
-        import datasets
+# ── 模型配置表 ──────────────────────────────────────────────────
+# 每个模型的任务类型、采样率、显示信息
 
-        if not hasattr(datasets, "LargeList"):
-            class _LargeListStub(list):
-                pass
+CLEARVOICE_MODEL_SPECS: Dict[str, Dict[str, Any]] = {
+    "clearvoice_frcrn_se_16k": {
+        "task": "speech_enhancement",
+        "model_name": "FRCRN_SE_16K",
+        "sample_rate": 16000,
+        "display_name": "ClearVoice FRCRN (16K)",
+        "description": "FRCRN实时语音增强模型，16kHz采样率，轻量高效，支持流式处理",
+        "checkpoint_subdir": "models/clearvoice/FRCRN_SE_16K",
+    },
+    "clearvoice_mossformer2_se_48k": {
+        "task": "speech_enhancement",
+        "model_name": "MossFormer2_SE_48K",
+        "sample_rate": 48000,
+        "display_name": "ClearVoice MossFormer2 SE (48K)",
+        "description": "MossFormer2架构48kHz语音增强模型，最高降噪质量，适合专业音频处理",
+        "checkpoint_subdir": "models/clearvoice/MossFormer2_SE_48K",
+    },
+    "clearvoice_mossformer_gan_se_16k": {
+        "task": "speech_enhancement",
+        "model_name": "MossFormerGAN_SE_16K",
+        "sample_rate": 16000,
+        "display_name": "ClearVoice MossFormerGAN (16K)",
+        "description": "基于GAN的MossFormer语音增强模型，16kHz，VoiceBank+DEMAND上PESQ=3.47 SOTA性能",
+        "checkpoint_subdir": "models/clearvoice/MossFormerGAN_SE_16K",
+    },
+    "clearvoice_mossformer2_ss_16k": {
+        "task": "speech_separation",
+        "model_name": "MossFormer2_SS_16K",
+        "sample_rate": 16000,
+        "display_name": "ClearVoice MossFormer2 SS (16K)",
+        "description": "MossFormer2语音分离模型，16kHz，WSJ0-2Mix上SI-SNRi=22.0dB，支持2人分离",
+        "checkpoint_subdir": "models/clearvoice/MossFormer2_SS_16K",
+    },
+    "clearvoice_mossformer2_sr_48k": {
+        "task": "speech_super_resolution",
+        "model_name": "MossFormer2_SR_48K",
+        "sample_rate": 48000,
+        "display_name": "ClearVoice MossFormer2 SR (48K)",
+        "description": "MossFormer2语音超分辨率模型，将16kHz音频提升至48kHz高保真质量",
+        "checkpoint_subdir": "models/clearvoice/MossFormer2_SR_48K",
+    },
+}
 
-            datasets.LargeList = _LargeListStub
 
-        import datasets.features.features as _ds_ff
+class ClearVoiceWrapperDenoiser(BaseDenoiser):
+    """
+    ClearVoice-Studio 统一降噪/增强/分离/超分适配器
 
-        if not hasattr(_ds_ff, "_FEATURE_TYPES"):
-            from datasets.features.features import (
-                Value,
-                ClassLabel,
-                Array2D,
-                Array3D,
-                Array4D,
-                Array5D,
+    使用 clearvoice 包的原生 API，自动从 HuggingFace 下载预训练模型。
+    支持 file-based 和 tensor-based 两种推理模式。
+
+    用法:
+        denoiser = ClearVoiceWrapperDenoiser(model_key="clearvoice_frcrn_se_16k")
+        denoiser.initialize()
+        result = denoiser.denoise(noisy_audio, sr=16000)
+    """
+
+    def __init__(
+        self,
+        model_key: str = "clearvoice_frcrn_se_16k",
+        sample_rate: int = 16000,
+        device: str = "cuda",
+        model_dir: str = "./models/clearvoice",
+    ):
+        """
+        初始化 ClearVoice 适配器
+
+        Args:
+            model_key: 模型标识符 (见 CLEARVOICE_MODEL_SPECS 的 key)
+            sample_rate: 目标采样率（会被模型原生采样率覆盖）
+            device: 计算设备 (cuda/cpu)
+            model_dir: 模型下载根目录
+        """
+        spec = CLEARVOICE_MODEL_SPECS.get(model_key)
+        if spec is None:
+            raise ValueError(
+                f"不支持的模型: {model_key}，"
+                f"可用: {list(CLEARVOICE_MODEL_SPECS.keys())}"
             )
 
-            _FEATURE_TYPES = {
-                "Value": Value,
-                "ClassLabel": ClassLabel,
-                "Sequence": datasets.Sequence,
-                "Array2D": Array2D,
-                "Array3D": Array3D,
-                "Array4D": Array4D,
-                "Array5D": Array5D,
-            }
-            _ds_ff._FEATURE_TYPES = _FEATURE_TYPES
-    except Exception:
-        pass
-
-
-class ClearerVoiceDenoiser(BaseDenoiser):
-    """
-    ClearerVoice-Studio语音增强器
-    支持FRCRN和MossFormer系列模型
-    """
-    
-    def __init__(self, model_type: str = "frcrn", sample_rate: int = 16000,
-                 device: str = "cuda", model_dir: str = "./models/clearervoice"):
-        """
-        初始化ClearerVoice降噪器
-        
-        Args:
-            model_type: 模型类型 (frcrn/mossformer/mossformer2)
-            sample_rate: 采样率
-            device: 计算设备
-            model_dir: 模型保存目录
-        """
-        name = f"clearervoice_{model_type}"
-        super().__init__(name, sample_rate, device)
-        self.model_type = model_type
+        self.model_key = model_key
+        self._spec = spec
         self.model_dir = model_dir
-        self._model = None
-        self._model_path = None
-    
+
+        # 使用模型原生采样率
+        native_sr = spec["sample_rate"]
+        super().__init__(spec["model_name"], native_sr, device)
+
+        self._cv_instance = None  # ClearVoice 实例（延迟初始化）
+        self._model_loaded = False
+
+    # ── BaseDenoiser 接口 ──────────────────────────────────────
+
     def initialize(self) -> bool:
         """
-        初始化ClearerVoice模型
-        
+        初始化并下载/加载 ClearVoice 模型
+
         Returns:
             是否初始化成功
         """
+        if self._is_initialized:
+            return True
+
         try:
-            # 检查ClearerVoice是否已安装
-            try:
-                from clearervoice import VoiceEnhancer
-            except ImportError:
-                print("ClearerVoice-Studio未安装，尝试使用备用方案")
-                return self._init_fallback()
-            
+            from clearvoice import ClearVoice
+
             # 确保模型目录存在
             os.makedirs(self.model_dir, exist_ok=True)
-            
-            # 根据模型类型选择配置
-            if self.model_type == "frcrn":
-                self._model = VoiceEnhancer(
-                    model_name="frcrn",
-                    device=self.device,
-                    model_dir=self.model_dir
-                )
-            elif self.model_type in ["mossformer", "mossformer2"]:
-                self._model = VoiceEnhancer(
-                    model_name=self.model_type,
-                    device=self.device,
-                    model_dir=self.model_dir
-                )
-            else:
-                raise ValueError(f"不支持的模型类型: {self.model_type}")
-            
-            self._is_initialized = True
-            return True
-            
-        except Exception as e:
-            print(f"ClearerVoice模型初始化失败: {e}")
-            return self._init_fallback()
-    
-    def _init_fallback(self) -> bool:
-        """
-        备用初始化方案
-        使用ModelScope加载模型
-        """
-        try:
-            # 在导入 modelscope 之前应用兼容性补丁
-            _patch_modelscope_compat()
-            from modelscope.pipelines import pipeline
-            from modelscope.utils.constant import Tasks
-            
-            # 使用ModelScope的语音增强pipeline
-            model_id_map = {
-                "frcrn": "damo/speech_frcrn_ans_cirm_16k",
-                "mossformer": "damo/speech_mossformer_separation_16k",
-                "mossformer2": "damo/speech_mossformer2_separation_16k"
-            }
-            
-            model_id = model_id_map.get(self.model_type, model_id_map["frcrn"])
-            
-            self._model = pipeline(
-                Tasks.acoustic_noise_suppression,
-                model=model_id,
-                device=self.device
+
+            # 设置 checkpoint_dir 环境变量，让 clearvoice 找到正确的路径
+            checkpoint_dir = os.path.join(
+                self.model_dir, self._spec["model_name"]
             )
-            
+            os.makedirs(checkpoint_dir, exist_ok=True)
+
+            # 保存当前工作目录并切换到项目根目录
+            # (clearvoice 使用相对路径 checkpoint_dir，需要从项目根目录运行)
+            original_cwd = os.getcwd()
+
+            # 查找项目根目录（包含 checkpoints 或 models 目录的父目录）
+            project_root = self._find_project_root()
+            os.chdir(project_root)
+
+            try:
+                logger.info(
+                    f"正在加载 ClearVoice 模型: {self._spec['model_name']} "
+                    f"(task={self._spec['task']})"
+                )
+                self._cv_instance = ClearVoice(
+                    task=self._spec["task"],
+                    model_names=[self._spec["model_name"]],
+                )
+            finally:
+                os.chdir(original_cwd)
+
             self._is_initialized = True
+            self._model_loaded = True
+            logger.info(
+                f"✓ ClearVoice 模型加载成功: {self._spec['model_name']}"
+            )
             return True
-            
-        except Exception as e:
-            print(f"备用初始化也失败: {e}")
+
+        except ImportError:
+            logger.error(
+                "clearvoice 包未安装。请运行: pip install clearvoice"
+            )
             self._is_initialized = False
             return False
-    
-    def denoise(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> DenoiseResult:
+        except Exception as e:
+            logger.error(
+                f"ClearVoice 模型初始化失败 ({self._spec['model_name']}): {e}"
+            )
+            self._is_initialized = False
+            return False
+
+    def denoise(
+        self, audio: np.ndarray, sample_rate: Optional[int] = None
+    ) -> DenoiseResult:
         """
-        执行语音增强
-        
+        执行语音处理（增强/分离/超分辨率）
+
+        使用临时文件方式调用 ClearVoice 的 file-based API，
+        这是最稳定可靠的方式。
+
         Args:
-            audio: 输入音频
-            sample_rate: 采样率
-            
+            audio: 输入音频 (numpy array, float32 in [-1, 1])
+            sample_rate: 输入采样率
+
         Returns:
-            DenoiseResult对象
+            DenoiseResult 对象
         """
         start_time = time.time()
-        
+
         if not self._is_initialized:
-            self.initialize()
-        
-        # 重采样
-        if sample_rate is not None and sample_rate != self.sample_rate:
-            audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=self.sample_rate)
-        
-        # 确保单声道
-        if len(audio.shape) > 1:
-            audio = np.mean(audio, axis=1)
-        
-        try:
-            # 根据模型类型执行增强
-            if hasattr(self._model, 'enhance'):
-                # ClearerVoice原生API
-                enhanced = self._model.enhance(audio, sr=self.sample_rate)
-            elif hasattr(self._model, '__call__'):
-                # ModelScope pipeline
-                result = self._model(audio)
-                enhanced = result['output']
-            else:
-                raise ValueError("未知的模型接口")
-            
-            processing_time = time.time() - start_time
-            
-            return DenoiseResult(
-                audio=enhanced,
-                sample_rate=self.sample_rate,
-                processing_time=processing_time,
-                algorithm_name=self.name
-            )
-            
-        except Exception as e:
-            print(f"ClearerVoice增强失败: {e}")
-            return DenoiseResult(
-                audio=audio,
-                sample_rate=self.sample_rate,
-                processing_time=time.time() - start_time,
-                algorithm_name=self.name
-            )
-
-
-class FRCRNDenoiser(BaseDenoiser):
-    """
-    FRCRN (Feature Recurrent Convolutional Recurrent Network)
-    阿里达摩院开源的实时语音增强模型
-    """
-    
-    def __init__(self, sample_rate: int = 16000, device: str = "cuda",
-                 model_dir: str = "./models/clearervoice"):
-        """
-        初始化FRCRN降噪器
-        
-        Args:
-            sample_rate: 采样率
-            device: 计算设备
-            model_dir: 模型保存目录
-        """
-        super().__init__("clearervoice_frcrn", sample_rate, device)
-        self.model_dir = model_dir
-        self._enhancer = None
-        self._model_source = None
-    
-    def initialize(self) -> bool:
-        """初始化FRCRN模型"""
-        try:
-            os.makedirs(self.model_dir, exist_ok=True)
-            
-            # 方案1: 尝试从本地模型目录加载
-            local_model_path = os.path.join(self.model_dir, "frcrn")
-            if os.path.exists(local_model_path) and any(os.listdir(local_model_path)):
-                print(f"尝试从本地加载FRCRN模型: {local_model_path}")
-                try:
-                    _patch_modelscope_compat()
-                    from modelscope.pipelines import pipeline
-                    from modelscope.utils.constant import Tasks
-                    
-                    self._enhancer = pipeline(
-                        Tasks.acoustic_noise_suppression,
-                        model=local_model_path,
-                        device=self.device
-                    )
-                    self._model_source = "local"
-                    self._is_initialized = True
-                    print("FRCRN本地模型加载成功")
-                    return True
-                except Exception as e1:
-                    print(f"本地加载失败: {e1}")
-            
-            # 方案2: 从ModelScope在线加载
-            print("尝试从ModelScope在线加载FRCRN模型...")
-            try:
-                _patch_modelscope_compat()
-                from modelscope.pipelines import pipeline
-                from modelscope.utils.constant import Tasks
-
-                self._enhancer = pipeline(
-                    Tasks.acoustic_noise_suppression,
-                    model="iic/speech_frcrn_ans_cirm_16k",
-                    device=self.device
+            if not self.initialize():
+                return DenoiseResult(
+                    audio=audio,
+                    sample_rate=sample_rate or self.sample_rate,
+                    processing_time=time.time() - start_time,
+                    algorithm_name=self.name,
                 )
-                self._model_source = "modelscope"
-                self._is_initialized = True
-                print("FRCRN在线模型加载成功")
-                return True
-                
-            except Exception as e2:
-                print(f"ModelScope在线加载失败: {e2}")
-            
-            # 方案3: 回退到SpeechBrain
-            print("FRCRN所有加载方案失败，回退到SpeechBrain MetricGAN+")
-            try:
-                from speechbrain.inference.enhancement import SpectralMaskEnhancement
-                
-                sb_model_dir = os.path.join(self.model_dir, "speechbrain_fallback")
-                self._enhancer = SpectralMaskEnhancement.from_hparams(
-                    source="speechbrain/metricgan-plus-voicebank",
-                    savedir=sb_model_dir,
-                    run_opts={"device": self.device}
-                )
-                self._model_source = "speechbrain_fallback"
-                self._is_initialized = True
-                print("FRCRN回退模型(MetricGAN+)加载成功")
-                return True
-                
-            except Exception as e3:
-                print(f"SpeechBrain回退也失败: {e3}")
-            
-            self._is_initialized = False
-            return False
-            
-        except Exception as e:
-            print(f"FRCRN模型初始化失败: {e}")
-            self._is_initialized = False
-            return False
-    
-    def denoise(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> DenoiseResult:
-        """执行增强"""
-        start_time = time.time()
-        
-        if not self._is_initialized:
-            self.initialize()
-        
-        # FRCRN要求16kHz
-        target_sr = 16000
+
+        target_sr = self._spec["sample_rate"]
+
+        # ── 预处理: 重采样 + 单声道 ──
         if sample_rate is not None and sample_rate != target_sr:
-            audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=target_sr)
-        
-        # 确保单声道
+            audio = librosa.resample(
+                audio, orig_sr=sample_rate, target_sr=target_sr
+            )
+
         if len(audio.shape) > 1:
             audio = np.mean(audio, axis=1)
-        
+
+        # 确保 float32 范围
+        if audio.dtype != np.float32:
+            audio = audio.astype(np.float32)
+
+        # ── 使用临时文件进行推理 ──
+        temp_input = None
+        temp_input_path = None
+
         try:
-            # 根据模型来源执行增强
-            if self._model_source == "speechbrain_fallback":
-                # SpeechBrain API
-                import torch
-                audio_tensor = torch.from_numpy(audio).float().unsqueeze(0)
-                with torch.no_grad():
-                    enhanced = self._enhancer.enhance_batch(audio_tensor, lengths=torch.tensor([1.0]))
-                if isinstance(enhanced, torch.Tensor):
-                    enhanced = enhanced.squeeze(0).cpu().numpy()
-            else:
-                # ModelScope pipeline - 需要传入文件路径而不是numpy数组
-                # ModelScope ANSPipeline有bug，不支持直接传入numpy数组
-                import tempfile
-                import soundfile as sf
-                import os
-                
-                # 创建临时文件
-                temp_input = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-                temp_input_path = temp_input.name
-                temp_input.close()
-                
-                try:
-                    # 保存输入音频到临时文件
-                    sf.write(temp_input_path, audio, target_sr)
-                    
-                    # 执行增强 - 传入文件路径
-                    result = self._enhancer(temp_input_path)
-                    
-                    # 解析输出
-                    if isinstance(result, dict):
-                        if 'output_pcm' in result:
-                            # ModelScope ANSPipeline返回bytes格式的16-bit PCM
-                            pcm_data = result['output_pcm']
-                            if isinstance(pcm_data, bytes):
-                                enhanced = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
-                            elif isinstance(pcm_data, np.ndarray):
-                                enhanced = pcm_data.astype(np.float32)
-                            else:
-                                enhanced = audio
-                        elif 'output' in result:
-                            enhanced = result['output']
-                            if isinstance(enhanced, bytes):
-                                enhanced = np.frombuffer(enhanced, dtype=np.int16).astype(np.float32) / 32768.0
-                        else:
-                            # 尝试获取第一个值
-                            for key, val in result.items():
-                                if isinstance(val, np.ndarray):
-                                    enhanced = val.astype(np.float32)
-                                    break
-                                elif isinstance(val, bytes):
-                                    enhanced = np.frombuffer(val, dtype=np.int16).astype(np.float32) / 32768.0
-                                    break
-                    else:
-                        enhanced = audio
-                        
-                except Exception as pipeline_e:
-                    print(f"ModelScope pipeline执行失败: {pipeline_e}")
-                    enhanced = audio
-                finally:
-                    # 清理临时文件
-                    try:
-                        os.unlink(temp_input_path)
-                    except:
-                        pass
-            
-            # 重采样回目标采样率
+            temp_input = tempfile.NamedTemporaryFile(
+                suffix=".wav", delete=False
+            )
+            temp_input_path = temp_input.name
+            temp_input.close()
+
+            # 写入输入音频
+            sf.write(temp_input_path, audio, target_sr)
+
+            # 调用 ClearVoice 推理
+            result = self._cv_instance(
+                input_path=temp_input_path,
+                online_write=False,
+            )
+
+            # 解析输出
+            enhanced = self._parse_output(result, audio)
+
+            # ── 后处理: 重采样回目标采样率 ──
             if self.sample_rate != target_sr:
-                enhanced = librosa.resample(enhanced, orig_sr=target_sr, target_sr=self.sample_rate)
-            
+                enhanced = librosa.resample(
+                    enhanced, orig_sr=target_sr, target_sr=self.sample_rate
+                )
+
             processing_time = time.time() - start_time
-            
+
             return DenoiseResult(
-                audio=enhanced,
+                audio=enhanced.astype(np.float32),
                 sample_rate=self.sample_rate,
                 processing_time=processing_time,
-                algorithm_name=self.name
+                algorithm_name=self.name,
             )
-            
+
         except Exception as e:
-            print(f"FRCRN增强失败: {e}")
+            logger.error(
+                f"ClearVoice 推理失败 ({self._spec['model_name']}): {e}"
+            )
             return DenoiseResult(
                 audio=audio,
                 sample_rate=self.sample_rate,
                 processing_time=time.time() - start_time,
-                algorithm_name=self.name
+                algorithm_name=self.name,
             )
+        finally:
+            # 清理临时文件
+            if temp_input_path and os.path.exists(temp_input_path):
+                try:
+                    os.unlink(temp_input_path)
+                except OSError:
+                    pass
 
+    # ── 辅助方法 ──────────────────────────────────────────────
 
-class MossFormerDenoiser(BaseDenoiser):
-    """
-    MossFormer语音分离/增强器
-    基于混合注意力机制的先进模型
-    """
-    
-    def __init__(self, sample_rate: int = 16000, device: str = "cuda",
-                 model_dir: str = "./models/clearervoice", version: str = "2"):
+    def _parse_output(
+        self, result, fallback: np.ndarray
+    ) -> np.ndarray:
         """
-        初始化MossFormer降噪器
-        
+        解析 ClearVoice 输出结果
+
+        ClearVoice 不同模型返回格式略有不同:
+        - SE/SR 模型: 直接返回 numpy array (samples,)
+        - SS 模型: 返回 list of numpy arrays (每个说话人)
+
         Args:
-            sample_rate: 采样率
-            device: 计算设备
-            model_dir: 模型保存目录
-            version: 版本 ("1" 或 "2")
+            result: ClearVoice 推理结果
+            fallback: 解析失败时的回退值
+
+        Returns:
+            处理后的音频 numpy array
         """
-        name = f"clearervoice_mossformer{version}"
-        super().__init__(name, sample_rate, device)
-        self.model_dir = model_dir
-        self.version = version
-        self._separator = None
-        self._model_source = None
-    
-    def initialize(self) -> bool:
-        """初始化MossFormer模型"""
-        try:
-            os.makedirs(self.model_dir, exist_ok=True)
-            
-            # 方案1: 尝试从本地模型目录加载
-            local_model_path = os.path.join(self.model_dir, f"mossformer{self.version}")
-            if os.path.exists(local_model_path) and any(os.listdir(local_model_path)):
-                print(f"尝试从本地加载MossFormer{self.version}模型: {local_model_path}")
-                try:
-                    _patch_modelscope_compat()
-                    from modelscope.pipelines import pipeline
-                    from modelscope.utils.constant import Tasks
-                    
-                    self._separator = pipeline(
-                        Tasks.speech_separation,
-                        model=local_model_path,
-                        device=self.device
-                    )
-                    self._model_source = "local"
-                    self._is_initialized = True
-                    print(f"MossFormer{self.version}本地模型加载成功")
-                    return True
-                except Exception as e1:
-                    print(f"本地加载失败: {e1}")
-            
-            # 方案2: 从ModelScope在线加载
-            print(f"尝试从ModelScope在线加载MossFormer{self.version}模型...")
-            try:
-                _patch_modelscope_compat()
-                from modelscope.pipelines import pipeline
-                from modelscope.utils.constant import Tasks
+        if result is None:
+            return fallback
 
-                model_id = f"iic/speech_mossformer{'2' if self.version == '2' else ''}_separation_temporal_8k"
-                
-                self._separator = pipeline(
-                    Tasks.speech_separation,
-                    model=model_id,
-                    device=self.device
-                )
-                self._model_source = "modelscope"
-                self._is_initialized = True
-                print(f"MossFormer{self.version}在线模型加载成功")
-                return True
-                
-            except Exception as e2:
-                print(f"ModelScope在线加载失败: {e2}")
-            
-            # 方案3: 回退到SpeechBrain SepFormer
-            print(f"MossFormer{self.version}所有加载方案失败，回退到SpeechBrain SepFormer")
-            try:
-                from speechbrain.inference.separation import SepformerSeparation
-                
-                sb_model_dir = os.path.join(self.model_dir, "speechbrain_fallback")
-                self._separator = SepformerSeparation.from_hparams(
-                    source="speechbrain/sepformer-wham-enhancement",
-                    savedir=sb_model_dir,
-                    run_opts={"device": self.device}
-                )
-                self._model_source = "speechbrain_fallback"
-                self._is_initialized = True
-                print(f"MossFormer{self.version}回退模型(SepFormer)加载成功")
-                return True
-                
-            except Exception as e3:
-                print(f"SpeechBrain回退也失败: {e3}")
-            
-            self._is_initialized = False
-            return False
-            
-        except Exception as e:
-            print(f"MossFormer模型初始化失败: {e}")
-            self._is_initialized = False
-            return False
-    
-    def denoise(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> DenoiseResult:
-        """执行分离/增强"""
-        start_time = time.time()
-        
-        if not self._is_initialized:
-            self.initialize()
-        
-        # MossFormer要求16kHz，MossFormer2要求8kHz
-        target_sr = 8000 if self.version == "2" else 16000
-        if sample_rate is not None and sample_rate != target_sr:
-            audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=target_sr)
-        
-        # 确保单声道
-        if len(audio.shape) > 1:
-            audio = np.mean(audio, axis=1)
-        
-        try:
-            import torch
-            
-            # 根据模型来源执行增强
-            if self._model_source == "speechbrain_fallback":
-                # SpeechBrain API
-                audio_tensor = torch.from_numpy(audio).float().unsqueeze(0)
-                with torch.no_grad():
-                    enhanced = self._separator.separate_batch(audio_tensor)
-                if isinstance(enhanced, torch.Tensor):
-                    enhanced = enhanced.squeeze(0).cpu().numpy()
-            else:
-                # ModelScope pipeline - 需要传入文件路径而不是numpy数组
-                # ModelScope SeparationPipeline有bug，不支持直接传入numpy数组
-                import tempfile
-                import soundfile as sf
-                import os
-                
-                # 创建临时文件
-                temp_input = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-                temp_input_path = temp_input.name
-                temp_input.close()
-                
-                try:
-                    # 保存输入音频到临时文件
-                    sf.write(temp_input_path, audio, target_sr)
-                    
-                    # 执行分离 - 传入文件路径
-                    result = self._separator(temp_input_path)
-                    
-                    # 解析输出 - 取第一个分离结果(语音)
-                    enhanced = audio  # 默认值
-                    
-                    if isinstance(result, dict):
-                        if 'output_pcm' in result:
-                            pcm_data = result['output_pcm']
-                            if isinstance(pcm_data, bytes):
-                                enhanced = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
-                            elif isinstance(pcm_data, np.ndarray):
-                                enhanced = pcm_data.astype(np.float32)
-                            elif isinstance(pcm_data, list):
-                                enhanced = np.array(pcm_data[0] if pcm_data else audio, dtype=np.float32)
-                            else:
-                                enhanced = audio
-                        elif 'output' in result:
-                            output_data = result['output']
-                            if isinstance(output_data, bytes):
-                                enhanced = np.frombuffer(output_data, dtype=np.int16).astype(np.float32) / 32768.0
-                            elif isinstance(output_data, list):
-                                enhanced = np.array(output_data[0] if output_data else audio, dtype=np.float32)
-                            elif isinstance(output_data, np.ndarray):
-                                enhanced = output_data.astype(np.float32)
-                            else:
-                                enhanced = audio
-                        elif 'separated' in result:
-                            sep_data = result['separated']
-                            if isinstance(sep_data, list):
-                                enhanced = np.array(sep_data[0], dtype=np.float32) if sep_data else audio
-                            elif isinstance(sep_data, np.ndarray):
-                                enhanced = sep_data.astype(np.float32)
-                            else:
-                                enhanced = audio
-                        else:
-                            # 尝试获取第一个numpy数组或bytes值
-                            found = False
-                            for key, val in result.items():
-                                if isinstance(val, np.ndarray):
-                                    enhanced = val.astype(np.float32)
-                                    found = True
-                                    break
-                                elif isinstance(val, bytes):
-                                    enhanced = np.frombuffer(val, dtype=np.int16).astype(np.float32) / 32768.0
-                                    found = True
-                                    break
-                                elif isinstance(val, list) and len(val) > 0:
-                                    if isinstance(val[0], np.ndarray):
-                                        enhanced = val[0].astype(np.float32)
-                                        found = True
-                                        break
-                            if not found:
-                                enhanced = audio
-                    else:
-                        enhanced = audio
-                        
-                except Exception as pipeline_e:
-                    print(f"ModelScope pipeline执行失败: {pipeline_e}")
-                    # 回退到SpeechBrain SepFormer
-                    print("尝试回退到SpeechBrain SepFormer...")
-                    try:
-                        from speechbrain.inference.separation import SepformerSeparation
-                        
-                        sb_model_dir = os.path.join(self.model_dir, "speechbrain_fallback")
-                        if not hasattr(self, '_fallback_sepformer') or self._fallback_sepformer is None:
-                            self._fallback_sepformer = SepformerSeparation.from_hparams(
-                                source="speechbrain/sepformer-wham-enhancement",
-                                savedir=sb_model_dir,
-                                run_opts={"device": self.device}
-                            )
-                        
-                        import torch
-                        audio_tensor = torch.from_numpy(audio).float().unsqueeze(0)
-                        with torch.no_grad():
-                            enhanced = self._fallback_sepformer.separate_batch(audio_tensor)
-                        if isinstance(enhanced, torch.Tensor):
-                            enhanced = enhanced.squeeze(0).cpu().numpy()
-                        
-                        self._model_source = "speechbrain_fallback"
-                        print("SpeechBrain SepFormer回退成功")
-                        
-                    except Exception as fallback_e:
-                        print(f"SpeechBrain回退也失败: {fallback_e}")
-                        enhanced = audio
-                finally:
-                    # 清理临时文件
-                    try:
-                        os.unlink(temp_input_path)
-                    except:
-                        pass
-            
-            # 确保enhanced是numpy数组且形状正确
-            if isinstance(enhanced, torch.Tensor):
-                enhanced = enhanced.cpu().numpy()
-            
-            # 处理多维输出 (取第一个通道)
-            if len(enhanced.shape) > 1:
-                enhanced = enhanced[0] if enhanced.shape[0] <= 2 else enhanced[:, 0]
-            
-            # 确保长度匹配
-            if len(enhanced) != len(audio):
-                print(f"输出长度不匹配: {len(enhanced)} vs {len(audio)}")
-                enhanced = audio
-            
-            # 重采样回目标采样率
-            if self.sample_rate != target_sr:
-                enhanced = librosa.resample(enhanced, orig_sr=target_sr, target_sr=self.sample_rate)
-            
-            processing_time = time.time() - start_time
-            
-            return DenoiseResult(
-                audio=enhanced,
-                sample_rate=self.sample_rate,
-                processing_time=processing_time,
-                algorithm_name=self.name
-            )
-            
-        except Exception as e:
-            print(f"MossFormer增强失败: {e}")
-            return DenoiseResult(
-                audio=audio,
-                sample_rate=self.sample_rate,
-                processing_time=time.time() - start_time,
-                algorithm_name=self.name
-            )
+        # 语音分离模型返回多个说话人，取第一个（目标说话人）
+        if isinstance(result, list):
+            if len(result) > 0:
+                audio = np.array(result[0], dtype=np.float32)
+                return audio if audio.ndim <= 1 else audio[:, 0]
+            return fallback
+
+        # numpy 数组
+        if isinstance(result, np.ndarray):
+            if result.ndim == 1:
+                return result.astype(np.float32)
+            elif result.ndim == 2:
+                # 多维数组取第一个通道
+                return result[0].astype(np.float32) if result.shape[0] <= 2 else result[:, 0].astype(np.float32)
+
+        # dict 格式
+        if isinstance(result, dict):
+            for key in ["output", "enhanced", "separated", "audio"]:
+                if key in result:
+                    val = result[key]
+                    if isinstance(val, np.ndarray):
+                        return val.astype(np.float32) if val.ndim == 1 else val[:, 0].astype(np.float32)
+            # 取第一个 numpy 值
+            for val in result.values():
+                if isinstance(val, np.ndarray):
+                    return val.astype(np.float32) if val.ndim == 1 else val[:, 0].astype(np.float32)
+
+        return fallback
+
+    def _find_project_root(self) -> str:
+        """
+        查找项目根目录
+
+        从当前文件向上搜索包含 checkpoints 或 pyproject.toml 的目录
+        """
+        current = os.path.dirname(os.path.abspath(__file__))
+        for _ in range(10):
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            # 检查标志文件
+            for marker in ["models/clearvoice", "pyproject.toml", "setup.py", ".git"]:
+                if os.path.exists(os.path.join(parent, marker)):
+                    return parent
+            current = parent
+        return os.getcwd()
+
+    def is_model_downloaded(self) -> bool:
+        """检查模型是否已下载到本地"""
+        checkpoint_dir = os.path.join(
+            self.model_dir, self._spec["model_name"]
+        )
+        best_checkpoint = os.path.join(
+            checkpoint_dir, "last_best_checkpoint"
+        )
+        return os.path.isfile(best_checkpoint)
+
+    def get_info(self) -> dict:
+        """获取算法信息"""
+        info = super().get_info()
+        info.update(
+            {
+                "model_key": self.model_key,
+                "task": self._spec["task"],
+                "display_name": self._spec["display_name"],
+                "description": self._spec["description"],
+                "native_sample_rate": self._spec["sample_rate"],
+                "downloaded": self.is_model_downloaded(),
+            }
+        )
+        return info
 
 
-class MossFormer2Denoiser(MossFormerDenoiser):
+# ── 便捷子类：保持向后兼容的独立类名 ────────────────────────────
+
+
+class FRCRNSE16KDenoiser(ClearVoiceWrapperDenoiser):
+    """FRCRN 16kHz 语音增强"""
+
+    def __init__(self, sample_rate=16000, device="cuda", model_dir="./models/clearvoice"):
+        super().__init__(
+            model_key="clearvoice_frcrn_se_16k",
+            sample_rate=sample_rate,
+            device=device,
+            model_dir=model_dir,
+        )
+
+
+class MossFormer2SE48KDenoiser(ClearVoiceWrapperDenoiser):
+    """MossFormer2 48kHz 语音增强"""
+
+    def __init__(self, sample_rate=48000, device="cuda", model_dir="./models/clearvoice"):
+        super().__init__(
+            model_key="clearvoice_mossformer2_se_48k",
+            sample_rate=sample_rate,
+            device=device,
+            model_dir=model_dir,
+        )
+
+
+class MossFormerGANSE16KDenoiser(ClearVoiceWrapperDenoiser):
+    """MossFormerGAN 16kHz 语音增强"""
+
+    def __init__(self, sample_rate=16000, device="cuda", model_dir="./models/clearvoice"):
+        super().__init__(
+            model_key="clearvoice_mossformer_gan_se_16k",
+            sample_rate=sample_rate,
+            device=device,
+            model_dir=model_dir,
+        )
+
+
+class MossFormer2SS16KDenoiser(ClearVoiceWrapperDenoiser):
+    """MossFormer2 16kHz 语音分离"""
+
+    def __init__(self, sample_rate=16000, device="cuda", model_dir="./models/clearvoice"):
+        super().__init__(
+            model_key="clearvoice_mossformer2_ss_16k",
+            sample_rate=sample_rate,
+            device=device,
+            model_dir=model_dir,
+        )
+
+
+class MossFormer2SR48KDenoiser(ClearVoiceWrapperDenoiser):
+    """MossFormer2 48kHz 语音超分辨率"""
+
+    def __init__(self, sample_rate=48000, device="cuda", model_dir="./models/clearvoice"):
+        super().__init__(
+            model_key="clearvoice_mossformer2_sr_48k",
+            sample_rate=sample_rate,
+            device=device,
+            model_dir=model_dir,
+        )
+
+
+# ── 向后兼容：保留旧类名（重定向到新实现）───────────────────────
+
+
+class FRCRNDenoiser(FRCRNSE16KDenoiser):
     """
-    MossFormer2语音分离/增强器
-    MossFormer的改进版本，性能更优
+    [兼容] FRCRN 降噪器 — 重定向到 FRCRNSE16KDenoiser
+    保留此类名以确保现有代码不受影响
     """
-
-    def __init__(self, sample_rate: int = 16000, device: str = "cuda",
-                 model_dir: str = "./models/clearervoice"):
-        super().__init__(sample_rate=sample_rate, device=device,
-                         model_dir=model_dir, version="2")
+    pass
 
 
-# 注册ClearerVoice降噪算法
-DenoiserRegistry.register("clearervoice_frcrn", FRCRNDenoiser)
-DenoiserRegistry.register("clearervoice_mossformer", MossFormerDenoiser)
-DenoiserRegistry.register("clearervoice_mossformer2", MossFormer2Denoiser)
+class MossFormerDenoiser(MossFormer2SE48KDenoiser):
+    """
+    [兼容] MossFormer 降噪器 — 重定向到 MossFormer2SE48KDenoiser
+    保留此类名以确保现有代码不受影响
+    """
+    pass
+
+
+class MossFormer2Denoiser(MossFormer2SE48KDenoiser):
+    """
+    [兼容] MossFormer2 降噪器 — 重定向到 MossFormer2SE48KDenoiser
+    保留此类名以确保现有代码不受影响
+    """
+    pass
+
+
+# ── 注册所有算法 ──────────────────────────────────────────────
+
+# 新注册（5个独立模型）
+DenoiserRegistry.register("clearvoice_frcrn_se_16k", FRCRNSE16KDenoiser)
+DenoiserRegistry.register("clearvoice_mossformer2_se_48k", MossFormer2SE48KDenoiser)
+DenoiserRegistry.register("clearvoice_mossformer_gan_se_16k", MossFormerGANSE16KDenoiser)
+DenoiserRegistry.register("clearvoice_mossformer2_ss_16k", MossFormer2SS16KDenoiser)
+DenoiserRegistry.register("clearvoice_mossformer2_sr_48k", MossFormer2SR48KDenoiser)
+
+# 向后兼容注册（指向新实现）
+DenoiserRegistry.register("clearervoice_frcrn", FRCRNSE16KDenoiser)
+DenoiserRegistry.register("clearervoice_mossformer", MossFormer2SE48KDenoiser)
+DenoiserRegistry.register("clearervoice_mossformer2", MossFormer2SE48KDenoiser)

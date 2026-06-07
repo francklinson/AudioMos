@@ -36,10 +36,15 @@ api.interceptors.request.use(
 
 // 响应拦截器 - 处理错误
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    console.log('[API] Response:', response.config?.url, response.status);
+    return response;
+  },
   (error: AxiosError) => {
+    console.error('[API] Error:', error.config?.url, error.response?.status, error.message);
     if (error.response?.status === 401) {
       // Token过期或无效,清除并跳转登录
+      console.warn('[API] 401 detected, redirecting to /login');
       localStorage.removeItem('token');
       window.location.href = '/login';
     }
@@ -50,13 +55,14 @@ api.interceptors.response.use(
 // 认证相关API
 export const authApi = {
   login: async (username: string, password: string) => {
-    const formData = new FormData();
-    formData.append('username', username);
-    formData.append('password', password);
-    
-    const response = await api.post('/api/auth/login', formData, {
+    // OAuth2PasswordRequestForm 要求 application/x-www-form-urlencoded 格式
+    const params = new URLSearchParams();
+    params.append('username', username);
+    params.append('password', password);
+
+    const response = await api.post('/api/auth/login', params, {
       headers: {
-        'Content-Type': 'multipart/form-data',
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
     });
     return response.data;
@@ -260,6 +266,18 @@ export const restorationApi = {
   deleteTask: async (taskId: string) => {
     const response = await api.delete(`/api/restoration/tasks/${taskId}`);
     return response.data;
+  },
+
+  /** 获取原始音频的试听URL */
+  getSourceAudioUrl: (taskId: string) => {
+    const token = localStorage.getItem('token');
+    return `${api.defaults.baseURL}/api/restoration/source/${taskId}?token=${encodeURIComponent(token || '')}`;
+  },
+
+  /** 获取处理后音频的试听URL */
+  getResultAudioUrl: (taskId: string) => {
+    const token = localStorage.getItem('token');
+    return `${api.defaults.baseURL}/api/restoration/download/${taskId}?token=${encodeURIComponent(token || '')}`;
   },
 };
 

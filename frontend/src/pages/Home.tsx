@@ -21,12 +21,14 @@ import {
   Collapse,
   Tooltip,
   Tabs,
+  Select,
   Alert
 } from 'antd';
 import {
   SoundOutlined,
   UploadOutlined,
   PlayCircleOutlined,
+  PauseCircleOutlined,
   DownloadOutlined,
   DeleteOutlined,
   FileExcelOutlined,
@@ -37,12 +39,12 @@ import {
   LogoutOutlined,
   EyeOutlined,
   SettingOutlined,
-  ExperimentOutlined,
   ToolOutlined
 } from '@ant-design/icons';
 import type { UploadFile, UploadProps } from 'antd/es/upload';
 import { useAuth } from '../contexts/AuthContext';
-import { mosApi, denoiseApi, restorationApi } from '../services/api';
+import { mosApi, restorationApi } from '../services/api';
+import AudioComparison from '../components/AudioComparison';
 import dayjs from 'dayjs';
 import './Home.css';
 
@@ -79,24 +81,6 @@ interface TaskResult {
   results: Record<string, any>[];
   columns: string[];
   total_files: number;
-}
-
-interface DenoiseAlgorithm {
-  name: string;
-  description: string;
-  type: string;
-  pros: string[];
-  cons: string[];
-  initialized: boolean;
-}
-
-interface DenoiseTask {
-  task_id: string;
-  status: string;
-  progress: number;
-  message: string;
-  created_at: string;
-  updated_at: string;
 }
 
 interface RestorationAlgorithm {
@@ -139,20 +123,12 @@ const Home: React.FC = () => {
   );
   const [configPanelVisible, setConfigPanelVisible] = useState(false);
 
-  const [denoiseAlgorithms, setDenoiseAlgorithms] = useState<DenoiseAlgorithm[]>([]);
-  const [selectedDenoiseAlgorithms, setSelectedDenoiseAlgorithms] = useState<string[]>([]);
-  const [denoiseNoisyFiles, setDenoiseNoisyFiles] = useState<FileList | null>(null);
-  const [denoiseReferenceFiles, setDenoiseReferenceFiles] = useState<FileList | null>(null);
-  const [hasDenoiseReference, setHasDenoiseReference] = useState(false);
-  const [denoiseTasks, setDenoiseTasks] = useState<DenoiseTask[]>([]);
-  const [denoiseLoading, setDenoiseLoading] = useState(false);
-  const [denoiseCurrentTask, setDenoiseCurrentTask] = useState<DenoiseTask | null>(null);
-
   const [restorationAlgorithms, setRestorationAlgorithms] = useState<RestorationAlgorithm[]>([]);
   const [selectedRestorationAlgorithm, setSelectedRestorationAlgorithm] = useState('');
   const [restorationFile, setRestorationFile] = useState<File | null>(null);
   const [restorationTasks, setRestorationTasks] = useState<RestorationTask[]>([]);
   const [restorationLoading, setRestorationLoading] = useState(false);
+  const [expandedRestorationTask, setExpandedRestorationTask] = useState<string | null>(null);
 
   const loadTasks = async () => {
     try {
@@ -160,24 +136,6 @@ const Home: React.FC = () => {
       setTasks(data);
     } catch (error) {
       console.error('加载任务失败:', error);
-    }
-  };
-
-  const loadDenoiseAlgorithms = async () => {
-    try {
-      const data = await denoiseApi.getAlgorithms();
-      setDenoiseAlgorithms(data);
-    } catch (error) {
-      console.error('加载降噪算法失败:', error);
-    }
-  };
-
-  const loadDenoiseTasks = async () => {
-    try {
-      const data = await denoiseApi.getTasks();
-      setDenoiseTasks(data);
-    } catch (error) {
-      console.error('加载降噪任务失败:', error);
     }
   };
 
@@ -204,36 +162,15 @@ const Home: React.FC = () => {
 
   useEffect(() => {
     loadTasks();
-    loadDenoiseAlgorithms();
-    loadDenoiseTasks();
     loadRestorationAlgorithms();
     loadRestorationTasks();
 
     const interval = setInterval(() => {
       loadTasks();
-      loadDenoiseTasks();
       loadRestorationTasks();
     }, 5000);
     return () => clearInterval(interval);
   }, []);
-
-  useEffect(() => {
-    if (!denoiseCurrentTask || denoiseCurrentTask.status === 'completed' || denoiseCurrentTask.status === 'failed') {
-      return;
-    }
-    const interval = setInterval(async () => {
-      try {
-        const status = await denoiseApi.getTaskStatus(denoiseCurrentTask.task_id);
-        setDenoiseCurrentTask(status);
-        if (status.status === 'completed' || status.status === 'failed') {
-          loadDenoiseTasks();
-        }
-      } catch (err) {
-        console.error('获取降噪任务状态失败:', err);
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [denoiseCurrentTask]);
 
   const handleUpload = async () => {
     if (fileList.length === 0) {
@@ -368,72 +305,6 @@ const Home: React.FC = () => {
     }
   };
 
-  const handleDenoiseSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!denoiseNoisyFiles || denoiseNoisyFiles.length === 0) {
-      message.error('请上传带噪音频文件');
-      return;
-    }
-
-    if (selectedDenoiseAlgorithms.length === 0) {
-      message.error('请至少选择一个降噪算法');
-      return;
-    }
-
-    setDenoiseLoading(true);
-
-    try {
-      const uploadResult = await denoiseApi.uploadFiles(
-        denoiseNoisyFiles,
-        hasDenoiseReference ? denoiseReferenceFiles : null,
-        selectedDenoiseAlgorithms
-      );
-
-      await denoiseApi.processTask(uploadResult.task_id);
-
-      setDenoiseCurrentTask({
-        task_id: uploadResult.task_id,
-        status: 'queued',
-        progress: 0,
-        message: '任务已加入队列',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      });
-
-      loadDenoiseTasks();
-      message.success('降噪测评任务已提交');
-    } catch (err: any) {
-      message.error('提交任务失败: ' + err.message);
-    } finally {
-      setDenoiseLoading(false);
-    }
-  };
-
-  const handleDenoiseDownload = async (taskId: string, format: 'excel' | 'html' | 'markdown') => {
-    try {
-      await denoiseApi.downloadReport(taskId, format);
-      message.success('报告下载成功');
-    } catch (err: any) {
-      message.error('下载报告失败: ' + err.message);
-    }
-  };
-
-  const handleDenoiseDeleteTask = async (taskId: string) => {
-    if (!window.confirm('确定要删除这个任务吗？')) return;
-
-    try {
-      await denoiseApi.deleteTask(taskId);
-      loadDenoiseTasks();
-      if (denoiseCurrentTask?.task_id === taskId) {
-        setDenoiseCurrentTask(null);
-      }
-      message.success('删除成功');
-    } catch (err: any) {
-      message.error('删除任务失败: ' + err.message);
-    }
-  };
-
   const handleRestorationSubmit = async () => {
     if (!restorationFile) {
       message.error('请选择音频文件');
@@ -547,73 +418,17 @@ const Home: React.FC = () => {
     },
   ];
 
-  const denoiseColumns = [
-    {
-      title: '任务ID',
-      dataIndex: 'task_id',
-      key: 'task_id',
-      render: (id: string) => id.slice(0, 8) + '...',
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      render: getStatusTag,
-    },
-    {
-      title: '进度',
-      dataIndex: 'progress',
-      key: 'progress',
-      render: (progress: number) => <Progress percent={progress} size="small" />,
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      render: (date: string) => dayjs(date).format('MM-DD HH:mm'),
-    },
-    {
-      title: '操作',
-      key: 'action',
-      render: (_: any, record: DenoiseTask) => (
-        <Space>
-          {record.status === 'completed' && (
-            <>
-              <Button size="small" onClick={() => handleDenoiseDownload(record.task_id, 'excel')}>
-                Excel
-              </Button>
-              <Button size="small" onClick={() => handleDenoiseDownload(record.task_id, 'html')}>
-                HTML
-              </Button>
-              <Button size="small" onClick={() => handleDenoiseDownload(record.task_id, 'markdown')}>
-                Markdown
-              </Button>
-            </>
-          )}
-          <Button
-            danger
-            icon={<DeleteOutlined />}
-            size="small"
-            onClick={() => handleDenoiseDeleteTask(record.task_id)}
-          >
-            删除
-          </Button>
-        </Space>
-      ),
-    },
-  ];
-
   const restorationColumns = [
     {
       title: '文件名',
       dataIndex: 'filename',
       key: 'filename',
-      render: (name: string) => name.slice(0, 20) + (name.length > 20 ? '...' : ''),
     },
     {
       title: '算法',
       dataIndex: 'algorithm',
       key: 'algorithm',
+      render: (algo: string) => getRestorationAlgoLabel(algo),
     },
     {
       title: '状态',
@@ -633,14 +448,27 @@ const Home: React.FC = () => {
       render: (_: any, record: RestorationTask) => (
         <Space>
           {record.status === 'completed' && (
-            <Button
-              type="primary"
-              icon={<DownloadOutlined />}
-              size="small"
-              onClick={() => handleRestorationDownload(record.task_id)}
-            >
-              下载
-            </Button>
+            <>
+              <Button
+                type="link"
+                size="small"
+                icon={expandedRestorationTask === record.task_id ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                onClick={() => setExpandedRestorationTask(
+                  expandedRestorationTask === record.task_id ? null : record.task_id
+                )}
+                style={{ color: '#4fc3f7' }}
+              >
+                {expandedRestorationTask === record.task_id ? '收起对比' : '试听对比'}
+              </Button>
+              <Button
+                type="primary"
+                icon={<DownloadOutlined />}
+                size="small"
+                onClick={() => handleRestorationDownload(record.task_id)}
+              >
+                下载
+              </Button>
+            </>
           )}
           <Button
             danger
@@ -829,148 +657,12 @@ const Home: React.FC = () => {
     </div>
   );
 
-  const renderDenoiseTab = () => (
-    <div>
-      <Row gutter={[24, 24]}>
-        <Col span={24}>
-          <Card
-            className="home-card"
-            title={<Space><ExperimentOutlined /><span>降噪算法测评</span></Space>}
-            variant="borderless"
-            style={{ borderRadius: 12 }}
-          >
-            <Alert
-              message="使用说明"
-              description="上传带噪音频文件，选择降噪算法进行测评，系统会计算PESQ、STOI、SI-SDR等指标"
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
+  // 降噪测评 Tab 暂时隐藏，代码保留于 git 历史中
 
-            <div style={{ marginBottom: 16 }}>
-              <Title level={5}>选择降噪算法</Title>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                {denoiseAlgorithms.map(algo => (
-                  <Card
-                    key={algo.name}
-                    size="small"
-                    style={{
-                      width: 280,
-                      cursor: algo.initialized ? 'pointer' : 'not-allowed',
-                      border: selectedDenoiseAlgorithms.includes(algo.name) ? '2px solid #667eea' : '1px solid #d9d9d9',
-                      opacity: algo.initialized ? 1 : 0.6,
-                    }}
-                    onClick={() => {
-                      if (algo.initialized) {
-                        setSelectedDenoiseAlgorithms(prev =>
-                          prev.includes(algo.name)
-                            ? prev.filter(a => a !== algo.name)
-                            : [...prev, algo.name]
-                        );
-                      }
-                    }}
-                  >
-                    <Space direction="vertical" size="small">
-                      <Space>
-                        <Checkbox
-                          checked={selectedDenoiseAlgorithms.includes(algo.name)}
-                          disabled={!algo.initialized}
-                        />
-                        <Text strong>{algo.name}</Text>
-                        <Tag color={algo.type === '深度学习' ? 'blue' : 'green'}>{algo.type}</Tag>
-                      </Space>
-                      <Text type="secondary" style={{ fontSize: 12 }}>{algo.description}</Text>
-                      {!algo.initialized && <Tag color="red">未初始化</Tag>}
-                    </Space>
-                  </Card>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ marginBottom: 16 }}>
-              <Title level={5}>上传音频文件</Title>
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <div>
-                  <Text>带噪音频文件 (必填)</Text>
-                  <input
-                    type="file"
-                    accept=".wav,.mp3"
-                    multiple
-                    onChange={(e) => setDenoiseNoisyFiles(e.target.files)}
-                    style={{ marginLeft: 16 }}
-                  />
-                  {denoiseNoisyFiles && <Text type="secondary" style={{ marginLeft: 8 }}>已选择 {denoiseNoisyFiles.length} 个文件</Text>}
-                </div>
-
-                <Checkbox
-                  checked={hasDenoiseReference}
-                  onChange={(e) => setHasDenoiseReference(e.target.checked)}
-                >
-                  我有参考音频(干净语音)
-                </Checkbox>
-
-                {hasDenoiseReference && (
-                  <div>
-                    <Text>参考音频文件 (可选)</Text>
-                    <input
-                      type="file"
-                      accept=".wav,.mp3"
-                      multiple
-                      onChange={(e) => setDenoiseReferenceFiles(e.target.files)}
-                      style={{ marginLeft: 16 }}
-                    />
-                    {denoiseReferenceFiles && <Text type="secondary" style={{ marginLeft: 8 }}>已选择 {denoiseReferenceFiles.length} 个文件</Text>}
-                  </div>
-                )}
-              </Space>
-            </div>
-
-            <Button
-              type="primary"
-              onClick={handleDenoiseSubmit}
-              loading={denoiseLoading}
-              disabled={!denoiseNoisyFiles || selectedDenoiseAlgorithms.length === 0}
-              block
-              size="large"
-              icon={<ExperimentOutlined />}
-              style={{
-                background: !denoiseNoisyFiles || selectedDenoiseAlgorithms.length === 0
-                  ? 'linear-gradient(135deg, #d9d9d9 0%, #bfbfbf 100%)'
-                  : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                border: 'none',
-                borderRadius: 10,
-                height: 48,
-              }}
-            >
-              {denoiseLoading ? '提交中...' : '开始测评'}
-            </Button>
-          </Card>
-        </Col>
-
-        <Col span={24}>
-          <Card
-            className="home-card"
-            title={<Space><FileExcelOutlined /><span>降噪测评任务列表</span></Space>}
-            variant="borderless"
-            style={{ borderRadius: 12 }}
-            extra={<Button onClick={loadDenoiseTasks} icon={<SyncOutlined />}>刷新</Button>}
-          >
-            {denoiseTasks.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无降噪测评任务" />
-            ) : (
-              <Table
-                dataSource={denoiseTasks}
-                columns={denoiseColumns}
-                rowKey="task_id"
-                size="small"
-                pagination={{ pageSize: 5 }}
-              />
-            )}
-          </Card>
-        </Col>
-      </Row>
-    </div>
-  );
+  const getRestorationAlgoLabel = (algoName: string) => {
+    const found = restorationAlgorithms.find(a => a.name === algoName);
+    return found ? found.display_name : algoName;
+  };
 
   const renderRestorationTab = () => (
     <div>
@@ -992,28 +684,63 @@ const Home: React.FC = () => {
 
             <div style={{ marginBottom: 16 }}>
               <Title level={5}>选择修复算法</Title>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                {restorationAlgorithms.map(algo => (
-                  <Card
-                    key={algo.name}
-                    size="small"
-                    style={{
-                      width: 280,
-                      cursor: 'pointer',
-                      border: selectedRestorationAlgorithm === algo.name ? '2px solid #667eea' : '1px solid #d9d9d9',
-                    }}
-                    onClick={() => setSelectedRestorationAlgorithm(algo.name)}
-                  >
-                    <Space direction="vertical" size="small">
-                      <Space>
-                        <Text strong>{algo.display_name}</Text>
-                        <Tag color={algo.type === '深度学习' ? 'blue' : 'green'}>{algo.type}</Tag>
-                      </Space>
-                      <Text type="secondary" style={{ fontSize: 12 }}>{algo.description}</Text>
-                    </Space>
-                  </Card>
-                ))}
-              </div>
+              <Select
+                value={selectedRestorationAlgorithm || undefined}
+                onChange={(val) => setSelectedRestorationAlgorithm(val)}
+                placeholder="请选择修复算法"
+                style={{ width: '100%', maxWidth: 500 }}
+                size="large"
+                showSearch
+                optionFilterProp="label"
+                options={[
+                  {
+                    label: '🎙️ 语音降噪（深度学习）',
+                    options: restorationAlgorithms
+                      .filter(a => a.name.includes('clearvoice') && !a.name.includes('_ss_') && !a.name.includes('_sr_'))
+                      .map(a => ({ label: a.display_name, value: a.name })),
+                  },
+                  {
+                    label: '👥 语音分离',
+                    options: restorationAlgorithms
+                      .filter(a => a.name.includes('_ss_') || a.name.includes('sepformer'))
+                      .map(a => ({ label: a.display_name, value: a.name })),
+                  },
+                  {
+                    label: '🔊 超分辨率',
+                    options: restorationAlgorithms
+                      .filter(a => a.name.includes('_sr_') || a.name === 'super_resolution')
+                      .map(a => ({ label: a.display_name, value: a.name })),
+                  },
+                  {
+                    label: '⚡ 传统方法（无需模型）',
+                    options: restorationAlgorithms
+                      .filter(a => a.type === '传统方法')
+                      .map(a => ({ label: a.display_name, value: a.name })),
+                  },
+                  {
+                    label: '🤖 其他深度学习',
+                    options: restorationAlgorithms
+                      .filter(a => a.type === '深度学习' && !a.name.includes('clearvoice') && a.name !== 'super_resolution')
+                      .map(a => ({ label: a.display_name, value: a.name })),
+                  },
+                  {
+                    label: '🏠 其他修复',
+                    options: restorationAlgorithms
+                      .filter(a => a.name === 'dereverberation')
+                      .map(a => ({ label: a.display_name, value: a.name })),
+                  },
+                ].filter(g => g.options.length > 0)}
+              />
+              {/* 选中算法的简介 */}
+              {selectedRestorationAlgorithm && (() => {
+                const algo = restorationAlgorithms.find(a => a.name === selectedRestorationAlgorithm);
+                if (!algo) return null;
+                return (
+                  <div style={{ marginTop: 8, padding: '8px 12px', background: '#f0f4ff', borderRadius: 6, border: '1px solid #dbeafe' }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{algo.description}</Text>
+                  </div>
+                );
+              })()}
             </div>
 
             <div style={{ marginBottom: 16 }}>
@@ -1065,13 +792,46 @@ const Home: React.FC = () => {
             {restorationTasks.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无修复任务" />
             ) : (
-              <Table
-                dataSource={restorationTasks}
-                columns={restorationColumns}
-                rowKey="task_id"
-                size="small"
-                pagination={{ pageSize: 5 }}
-              />
+              <>
+                <Table
+                  dataSource={restorationTasks}
+                  columns={restorationColumns}
+                  rowKey="task_id"
+                  size="small"
+                  pagination={{ pageSize: 5 }}
+                />
+                {/* ── 展开的试听对比面板 ── */}
+                {expandedRestorationTask && (() => {
+                  const task = restorationTasks.find(t => t.task_id === expandedRestorationTask);
+                  if (!task || task.status !== 'completed') return null;
+                  const sourceUrl = restorationApi.getSourceAudioUrl(task.task_id);
+                  const resultUrl = restorationApi.getResultAudioUrl(task.task_id);
+                  return (
+                    <div style={{
+                      marginTop: 16,
+                      padding: 20,
+                      background: '#f8fafc',
+                      borderRadius: 12,
+                      border: '1px solid #e2e8f0',
+                    }}>
+                      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                        <Text strong style={{ color: '#1e293b', fontSize: 14 }}>
+                          📄 {task.filename}
+                        </Text>
+                        <Text style={{ color: '#64748b', fontSize: 13 }}>
+                          算法: {getRestorationAlgoLabel(task.algorithm)}
+                        </Text>
+                        {task.processing_time && (
+                          <Text style={{ color: '#64748b', fontSize: 13 }}>
+                            耗时: {task.processing_time.toFixed(2)}s
+                          </Text>
+                        )}
+                      </div>
+                      <AudioComparison sourceUrl={sourceUrl} resultUrl={resultUrl} />
+                    </div>
+                  );
+                })()}
+              </>
             )}
           </Card>
         </Col>
@@ -1084,11 +844,6 @@ const Home: React.FC = () => {
       key: 'mos',
       label: <Space><SoundOutlined />MOS评分</Space>,
       children: renderMosTab(),
-    },
-    {
-      key: 'denoise',
-      label: <Space><ExperimentOutlined />降噪测评</Space>,
-      children: renderDenoiseTab(),
     },
     {
       key: 'restoration',

@@ -4,6 +4,7 @@
 """
 
 import json
+import os
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional
@@ -398,83 +399,200 @@ class ReportGenerator:
         
         return '\n'.join(conclusions)
     
-    def _build_html(self, title: str, summary_data: List[dict], results: Dict[str, List[DenoiseEvaluation]]) -> str:
-        """构建HTML报告内容"""
-        # 简化的HTML模板
+    def generate_visual_report(
+        self,
+        results: Dict[str, List[DenoiseEvaluation]],
+        chart_files: Optional[List[str]] = None,
+        statistical_report: Optional[Dict] = None,
+        output_file: Optional[str] = None,
+        title: str = "降噪算法综合测评报告",
+    ) -> str:
+        """
+        生成包含可视化图表和统计检验的综合HTML报告
+
+        Args:
+            results: 测评结果字典
+            chart_files: 图表文件路径列表
+            statistical_report: 统计检验报告 (ComparisonReport.to_dict())
+            output_file: 输出文件路径
+            title: 报告标题
+
+        Returns:
+            输出文件路径
+        """
+        if output_file is None:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            output_file = str(self.output_dir / f"visual_report_{timestamp}.html")
+
+        # 生成汇总数据
+        summary_data = []
+        for algo_name, evaluations in results.items():
+            if not evaluations:
+                continue
+            metrics_summary = self._compute_summary(evaluations)
+            summary_data.append({
+                'algorithm': algo_name,
+                'count': len(evaluations),
+                **metrics_summary
+            })
+
+        # 构建HTML
+        html = self._build_html(title, summary_data, results, chart_files=chart_files, statistical_report=statistical_report)
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html)
+
+        logger.info(f"综合可视化报告已生成: {output_file}")
+        return output_file
+
+    def _build_html(
+        self, title: str, summary_data: List[dict],
+        results: Dict[str, List[DenoiseEvaluation]],
+        chart_files: Optional[List[str]] = None,
+        statistical_report: Optional[Dict] = None,
+    ) -> str:
+        """构建HTML报告内容（支持图表嵌入和统计检验）"""
         html = f"""<!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
     <style>
-        body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        h1 {{ color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }}
-        h2 {{ color: #555; margin-top: 30px; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-        th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
-        th {{ background: #4CAF50; color: white; }}
-        tr:hover {{ background: #f5f5f5; }}
-        .metric {{ display: inline-block; margin: 5px; padding: 8px 15px; background: #e3f2fd; border-radius: 4px; }}
-        .best {{ background: #c8e6c9; font-weight: bold; }}
-        .footer {{ margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; color: #999; font-size: 12px; }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f0f2f5; color: #333; }}
+        .container {{ max-width: 1400px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }}
+        h1 {{ color: #1a1a2e; border-bottom: 3px solid #667eea; padding-bottom: 12px; margin-bottom: 20px; }}
+        h2 {{ color: #333; margin: 30px 0 15px; padding-bottom: 8px; border-bottom: 2px solid #e0e0e0; }}
+        h3 {{ color: #555; margin: 20px 0 10px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 14px; }}
+        th, td {{ padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }}
+        th {{ background: #667eea; color: white; font-weight: 500; }}
+        tr:hover {{ background: #f8f9ff; }}
+        .metric {{ display: inline-block; margin: 4px; padding: 6px 12px; background: #e8eaf6; border-radius: 4px; font-size: 13px; }}
+        .significant {{ background: #c8e6c9; font-weight: bold; color: #2e7d32; }}
+        .not-significant {{ background: #ffecb3; color: #f57f17; }}
+        .chart-container {{ margin: 20px 0; text-align: center; }}
+        .chart-container img {{ max-width: 100%; height: auto; border: 1px solid #e0e0e0; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }}
+        .stats-table {{ background: #fafafa; border-radius: 6px; padding: 15px; margin: 15px 0; }}
+        .footer {{ margin-top: 40px; padding-top: 20px; border-top: 1px solid #e0e0e0; color: #999; font-size: 12px; text-align: center; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>{title}</h1>
-        <p>生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-        
-        <h2>📊 算法性能汇总</h2>
+        <h1>📊 {title}</h1>
+        <p>生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 算法数: {len(summary_data)}</p>
+
+        <h2>📋 算法性能汇总</h2>
         <table>
-            <tr>
-                <th>算法名称</th>
-                <th>文件数</th>
-                <th>PESQ</th>
-                <th>STOI</th>
-                <th>SI-SDR (dB)</th>
-                <th>处理时间(s)</th>
-                <th>RTF</th>
-            </tr>
+            <thead>
+                <tr>
+                    <th>算法名称</th>
+                    <th>文件数</th>
+                    <th>PESQ ↑</th>
+                    <th>STOI ↑</th>
+                    <th>SI-SDR ↑</th>
+                    <th>DNSMOS ↑</th>
+                    <th>处理时间 ↓</th>
+                    <th>RTF</th>
+                </tr>
+            </thead>
+            <tbody>
 """
-        
+
         for data in summary_data:
             algo = data['algorithm']
             count = data['count']
             pesq = f"{data.get('pesq_mean', 0):.3f}" if data.get('pesq_mean') else "N/A"
             stoi = f"{data.get('stoi_mean', 0):.3f}" if data.get('stoi_mean') else "N/A"
-            sisdr = f"{data.get('sisdr_mean', 0):.2f}" if data.get('sisdr_mean') else "N/A"
-            time_str = f"{data.get('processing_time_mean', 0):.3f}"
+            sisdr = f"{data.get('sisdr_mean', 0):.1f}" if data.get('sisdr_mean') else "N/A"
+            dnsmos = f"{data.get('dnsmos_ovrl_mean', 0):.3f}" if data.get('dnsmos_ovrl_mean') else "N/A"
+            time_val = f"{data.get('processing_time_mean', 0):.3f}"
             rtf = f"{data.get('rtf_mean', 0):.3f}" if data.get('rtf_mean') else "N/A"
-            
+
             html += f"""
-            <tr>
-                <td><strong>{algo}</strong></td>
-                <td>{count}</td>
-                <td>{pesq}</td>
-                <td>{stoi}</td>
-                <td>{sisdr}</td>
-                <td>{time_str}</td>
-                <td>{rtf}</td>
-            </tr>
-"""
-        
+                <tr>
+                    <td><strong>{algo}</strong></td>
+                    <td>{count}</td>
+                    <td>{pesq}</td>
+                    <td>{stoi}</td>
+                    <td>{sisdr}</td>
+                    <td>{dnsmos}</td>
+                    <td>{time_val}</td>
+                    <td>{rtf}</td>
+                </tr>"""
+
         html += """
+            </tbody>
         </table>
-        
-        <h2>📈 指标说明</h2>
-        <div>
-            <span class="metric">PESQ: 感知语音质量 (1-4.5, 越高越好)</span>
-            <span class="metric">STOI: 短时客观可懂度 (0-1, 越高越好)</span>
-            <span class="metric">SI-SDR: 尺度不变信噪比 (dB, 越高越好)</span>
-            <span class="metric">RTF: 实时因子 (&lt;1表示实时)</span>
+"""
+
+        # 统计检验报告
+        if statistical_report:
+            html += """
+        <h2>🔬 统计显著性检验</h2>
+        <div class="stats-table">
+"""
+            algo_a = statistical_report.get('algorithm_a', 'A')
+            algo_b = statistical_report.get('algorithm_b', 'B')
+            html += f"            <p><strong>对比:</strong> {algo_a} vs {algo_b}</p>\n"
+            html += f"            <p><strong>样本数:</strong> {statistical_report.get('n_samples', 0)}</p>\n"
+            html += """
+            <table>
+                <thead>
+                    <tr><th>指标</th><th>均值A</th><th>均值B</th><th>差值</th><th>p值</th><th>显著性</th><th>Cohen's d</th></tr>
+                </thead>
+                <tbody>
+"""
+            for metric, mc in statistical_report.get('metrics', {}).items():
+                sig_class = "significant" if mc.get('significant') else "not-significant"
+                sig_text = "显著 ✓" if mc.get('significant') else "不显著"
+                html += f"""
+                    <tr class="{sig_class}">
+                        <td>{metric}</td>
+                        <td>{mc.get('mean_a', 0):.4f}</td>
+                        <td>{mc.get('mean_b', 0):.4f}</td>
+                        <td>{mc.get('mean_diff', 0):.4f}</td>
+                        <td>{mc.get('p_value', 1):.4f}</td>
+                        <td>{sig_text}</td>
+                        <td>{mc.get('cohens_d', 0):.3f}</td>
+                    </tr>"""
+            html += """
+                </tbody>
+            </table>
         </div>
-        
+"""
+
+        # 可视化图表
+        if chart_files:
+            html += """
+        <h2>📈 可视化图表</h2>
+"""
+            for chart_path in chart_files:
+                if chart_path and os.path.exists(chart_path):
+                    chart_name = os.path.basename(chart_path)
+                    label = chart_name.rsplit('.', 1)[0].replace('_', ' ').title()
+                    html += f"""
+        <div class="chart-container">
+            <h3>{label}</h3>
+            <img src="{chart_path}" alt="{label}" loading="lazy">
+        </div>
+"""
+
+        html += """
+        <h2>📖 指标说明</h2>
+        <div>
+            <span class="metric">PESQ (1-4.5 ↑): 感知语音质量评估</span>
+            <span class="metric">STOI (0-1 ↑): 短时客观可懂度</span>
+            <span class="metric">SI-SDR (dB ↑): 尺度不变信噪比</span>
+            <span class="metric">DNSMOS (1-5 ↑): 深度噪声抑制MOS</span>
+            <span class="metric">RTF (&lt;1=实时): 实时因子</span>
+        </div>
+
         <div class="footer">
-            <p>AudioMOS 降噪算法测评系统</p>
+            <p>AudioMOS 降噪算法测评系统 | 报告自动生成于 """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + """</p>
         </div>
     </div>
 </body>
-</html>
-"""
+</html>"""
         return html

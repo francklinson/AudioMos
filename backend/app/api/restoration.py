@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status,
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.api.auth import get_current_active_user
+from app.api.auth import get_current_active_user, get_current_user_optional
 from app.core.security import User
 from app.core.config import settings
 from app.core.logging_config import logger
@@ -88,21 +88,42 @@ class RestorationTaskInfo(BaseModel):
 
 @router.get("/algorithms")
 async def list_algorithms(current_user: User = Depends(get_current_active_user)) -> List[RestorationAlgorithmInfo]:
-    """获取所有可用的音频修复算法"""
+    """获取所有可用的音频修复算法（修复 + 降噪）"""
     algorithms = []
 
     restorers = get_available_restorers()
     for key, info in restorers.items():
         desc = get_restoration_description(key) or {}
+
+        # 检查模型是否已下载
+        downloaded = False
+        try:
+            import os as _os
+            ckpt_map = {
+                "clearvoice_frcrn_se_16k": "FRCRN_SE_16K",
+                "clearvoice_mossformer2_se_48k": "MossFormer2_SE_48K",
+                "clearvoice_mossformer_gan_se_16k": "MossFormerGAN_SE_16K",
+                "clearvoice_mossformer2_ss_16k": "MossFormer2_SS_16K",
+                "clearvoice_mossformer2_sr_48k": "MossFormer2_SR_48K",
+            }
+            ckpt = ckpt_map.get(key)
+            if ckpt:
+                best_path = _os.path.join(
+                    project_root, "models/clearvoice", ckpt, "last_best_checkpoint"
+                )
+                downloaded = _os.path.isfile(best_path)
+        except Exception:
+            pass
+
         algorithms.append(
             RestorationAlgorithmInfo(
                 name=key,
-                display_name=info.get("name", key),
-                description=info.get("description", ""),
+                display_name=desc.get("name", info.get("name", key)),
+                description=desc.get("description", info.get("description", "")),
                 type=desc.get("type", "未知"),
                 advantages=desc.get("advantages", []),
                 limitations=desc.get("limitations", []),
-                initialized=False,
+                initialized=downloaded,  # 复用 initialized 字段表示模型已下载
             )
         )
 
@@ -254,9 +275,40 @@ async def list_tasks(current_user: User = Depends(get_current_active_user)) -> L
     return list(restoration_tasks.values())
 
 
+@router.get("/source/{task_id}")
+async def get_source_audio(
+    task_id: str,
+    current_user: User = Depends(get_current_user_optional),
+):
+    """获取上传的原始音频文件（用于试听对比，支持 ?token= 查询参数）"""
+    if task_id not in restoration_tasks:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+
+    task_info = restoration_tasks[task_id]
+    upload_dir = os.path.join(settings.paths.upload_dir, task_id)
+    filename = task_info["filename"]
+    file_path = os.path.join(upload_dir, filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="原始文件不存在")
+
+    return FileResponse(
+        file_path,
+        media_type="audio/wav",
+        filename=f"original_{filename}",
+        headers={
+            "X-Task-Id": task_id,
+            "Accept-Ranges": "bytes",
+        },
+    )
+
+
 @router.get("/download/{task_id}")
-async def download_result(task_id: str, current_user: User = Depends(get_current_active_user)):
-    """下载修复结果"""
+async def download_result(
+    task_id: str,
+    current_user: User = Depends(get_current_user_optional),
+):
+    """下载/播放修复结果（支持 ?token= 查询参数）"""
     if task_id not in restoration_tasks:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
@@ -268,7 +320,11 @@ async def download_result(task_id: str, current_user: User = Depends(get_current
     if not result_file or not os.path.exists(result_file):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="结果文件不存在")
 
-    return FileResponse(result_file, filename=os.path.basename(result_file))
+    return FileResponse(
+        result_file,
+        filename=os.path.basename(result_file),
+        headers={"Accept-Ranges": "bytes"},
+    )
 
 
 @router.delete("/tasks/{task_id}")

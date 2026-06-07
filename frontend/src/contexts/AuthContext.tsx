@@ -12,7 +12,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
-  checkAuth: () => Promise<void>;
+  checkAuth: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -24,18 +24,22 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const checkAuth = async () => {
     const token = localStorage.getItem('token');
     if (!token) {
+      setUser(null);
       setIsLoading(false);
-      return;
+      return false;
     }
 
     try {
       const userData = await authApi.getCurrentUser();
       setUser(userData);
+      setIsLoading(false);
+      return true;
     } catch (error) {
+      console.error('Auth check failed:', error);
       localStorage.removeItem('token');
       setUser(null);
-    } finally {
       setIsLoading(false);
+      return false;
     }
   };
 
@@ -46,7 +50,20 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const login = async (username: string, password: string) => {
     const data = await authApi.login(username, password);
     localStorage.setItem('token', data.access_token);
-    await checkAuth();
+
+    // 直接验证 token 并设置用户状态
+    try {
+      const userData = await authApi.getCurrentUser();
+      setUser(userData);
+      console.log('Login successful, user set:', userData.username);
+    } catch (error) {
+      console.error('Token verification failed after login:', error);
+      localStorage.removeItem('token');
+      setUser(null);
+      throw new Error('登录验证失败，请重试');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const logout = async () => {

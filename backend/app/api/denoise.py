@@ -60,34 +60,59 @@ _denoisers = {}
 
 
 def init_denoisers():
-    """初始化所有降噪算法"""
+    """初始化所有降噪算法（按需延迟加载策略）"""
     global _denoisers
-    
+
     if not DENOISE_AVAILABLE:
         logger.warning("降噪模块不可用，跳过初始化")
         return
-    
+
     logger.info("=" * 60)
-    logger.info("[降噪算法初始化] 开始加载降噪算法...")
+    logger.info("[降噪算法初始化] 开始注册降噪算法...")
     logger.info("=" * 60)
-    
+
     available_denoisers = get_available_denoisers()
     logger.info(f"可用降噪算法: {[d['name'] for d in available_denoisers]}")
-    
-    for denoiser_info in available_denoisers:
-        name = denoiser_info['name']
+
+    # 预注册的算法列表（按优先级排序）
+    # 轻量模型（<200MB）可以在启动时预加载
+    lightweight_models = [
+        "clearvoice_frcrn_se_16k",    # 154MB, 16kHz实时增强
+        "clearvoice_mossformer_gan_se_16k",  # 131MB, 16kHz GAN增强
+    ]
+
+    # 大型模型（>500MB）仅在首次使用时加载
+    # "clearvoice_mossformer2_se_48k"  # 212MB, 48kHz
+    # "clearvoice_mossformer2_ss_16k"  # 640MB, 语音分离
+    # "clearvoice_mossformer2_sr_48k"  # 2.1GB, 超分辨率
+
+    # 只预加载轻量模型
+    for name in lightweight_models:
         try:
-            logger.info(f"  初始化 {name}...")
-            denoiser = DenoiserRegistry.get(name, device="cuda" if settings.cuda.enabled else "cpu")
-            if denoiser:
-                denoiser.initialize()
-                _denoisers[name] = denoiser
-                logger.info(f"  ✓ {name} 初始化成功")
+            if name not in _denoisers:
+                logger.info(f"  初始化 {name}...")
+                denoiser = DenoiserRegistry.get(
+                    name, device="cuda" if settings.cuda.enabled else "cpu"
+                )
+                if denoiser:
+                    denoiser.initialize()
+                    _denoisers[name] = denoiser
+                    logger.info(f"  ✓ {name} 初始化成功")
         except Exception as e:
             logger.warning(f"  ✗ {name} 初始化失败: {e}")
-    
+
+    # 为未加载的算法创建占位条目（延迟加载标记）
+    for denoiser_info in available_denoisers:
+        name = denoiser_info["name"]
+        if name not in _denoisers:
+            _denoisers[name] = None  # 延迟加载标记
+
     logger.info("=" * 60)
-    logger.info(f"[降噪算法初始化] 完成! 成功加载 {len(_denoisers)} 个算法")
+    logger.info(
+        f"[降噪算法初始化] 完成! "
+        f"预加载: {sum(1 for v in _denoisers.values() if v is not None)}, "
+        f"延迟加载: {sum(1 for v in _denoisers.values() if v is None)}"
+    )
     logger.info("=" * 60)
 
 
@@ -100,6 +125,9 @@ class DenoiseAlgorithmInfo(BaseModel):
     pros: List[str] = []
     cons: List[str] = []
     initialized: bool = False
+    sample_rate: int = 16000
+    task: str = "denoise"
+    downloaded: bool = False
 
 
 class DenoiseTaskCreate(BaseModel):
@@ -137,7 +165,7 @@ async def list_algorithms(
 ) -> List[DenoiseAlgorithmInfo]:
     """
     获取所有可用的降噪算法列表
-    
+
     Returns:
         降噪算法信息列表
     """
@@ -146,20 +174,71 @@ async def list_algorithms(
             status_code=503,
             detail="降噪模块不可用"
         )
-    
+
     from denoise.registry import DENOISER_DESCRIPTIONS
-    
+
     algorithms = []
     for name, info in DENOISER_DESCRIPTIONS.items():
+        # 确定任务类型和采样率
+        task = "denoise"
+        sample_rate = 16000
+
+        # 根据算法名称判断任务类型
+        if "ss_16k" in name or "separation" in name.lower():
+            task = "separation"
+        elif "sr_48k" in name or "super_resolution" in name.lower():
+            task = "super_resolution"
+        elif "enhancement" in name.lower() or "_se_" in name:
+            task = "denoise"
+
+        # 根据算法名称判断采样率
+        if "48k" in name.lower():
+            sample_rate = 48000
+        elif "16k" in name.lower():
+            sample_rate = 16000
+
+        # 检查模型是否已下载（直接检查文件系统）
+        downloaded = False
+        try:
+            import os as _os
+            # 根据算法名称确定checkpoint目录
+            model_name_map = {
+                "clearvoice_frcrn_se_16k": "FRCRN_SE_16K",
+                "clearvoice_mossformer2_se_48k": "MossFormer2_SE_48K",
+                "clearvoice_mossformer_gan_se_16k": "MossFormerGAN_SE_16K",
+                "clearvoice_mossformer2_ss_16k": "MossFormer2_SS_16K",
+                "clearvoice_mossformer2_sr_48k": "MossFormer2_SR_48K",
+                "clearervoice_frcrn": "FRCRN_SE_16K",
+                "clearervoice_mossformer": "MossFormer2_SE_48K",
+                "clearervoice_mossformer2": "MossFormer2_SE_48K",
+            }
+            ckpt_name = model_name_map.get(name)
+            if ckpt_name:
+                best_path = _os.path.join(
+                    project_root, "models/clearvoice", ckpt_name, "last_best_checkpoint"
+                )
+                downloaded = _os.path.isfile(best_path)
+        except Exception:
+            pass
+
+        # 确定初始化状态
+        initialized = False
+        denoiser_obj = _denoisers.get(name)
+        if denoiser_obj is not None and hasattr(denoiser_obj, 'is_initialized'):
+            initialized = denoiser_obj.is_initialized()
+
         algorithms.append(DenoiseAlgorithmInfo(
             name=name,
             description=info.get("description", ""),
             type=info.get("type", "未知"),
             pros=info.get("pros", []),
             cons=info.get("cons", []),
-            initialized=name in _denoisers
+            initialized=initialized,
+            sample_rate=sample_rate,
+            task=task,
+            downloaded=downloaded,
         ))
-    
+
     return algorithms
 
 
@@ -597,22 +676,27 @@ async def denoise_single_file(
             detail=f"不支持的音频格式: {ext}，支持: {settings.audio.supported_formats}"
         )
 
-    # 验证算法是否存在
-    denoiser = DenoiserRegistry.get(algorithm, device="cuda" if settings.cuda.enabled else "cpu")
+    # 验证算法是否存在，支持延迟加载
+    denoiser = _denoisers.get(algorithm)
     if denoiser is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的降噪算法: {algorithm}，可用: {list(_denoisers.keys())}"
+        # 延迟加载：首次使用时才创建和初始化
+        denoiser = DenoiserRegistry.get(
+            algorithm, device="cuda" if settings.cuda.enabled else "cpu"
         )
+        if denoiser is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的降噪算法: {algorithm}"
+            )
 
-    # 初始化算法
+    # 初始化算法（如果尚未初始化）
     if not denoiser.is_initialized():
         if not denoiser.initialize():
             raise HTTPException(
                 status_code=500,
                 detail=f"降噪算法 {algorithm} 初始化失败"
             )
-        _denoisers[algorithm] = denoiser
+    _denoisers[algorithm] = denoiser
 
     import tempfile
     import soundfile as sf
@@ -644,6 +728,9 @@ async def denoise_single_file(
             f"file={file.filename}, time={result.processing_time:.3f}s"
         )
 
+        # 返回降噪后的音频文件（使用 background 清理临时文件）
+        from fastapi import BackgroundTasks
+
         # 返回降噪后的音频文件
         return FileResponse(
             str(output_path),
@@ -657,14 +744,13 @@ async def denoise_single_file(
 
     except Exception as e:
         logger.error(f"单文件降噪失败: {e}", exc_info=True)
+        # 清理临时文件
+        import shutil as _shutil
+        try:
+            _shutil.rmtree(str(temp_dir), ignore_errors=True)
+        except Exception:
+            pass
         raise HTTPException(
             status_code=500,
             detail=f"降噪处理失败: {str(e)}"
         )
-    finally:
-        # 清理临时文件（延迟清理，因为FileResponse可能还没发送）
-        import shutil
-        try:
-            shutil.rmtree(str(temp_dir), ignore_errors=True)
-        except Exception:
-            pass
