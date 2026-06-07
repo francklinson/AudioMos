@@ -181,6 +181,57 @@ async def upload_audio(
     }
 
 
+@router.post("/upload-batch")
+async def upload_audio_batch(
+    files: List[UploadFile] = File(...),
+    algorithm: str = Form(...),
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """批量上传音频文件"""
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请选择文件")
+
+    restorers = get_available_restorers()
+    if algorithm not in restorers:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"不支持的算法: {algorithm}")
+
+    task_ids = []
+    filenames = []
+    for file in files:
+        if not file.filename:
+            continue
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in settings.audio.supported_formats:
+            continue
+
+        task_id = str(uuid.uuid4())
+        upload_dir = os.path.join(settings.paths.upload_dir, task_id)
+        os.makedirs(upload_dir, exist_ok=True)
+        file_path = os.path.join(upload_dir, file.filename)
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        task_info = RestorationTaskInfo(
+            task_id=task_id,
+            algorithm=algorithm,
+            filename=file.filename,
+            status="pending",
+            created_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        restoration_tasks[task_id] = task_info.dict()
+        task_ids.append(task_id)
+        filenames.append(file.filename)
+
+    return {
+        "task_ids": task_ids,
+        "filenames": filenames,
+        "algorithm": algorithm,
+        "count": len(task_ids),
+        "message": f"成功上传 {len(task_ids)} 个文件",
+    }
+
+
 @router.post("/process/{task_id}")
 async def process_restoration(
     task_id: str,

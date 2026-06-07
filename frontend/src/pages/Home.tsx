@@ -21,8 +21,7 @@ import {
   Collapse,
   Tooltip,
   Tabs,
-  Select,
-  Alert
+  Select
 } from 'antd';
 import {
   SoundOutlined,
@@ -125,7 +124,7 @@ const Home: React.FC = () => {
 
   const [restorationAlgorithms, setRestorationAlgorithms] = useState<RestorationAlgorithm[]>([]);
   const [selectedRestorationAlgorithm, setSelectedRestorationAlgorithm] = useState('');
-  const [restorationFile, setRestorationFile] = useState<File | null>(null);
+  const [restorationFiles, setRestorationFiles] = useState<File[]>([]);
   const [restorationTasks, setRestorationTasks] = useState<RestorationTask[]>([]);
   const [restorationLoading, setRestorationLoading] = useState(false);
   const [expandedRestorationTask, setExpandedRestorationTask] = useState<string | null>(null);
@@ -144,7 +143,8 @@ const Home: React.FC = () => {
       const data = await restorationApi.getAlgorithms();
       setRestorationAlgorithms(data);
       if (data.length > 0 && !selectedRestorationAlgorithm) {
-        setSelectedRestorationAlgorithm(data[0].name);
+        const preferred = data.find((a: RestorationAlgorithm) => a.name === 'clearvoice_frcrn_se_16k');
+        setSelectedRestorationAlgorithm(preferred ? preferred.name : data[0].name);
       }
     } catch (error) {
       console.error('加载修复算法失败:', error);
@@ -306,7 +306,7 @@ const Home: React.FC = () => {
   };
 
   const handleRestorationSubmit = async () => {
-    if (!restorationFile) {
+    if (restorationFiles.length === 0) {
       message.error('请选择音频文件');
       return;
     }
@@ -318,10 +318,13 @@ const Home: React.FC = () => {
     setRestorationLoading(true);
 
     try {
-      const uploadResult = await restorationApi.uploadFile(restorationFile, selectedRestorationAlgorithm);
-      await restorationApi.processTask(uploadResult.task_id);
-      message.success('任务已提交，正在处理...');
-      setRestorationFile(null);
+      const uploadResult = await restorationApi.uploadBatch(restorationFiles, selectedRestorationAlgorithm);
+      // 逐个提交处理
+      for (const taskId of uploadResult.task_ids) {
+        await restorationApi.processTask(taskId);
+      }
+      message.success(`已提交 ${uploadResult.count} 个文件，正在处理...`);
+      setRestorationFiles([]);
       loadRestorationTasks();
     } catch (err: any) {
       message.error(err.response?.data?.detail || '操作失败');
@@ -493,13 +496,9 @@ const Home: React.FC = () => {
             variant="borderless"
             style={{ borderRadius: 12 }}
           >
-            <Alert
-              message="使用说明"
-              description="支持上传 .wav 和 .mp3 格式的音频文件，系统会自动进行音频切分、对齐并计算多种MOS评分指标"
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
+            <Text type="secondary" style={{ fontSize: 13, marginBottom: 16, display: 'block' }}>
+              💡 支持 .wav / .mp3 格式，自动切分对齐并计算多种 MOS 评分指标
+            </Text>
 
             <Upload.Dragger {...uploadProps} style={{ marginBottom: 16 }}>
               <p className="ant-upload-drag-icon">
@@ -674,13 +673,9 @@ const Home: React.FC = () => {
             variant="borderless"
             style={{ borderRadius: 12 }}
           >
-            <Alert
-              message="使用说明"
-              description="上传音频文件，选择修复算法进行处理。支持去混响、超分辨率等音频修复功能"
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-            />
+            <Text type="secondary" style={{ fontSize: 13, marginBottom: 16, display: 'block' }}>
+              💡 上传带噪音频，选择降噪算法，即可试听对比处理前后的效果
+            </Text>
 
             <div style={{ marginBottom: 16 }}>
               <Title level={5}>选择修复算法</Title>
@@ -696,13 +691,7 @@ const Home: React.FC = () => {
                   {
                     label: '🎙️ 语音降噪（深度学习）',
                     options: restorationAlgorithms
-                      .filter(a => a.name.includes('clearvoice') && !a.name.includes('_ss_') && !a.name.includes('_sr_'))
-                      .map(a => ({ label: a.display_name, value: a.name })),
-                  },
-                  {
-                    label: '👥 语音分离',
-                    options: restorationAlgorithms
-                      .filter(a => a.name.includes('_ss_') || a.name.includes('sepformer'))
+                      .filter(a => a.name.includes('clearvoice') && !a.name.includes('_sr_'))
                       .map(a => ({ label: a.display_name, value: a.name })),
                   },
                   {
@@ -720,7 +709,10 @@ const Home: React.FC = () => {
                   {
                     label: '🤖 其他深度学习',
                     options: restorationAlgorithms
-                      .filter(a => a.type === '深度学习' && !a.name.includes('clearvoice') && a.name !== 'super_resolution')
+                      .filter(a => a.type === '深度学习'
+                        && !a.name.includes('clearvoice')
+                        && a.name !== 'super_resolution'
+                        && a.name !== 'dereverberation')
                       .map(a => ({ label: a.display_name, value: a.name })),
                   },
                   {
@@ -745,30 +737,54 @@ const Home: React.FC = () => {
 
             <div style={{ marginBottom: 16 }}>
               <Title level={5}>上传音频文件</Title>
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <input
-                  type="file"
-                  accept=".wav,.mp3,.flac"
-                  onChange={(e) => setRestorationFile(e.target.files?.[0] || null)}
-                />
-                {restorationFile && (
-                  <Text type="secondary">
-                    已选择: {restorationFile.name} ({(restorationFile.size / 1024).toFixed(1)} KB)
-                  </Text>
-                )}
-              </Space>
+              <Upload.Dragger
+                multiple
+                accept=".wav,.mp3,.flac"
+                beforeUpload={(file) => {
+                  setRestorationFiles(prev => {
+                    if (prev.find(f => f.name === file.name && f.size === file.size)) return prev;
+                    return [...prev, file];
+                  });
+                  return false;
+                }}
+                onRemove={(file) => {
+                  setRestorationFiles(prev => prev.filter(f => f.name !== file.name || f.size !== file.size));
+                }}
+                fileList={restorationFiles.map((f, i) => ({
+                  uid: `-${i}`,
+                  name: f.name,
+                  status: 'done' as const,
+                  size: f.size,
+                } as any))}
+                style={{ marginBottom: 0 }}
+              >
+                <p className="ant-upload-drag-icon">
+                  <ToolOutlined style={{ color: '#667eea', fontSize: 36 }} />
+                </p>
+                <p className="ant-upload-text" style={{ color: '#1e293b' }}>
+                  点击或拖拽音频文件到此处（支持批量）
+                </p>
+                <p className="ant-upload-hint">
+                  支持 .wav / .mp3 / .flac 格式，可同时选择多个文件
+                </p>
+              </Upload.Dragger>
+              {restorationFiles.length > 0 && (
+                <Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: 'block' }}>
+                  已选择 {restorationFiles.length} 个文件，共 {(restorationFiles.reduce((s, f) => s + f.size, 0) / 1024).toFixed(1)} KB
+                </Text>
+              )}
             </div>
 
             <Button
               type="primary"
               onClick={handleRestorationSubmit}
               loading={restorationLoading}
-              disabled={!restorationFile || !selectedRestorationAlgorithm}
+              disabled={restorationFiles.length === 0 || !selectedRestorationAlgorithm}
               block
               size="large"
               icon={<ToolOutlined />}
               style={{
-                background: !restorationFile || !selectedRestorationAlgorithm
+                background: restorationFiles.length === 0 || !selectedRestorationAlgorithm
                   ? 'linear-gradient(135deg, #d9d9d9 0%, #bfbfbf 100%)'
                   : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
                 border: 'none',
@@ -794,7 +810,7 @@ const Home: React.FC = () => {
             ) : (
               <>
                 <Table
-                  dataSource={restorationTasks}
+                  dataSource={[...restorationTasks].reverse()}
                   columns={restorationColumns}
                   rowKey="task_id"
                   size="small"

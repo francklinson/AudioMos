@@ -230,6 +230,21 @@ export const restorationApi = {
     return response.data;
   },
 
+  uploadBatch: async (files: File[], algorithm: string) => {
+    const formData = new FormData();
+    files.forEach((file) => {
+      formData.append('files', file);
+    });
+    formData.append('algorithm', algorithm);
+
+    const response = await api.post('/api/restoration/upload-batch', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  },
+
   processTask: async (taskId: string) => {
     const response = await api.post(`/api/restoration/process/${taskId}`);
     return response.data;
