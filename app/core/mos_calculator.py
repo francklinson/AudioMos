@@ -21,7 +21,7 @@ import sys
 # 添加本地包路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'algorithms', 'speechmetrics'))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'algorithms', 'nisqa'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'algorithms'))  # nisqa的父目录
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'algorithms', 'wenet'))
 
 import pandas as pd
@@ -65,9 +65,9 @@ except ImportError:
 try:
     from nisqa.predict import nisqa_predict
     NISQA_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     NISQA_AVAILABLE = False
-    print("警告: nisqa模块未安装，NISQA评分将不可用")
+    print(f"警告: nisqa模块未安装，NISQA评分将不可用 - {e}")
 
 # 尝试导入wenet（完整的语音识别库）
 WENET_AVAILABLE = False
@@ -86,26 +86,63 @@ try:
 except ImportError as e:
     print(f"警告: wenet模块未安装或导入失败，WER评分将不可用 - {e}")
 
+# ModelScope兼容补丁（解决datasets版本兼容性问题）
+try:
+    import datasets
+    if not hasattr(datasets, 'LargeList'):
+        class _LargeListStub(list):
+            pass
+        datasets.LargeList = _LargeListStub
+        print("已应用ModelScope兼容补丁 (datasets.LargeList)")
+except ImportError:
+    pass
+
 # 尝试导入modelscope
 try:
     from modelscope import pipeline
     MODELSCOPE_AVAILABLE = True
-except ImportError:
+    print("✓ ModelScope可用")
+except ImportError as e:
     MODELSCOPE_AVAILABLE = False
-    print("警告: modelscope模块未安装，音色还原度评分将不可用")
+    print(f"警告: modelscope模块未安装或导入失败，音色还原度评分将不可用 - {e}")
 
 
 def get_ref_file(input_wav_file, ref_dir):
     """
     获取与输入音频文件对应的参考文件。
+    支持多种匹配方式：
     例如 : voice_mix_70dB_1_关_003.wav 对应于  ref_003.wav
     """
-    ref_file_name = "ref_" + os.path.basename(input_wav_file).removesuffix('.wav').split('_')[-1] + '.wav'
+    input_basename = os.path.basename(input_wav_file)
+    input_name = input_basename.removesuffix('.wav')
+
+    # 方式1: 直接匹配相同文件名
+    ref_file = os.path.join(ref_dir, input_basename)
+    if os.path.exists(ref_file):
+        return ref_file
+
+    # 方式2: 匹配 ref_前缀 + 完整文件名
+    ref_file_name = "ref_" + input_basename
     ref_file = os.path.join(ref_dir, ref_file_name)
     if os.path.exists(ref_file):
         return ref_file
-    else:
-        return None
+
+    # 方式3: 从文件名提取ID匹配 (如 test_001.wav -> ref_001.wav)
+    parts = input_name.split('_')
+    if len(parts) >= 2:
+        file_id = parts[-1]
+        ref_file_name = f"ref_{file_id}.wav"
+        ref_file = os.path.join(ref_dir, ref_file_name)
+        if os.path.exists(ref_file):
+            return ref_file
+
+    # 方式4: 尝试匹配不带后缀的文件名 (如 test.wav -> ref_test.wav)
+    ref_file_name = f"ref_{input_name}.wav"
+    ref_file = os.path.join(ref_dir, ref_file_name)
+    if os.path.exists(ref_file):
+        return ref_file
+
+    return None
 
 
 def can_convert_to_float(x):

@@ -23,7 +23,8 @@ from pathlib import Path
 _ALGORITHMS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'algorithms')
 sys.path.insert(0, _ALGORITHMS_DIR)
 sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'speechmetrics'))
-sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'nisqa'))
+# nisqa的predict.py在algorithms/nisqa/目录下，需要添加algorithms目录到路径
+sys.path.insert(0, _ALGORITHMS_DIR)
 sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'wenet'))
 sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'scoreq'))
 sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'utmos'))
@@ -34,8 +35,12 @@ import soundfile as sf
 import librosa
 import onnxruntime as ort
 import warnings
+import logging
 import torch
 import torch.cuda as cuda
+
+# 模块级日志记录器 - 使用 audiomos 名称以匹配项目日志配置
+logger = logging.getLogger('audiomos')
 
 warnings.filterwarnings("ignore")
 
@@ -90,9 +95,29 @@ except ImportError:
 try:
     from nisqa.predict import nisqa_predict
     NISQA_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     NISQA_AVAILABLE = False
-    print("警告: nisqa模块未安装，NISQA评分将不可用")
+    print(f"警告: nisqa模块未安装，NISQA评分将不可用 - {e}")
+
+# ModelScope兼容补丁（解决datasets版本兼容性问题）
+try:
+    import datasets
+    if not hasattr(datasets, 'LargeList'):
+        class _LargeListStub(list):
+            pass
+        datasets.LargeList = _LargeListStub
+        print("已应用ModelScope兼容补丁 (datasets.LargeList)")
+except ImportError:
+    pass
+
+# 尝试导入modelscope
+try:
+    from modelscope import pipeline
+    MODELSCOPE_AVAILABLE = True
+    print("✓ ModelScope可用")
+except ImportError as e:
+    MODELSCOPE_AVAILABLE = False
+    print(f"警告: modelscope模块未安装或导入失败，TCF评分将不可用 - {e}")
 
 WENET_AVAILABLE = False
 try:
@@ -108,11 +133,10 @@ try:
 except ImportError as e:
     print(f"警告: wenet模块未安装，WER评分将不可用 - {e}")
 
-try:
-    from modelscope import pipeline
-    MODELSCOPE_AVAILABLE = True
-except ImportError:
-    MODELSCOPE_AVAILABLE = False
+# 注意：兼容性补丁已在文件顶部应用，不需要再次导入 app.compat
+# 如果之前已成功导入 modelscope，保持 MODELSCOPE_AVAILABLE = True
+# 如果之前导入失败，MODELSCOPE_AVAILABLE 已经为 False
+if not MODELSCOPE_AVAILABLE:
     print("警告: modelscope模块未安装，音色还原度评分将不可用")
 
 
@@ -698,7 +722,7 @@ class OptimizedToneColorFidelityScore:
 
     def __init__(self):
         import time
-        print("\n[TCF] 初始化音色还原度评分模型...")
+        logger.info("[TCF] 初始化音色还原度评分模型...")
         start_time = time.time()
 
         if not MODELSCOPE_AVAILABLE:
@@ -709,8 +733,8 @@ class OptimizedToneColorFidelityScore:
         # 计算项目根目录: app/algorithms/tcf/ -> 项目根目录
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-        print(f"[TCF] 项目根目录: {project_root}")
-        print(f"[TCF] 配置多模型加权评估...")
+        logger.info(f"[TCF] 项目根目录: {project_root}")
+        logger.info(f"[TCF] 配置多模型加权评估...")
 
         # 多模型配置，权重根据ERR值得到: weight = 10 - ERR
         # ERR越小(性能越好)，权重越高
@@ -722,14 +746,13 @@ class OptimizedToneColorFidelityScore:
                 "weight": 7.21,  # 10 - 2.79
                 "revision": "v1.0.0"
             },
-            # Note: eres2netv2暂时禁用，因为模型配置缺少embed_dim参数
-            # "eres2netv2": {
-            #     "model_id": "damo/speech_eres2netv2_sv_zh-cn_16k-common",
-            #     "project_path": os.path.join(project_root, "models", "tcf", "eres2netv2"),
-            #     "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_eres2netv2_sv_zh-cn_16k-common"),
-            #     "weight": 6.19,  # 10 - 3.81
-            #     "revision": "v1.0.0"
-            # },
+            "eres2netv2": {
+                "model_id": "damo/speech_eres2netv2_sv_zh-cn_16k-common",
+                "project_path": os.path.join(project_root, "models", "tcf", "eres2netv2"),
+                "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_eres2netv2_sv_zh-cn_16k-common"),
+                "weight": 6.19,  # 10 - 3.81
+                "revision": "v1.0.0"
+            },
             "campplus": {
                 "model_id": "damo/speech_campplus_sv_zh-cn_16k-common",
                 "project_path": os.path.join(project_root, "models", "tcf", "campplus"),
@@ -784,11 +807,11 @@ class OptimizedToneColorFidelityScore:
         if alg not in self._pipeline_cache:
             model_config = self.sv_model_dict[alg]
             exists, model_path, is_project = self._check_model_exists(model_config)
-            
+
             try:
                 if exists:
                     location = "项目路径" if is_project else "本地缓存"
-                    print(f"使用{location}TCF模型 [{alg}]: {model_path}")
+                    logger.info(f"[TCF] 使用{location}模型 [{alg}]: {model_path}")
                     # 使用CUDA
                     self._pipeline_cache[alg] = pipeline(
                         task='speaker-verification',
@@ -796,12 +819,12 @@ class OptimizedToneColorFidelityScore:
                         device='cuda' if cuda.is_available() else 'cpu'
                     )
                 else:
-                    print(f"下载TCF模型 [{alg}]: {model_config['model_id']}")
+                    logger.info(f"[TCF] 下载模型 [{alg}]: {model_config['model_id']}")
                     import urllib3
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                     os.environ['CURL_CA_BUNDLE'] = ''
                     os.environ['PYTHONWARNINGS'] = 'ignore:Unverified HTTPS request'
-                    
+
                     self._pipeline_cache[alg] = pipeline(
                         task='speaker-verification',
                         model=model_config["model_id"],
@@ -809,9 +832,9 @@ class OptimizedToneColorFidelityScore:
                         device='cuda' if cuda.is_available() else 'cpu'
                     )
             except Exception as e:
-                print(f"TCF模型 [{alg}] 初始化失败: {e}")
+                logger.error(f"[TCF] 模型 [{alg}] 初始化失败: {e}")
                 raise
-        
+
         return self._pipeline_cache[alg]
     
     @staticmethod
@@ -824,75 +847,129 @@ class OptimizedToneColorFidelityScore:
     
     @staticmethod
     def get_ref_file(input_wav_file, ref_dir):
-        """获取参考文件"""
-        ref_file_name = "ref_" + os.path.basename(input_wav_file).removesuffix('.wav').split('_')[-1] + '.wav'
+        """获取参考文件 - 支持多种匹配方式（与RefScore保持一致）"""
+        input_basename = os.path.basename(input_wav_file)
+        input_name = input_basename.removesuffix('.wav')
+
+        # 方式1: 直接匹配相同文件名
+        ref_file = os.path.join(ref_dir, input_basename)
+        if os.path.exists(ref_file):
+            return ref_file
+
+        # 方式2: 匹配 ref_前缀 + 完整文件名
+        ref_file_name = "ref_" + input_basename
         ref_file = os.path.join(ref_dir, ref_file_name)
-        return ref_file if os.path.exists(ref_file) else None
+        if os.path.exists(ref_file):
+            return ref_file
+
+        # 方式3: 从文件名提取ID匹配 (如 test_001.wav -> ref_001.wav)
+        parts = input_name.split('_')
+        if len(parts) >= 2:
+            file_id = parts[-1]
+            ref_file_name = f"ref_{file_id}.wav"
+            ref_file = os.path.join(ref_dir, ref_file_name)
+            if os.path.exists(ref_file):
+                return ref_file
+
+        # 方式4: 尝试匹配不带后缀的文件名 (如 test.wav -> ref_test.wav)
+        ref_file_name = f"ref_{input_name}.wav"
+        ref_file = os.path.join(ref_dir, ref_file_name)
+        if os.path.exists(ref_file):
+            return ref_file
+
+        return None
     
     @timed_execution("tcf")
     def get_mos(self, input_test_file_list, ref_dir):
         """计算音色还原度 - 多模型加权评估"""
         test_file_list = input_test_file_list.copy()
         file_num = len(test_file_list)
-        
+
         # {file: {algorithm: {"embedding": embedding, "score": score}}}
         file_embedding_score_dict = {}
         total_score_list = [0.0 for _ in range(file_num)]
-        
+
         # 给待测音频注册
         for test_file in test_file_list:
             file_embedding_score_dict[test_file] = {}
-        
+
         # 给参考音频注册并加入待分析列表
-        for ref_file in os.listdir(ref_dir):
+        ref_files_in_dir = [f for f in os.listdir(ref_dir) if f.endswith(('.wav', '.mp3', '.flac'))]
+        logger.info(f"[TCF] 参考目录: {ref_dir}, 参考音频文件数: {len(ref_files_in_dir)}")
+        if ref_files_in_dir:
+            logger.info(f"[TCF] 参考文件列表: {ref_files_in_dir}")
+        else:
+            logger.warning(f"[TCF] 参考目录中没有音频文件，TCF评分将全部为0")
+
+        for ref_file in ref_files_in_dir:
             ref_file_full_path = os.path.join(ref_dir, ref_file)
             file_embedding_score_dict[ref_file_full_path] = {}
             test_file_list.append(ref_file_full_path)
-        
+
+        # 预先检查每个测试文件是否能找到参考文件
+        no_ref_files = []
+        for file_index in range(file_num):
+            file = input_test_file_list[file_index]
+            ref_file = self.get_ref_file(file, ref_dir)
+            if ref_file is None or ref_file == file or ref_file not in file_embedding_score_dict:
+                no_ref_files.append(os.path.basename(file))
+        if no_ref_files:
+            logger.warning(f"[TCF] 以下文件未找到匹配的参考音频，TCF评分将为0: {no_ref_files}")
+            logger.warning(f"[TCF] 文件命名需匹配 ref_ 模式，或包含 _XXX 后缀")
+
         # 遍历所有算法模型
         available_algs = []
+        failed_algs = []
         for alg in self.sv_model_dict.keys():
             try:
+                logger.info(f"[TCF] 开始计算 [{alg}] 模型，共{len(test_file_list)}个音频...")
                 sv_pipeline = self._get_pipeline(alg)
                 result = sv_pipeline(test_file_list, output_emb=True)
-                
+
                 # 清理缓存，避免爆显存
                 if alg in self._pipeline_cache:
                     del self._pipeline_cache[alg]
                 if cuda.is_available():
                     cuda.empty_cache()
                     cuda.synchronize()
-                
+
                 # 存储embedding
                 all_embs = result['embs']
                 for i in range(len(all_embs)):
                     file_embedding_score_dict[test_file_list[i]][alg] = {
                         "embedding": all_embs[i]
                     }
-                
+
                 available_algs.append(alg)
-                
+                logger.info(f"[TCF] ✓ [{alg}] 模型计算完成")
+
             except Exception as e:
-                print(f"TCF模型 [{alg}] 计算失败: {e}")
+                failed_algs.append(alg)
+                logger.warning(f"[TCF] ✗ [{alg}] 模型计算失败: {e}")
                 continue
-        
+
         if not available_algs:
-            print("警告: 所有TCF模型都不可用，返回默认值")
+            logger.error(f"[TCF] 所有TCF模型都不可用！失败的模型: {failed_algs}")
+            logger.error(f"[TCF] TCF评分全部为0，请检查ModelScope和模型文件配置")
             return {"tcf": total_score_list}
-        
-        print(f"TCF计算 - 可用算法模型: {available_algs}")
-        print(f"TCF计算 - 各算法权重: {[(alg, self.sv_model_dict[alg]['weight']) for alg in available_algs]}")
-        
+
+        if failed_algs:
+            logger.warning(f"[TCF] 部分模型失败: {failed_algs}, 可用模型: {available_algs}")
+
+        logger.info(f"[TCF] 可用算法模型: {available_algs}")
+        logger.info(f"[TCF] 各算法权重: {[(alg, self.sv_model_dict[alg]['weight']) for alg in available_algs]}")
+
         # 计算加权得分
+        matched_count = 0
         for file_index in range(file_num):
             file = input_test_file_list[file_index]
             ref_file = self.get_ref_file(file, ref_dir)
-            
+
             if ref_file is not None and ref_file != file and ref_file in file_embedding_score_dict:
                 file_total_score = 0.0
                 total_weight = 0.0
                 alg_scores = []
-                
+
                 for alg in available_algs:
                     if alg in file_embedding_score_dict[file] and alg in file_embedding_score_dict[ref_file]:
                         # 计算相似度
@@ -901,30 +978,35 @@ class OptimizedToneColorFidelityScore:
                             file_embedding_score_dict[ref_file][alg]["embedding"]
                         )
                         file_embedding_score_dict[file][alg]["score"] = similarity
-                        
+
                         # 加权累加
                         weight = self.sv_model_dict[alg]["weight"]
                         file_total_score += similarity * weight
                         total_weight += weight
                         alg_scores.append((alg, similarity, weight, similarity * weight))
-                
+
                 # 归一化并存储结果
                 if total_weight > 0:
                     final_score = float(file_total_score / total_weight)
                     total_score_list[file_index] = final_score
-                    
-                    # 打印详细结果
-                    print(f"TCF详细结果 - 文件: {os.path.basename(file)}")
-                    print(f"  参考文件: {os.path.basename(ref_file)}")
-                    print(f"  各算法相似度:")
+                    matched_count += 1
+
+                    # 使用debug级别记录详细结果
+                    logger.debug(f"[TCF] 文件: {os.path.basename(file)}, 参考: {os.path.basename(ref_file)}, TCF={final_score:.4f}")
                     for alg, sim, w, weighted in alg_scores:
-                        print(f"    {alg}: 相似度={sim:.4f}, 权重={w}, 加权得分={weighted:.4f}")
-                    print(f"  总权重: {total_weight:.2f}")
-                    print(f"  加权总分: {file_total_score:.4f}")
-                    print(f"  最终TCF分数: {final_score:.4f}")
+                        logger.debug(f"[TCF]   {alg}: sim={sim:.4f}, w={w}, weighted={weighted:.4f}")
             else:
-                print(f"未找到参考音频文件: {file}")
-        
+                logger.warning(f"[TCF] 未找到参考音频文件: {os.path.basename(file)}, TCF=0.0")
+
+        # 汇总统计
+        if matched_count == 0:
+            logger.error(f"[TCF] 所有测试文件均未匹配到参考音频！TCF评分全部为0")
+            logger.error(f"[TCF] 请检查文件命名格式和参考目录配置")
+        else:
+            non_zero = [s for s in total_score_list if s > 0]
+            avg_tcf = np.mean(non_zero) if non_zero else 0.0
+            logger.info(f"[TCF] TCF计算完成: {matched_count}/{file_num} 个文件匹配成功, 平均TCF={avg_tcf:.4f}")
+
         return {"tcf": total_score_list}
 
 
@@ -940,45 +1022,61 @@ class ParallelMOSCompute:
     
     def init_models(self):
         """初始化所有模型"""
+        print(f"[init_models] 开始初始化模型，当前models: {list(self.models.keys())}")
+        
         # 无参考模型
         try:
+            print("[init_models] 初始化DNSMOS...")
             self.models['dnsmos'] = OptimizedDNSMOScore()
+            print("[init_models] DNSMOS初始化成功")
         except Exception as e:
-            print(f"DNSMOS初始化失败: {e}")
+            print(f"[init_models] DNSMOS初始化失败: {e}")
         
         try:
+            print("[init_models] 初始化NISQA...")
             self.models['nisqa'] = OptimizedNisqaMosScore()
+            print("[init_models] NISQA初始化成功")
         except Exception as e:
-            print(f"NISQA初始化失败: {e}")
+            print(f"[init_models] NISQA初始化失败: {e}")
         
         try:
+            print("[init_models] 初始化Scoreq...")
             self.models['scoreq'] = OptimizedScoreqScore()
+            print("[init_models] Scoreq初始化成功")
         except Exception as e:
-            print(f"Scoreq初始化失败: {e}")
+            print(f"[init_models] Scoreq初始化失败: {e}")
         
         # 有参考模型
         try:
+            print("[init_models] 初始化RefScore...")
             self.models['ref_score'] = OptimizedRefScore()
+            print("[init_models] RefScore初始化成功")
         except Exception as e:
-            print(f"RefScore初始化失败: {e}")
+            print(f"[init_models] RefScore初始化失败: {e}")
         
         try:
+            print("[init_models] 初始化WER...")
             self.models['wer'] = OptimizedWerScore()
+            print("[init_models] WER初始化成功")
         except Exception as e:
-            print(f"WER初始化失败: {e}")
+            print(f"[init_models] WER初始化失败: {e}")
         
         try:
+            logger.info("[init_models] 初始化TCF...")
             self.models['tcf'] = OptimizedToneColorFidelityScore()
+            logger.info(f"[init_models] TCF初始化成功，当前models: {list(self.models.keys())}")
         except Exception as e:
-            print(f"TCF初始化失败: {e}")
-        
+            logger.error(f"[init_models] TCF初始化失败: {e}")
+            import traceback
+            logger.error(f"[init_models] TCF初始化错误详情: {traceback.format_exc()}")
+
         # UTMOS模型
         try:
             if UTMOS_AVAILABLE:
                 self.models['utmos'] = UTMOSCore()
-                print("✓ UTMOS模型初始化成功")
+                logger.info("✓ UTMOS模型初始化成功")
         except Exception as e:
-            print(f"UTMOS初始化失败: {e}")
+            logger.warning(f"UTMOS初始化失败: {e}")
     
     def compute_all_no_ref(self, audio_files: List[str], selected_metrics: Optional[List[str]] = None) -> Dict:
         """
@@ -1151,16 +1249,21 @@ class ParallelMOSCompute:
                 results.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
         
         if 'tcf' in metrics:
-            print(f"[compute_all_with_ref] 计算TCF...")
+            logger.info("[compute_all_with_ref] 计算TCF...")
+            logger.info(f"[compute_all_with_ref] self.models中是否有tcf: {'tcf' in self.models}")
             try:
                 if 'tcf' in self.models:
+                    logger.info("[compute_all_with_ref] 调用TCF get_mos...")
                     tcf_scores = self.models['tcf'].get_mos(audio_files, ref_dir)
-                    print(f"[compute_all_with_ref] TCF返回: {tcf_scores}")
+                    logger.info(f"[compute_all_with_ref] TCF返回: {tcf_scores}")
                     results.update(tcf_scores)
                 else:
+                    logger.warning("[compute_all_with_ref] TCF模型未加载，TCF评分将为0")
                     results.update({'tcf': [0.0]*file_num})
             except Exception as e:
-                print(f"[compute_all_with_ref] TCF计算失败: {e}")
+                logger.error(f"[compute_all_with_ref] TCF计算失败: {e}")
+                import traceback
+                logger.error(f"[compute_all_with_ref] TCF错误详情: {traceback.format_exc()}")
                 results.update({'tcf': [0.0]*file_num})
 
         print(f"[compute_all_with_ref] 最终结果(填充前): {results}")
@@ -1309,8 +1412,13 @@ def compute_mos_scores_optimized(
         评分结果字典
     """
     # 确保模型已初始化
+    print(f"[compute_mos_scores_optimized] 检查模型状态，当前models: {list(parallel_compute.models.keys())}")
     if not parallel_compute.models:
+        print("[compute_mos_scores_optimized] 模型未初始化，调用init_models...")
         parallel_compute.init_models()
+        print(f"[compute_mos_scores_optimized] init_models完成，当前models: {list(parallel_compute.models.keys())}")
+    else:
+        print("[compute_mos_scores_optimized] 模型已初始化，跳过init_models")
 
     # 如果没有指定计算项目，使用默认全部
     if selected_metrics is None:
