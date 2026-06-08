@@ -213,40 +213,6 @@ _DENOISE_ALGORITHMS = {
         "denoiser_name": "wiener_filtering",
         "sample_rate": 16000,
     },
-    # 其他深度学习
-    "dccrn": {
-        "name": "DCCRN 复数域降噪",
-        "description": "复数卷积循环网络，同时处理幅度和相位信息，DNS Challenge优异表现",
-        "type": "深度学习",
-        "advantages": [
-            "复数域处理",
-            "同时估计幅度相位",
-            "DNS Challenge优",
-        ],
-        "limitations": [
-            "模型较大",
-            "训练数据需求高",
-        ],
-        "denoiser_name": "dccrn",
-        "sample_rate": 16000,
-    },
-    "fullsubnet": {
-        "name": "FullSubNet 全带子带降噪",
-        "description": "全带和子带融合网络的实时语音增强，结合全局频谱特征和局部频段精细处理",
-        "type": "深度学习",
-        "advantages": [
-            "实时处理",
-            "全带+子带融合",
-            "轻量高效",
-            "ICASSP 2021",
-        ],
-        "limitations": [
-            "极端噪声待优化",
-            "需要16kHz输入",
-        ],
-        "denoiser_name": "fullsubnet",
-        "sample_rate": 16000,
-    },
 }
 
 
@@ -288,19 +254,37 @@ def get_available_restorers() -> dict:
 RESTORATION_DESCRIPTIONS: dict = {
     "dereverberation": {
         "name": "去混响 (Dereverberation)",
-        "description": "使用WPE算法去除音频中的混响效果，提升语音清晰度",
-        "type": "信号处理+深度学习",
-        "paper": "WPE: Weighted Prediction Error for Speech Dereverberation",
-        "advantages": ["有效减少混响", "盲去混响（无需参考）", "适用多种场景"],
-        "limitations": ["长混响场景效果有限", "计算复杂度中等"],
+        "description": "使用 SpeechBrain SepFormer (WHAMR!) 深度学习模型去除房间混响效果，基于 Transformer 架构，可同时处理噪声和混响",
+        "type": "深度学习",
+        "paper": "Subakan et al., 'Attention is All You Need in Speech Separation' (ICASSP 2021)",
+        "advantages": [
+            "SpeechBrain SepFormer 架构",
+            "WHAMR! 数据集训练",
+            "联合降噪 + 去混响",
+            "适合录音室/会议室录音",
+        ],
+        "limitations": [
+            "模型较大",
+            "推理速度较慢",
+            "需重采样到 8kHz",
+        ],
     },
     "super_resolution": {
         "name": "音频超分辨率 (Bandwidth Extension)",
-        "description": "将低采样率音频重建为高采样率（带宽扩展），恢复高频成分",
+        "description": "使用 MossFormer2 语音超分辨率模型，将低采样率 (16kHz) 音频重建为高采样率 (48kHz)，恢复高频细节",
         "type": "深度学习",
-        "paper": "NVSR: Neural Voice Super Resolution",
-        "advantages": ["显著提升音频质量", "恢复高频细节", "真实现场录音效果显著"],
-        "limitations": ["模型较大", "推理速度受限", "极端低质量输入效果有限"],
+        "paper": "ClearerVoice-Studio: Bridging Advanced Speech Processing Research and Practical Deployment (INTERSPEECH 2025)",
+        "advantages": [
+            "MossFormer2 架构",
+            "16k→48k 超分",
+            "恢复高频细节",
+            "提升听感质量",
+        ],
+        "limitations": [
+            "模型巨大 (2.1GB)",
+            "推理时间较长",
+            "需 16kHz 以上输入",
+        ],
     },
 }
 

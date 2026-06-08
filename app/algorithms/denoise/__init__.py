@@ -131,18 +131,6 @@ try:
 except ImportError:
     CLEARERVOICE_AVAILABLE = False
 
-try:
-    from .dccrn_denoiser import DCCRNDenoiser
-    DCCRN_AVAILABLE = True
-except ImportError:
-    DCCRN_AVAILABLE = False
-
-try:
-    from .fullsubnet_denoiser import FullSubNetDenoiser
-    FULLSUBNET_AVAILABLE = True
-except ImportError:
-    FULLSUBNET_AVAILABLE = False
-
 
 __all__ = [
     # 核心
@@ -179,10 +167,6 @@ if CLEARERVOICE_AVAILABLE:
         'ClearerVoiceDenoiser',
         'CLEARVOICE_MODEL_SPECS',
     ])
-if DCCRN_AVAILABLE:
-    __all__.append('DCCRNDenoiser')
-if FULLSUBNET_AVAILABLE:
-    __all__.append('FullSubNetDenoiser')
 
 # 新增模块
 if SIGNIFICANCE_AVAILABLE:

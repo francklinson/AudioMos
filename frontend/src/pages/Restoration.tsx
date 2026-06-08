@@ -437,7 +437,16 @@ const Restoration: React.FC = () => {
       {activeTab === 'upload' && (
         <div className="tab-content">
           <div className="section">
-            <h3>选择修复算法</h3>
+            <h3>🤖 选择修复算法</h3>
+            <div className="algorithm-intro">
+              <p>📌 请根据您的处理需求选择合适的算法：</p>
+              <ul>
+                <li><strong>🏠 去混响</strong> - 去除房间回声和混响效果，提升语音清晰度，适合录音室/会议室录音</li>
+                <li><strong>🔊 超分辨率</strong> - 将低采样率音频重建为高采样率（16k→48k），恢复高频细节</li>
+                <li><strong>🎙️ 语音降噪</strong> - 多种深度学习降噪算法，去除背景噪声、风扇声、空调声等</li>
+                <li><strong>👥 语音分离</strong> - 分离多人对话，提取特定说话人语音</li>
+              </ul>
+            </div>
             <div className="algorithm-grid">
               {algorithms.map((algo) => (
                 <div

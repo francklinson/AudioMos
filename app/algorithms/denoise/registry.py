@@ -337,22 +337,6 @@ DENOISER_DESCRIPTIONS = {
         "cons": ["需要准确的噪声估计", "对非平稳噪声敏感"]
     },
     # ── 其他深度学习模型 ──
-    "dccrn": {
-        "name": "DCCRN (Deep Complex CRN)",
-        "description": "基于复数卷积循环网络的深度学习语音增强算法，同时处理幅度和相位信息",
-        "type": "深度学习",
-        "paper": "DCCRN: Deep Complex Convolution Recurrent Network for Phase-Aware Speech Enhancement (INTERSPEECH 2020)",
-        "pros": ["复数域处理", "同时估计幅度和相位", "DNS Challenge优异表现"],
-        "cons": ["模型较大", "训练数据需求高"]
-    },
-    "fullsubnet": {
-        "name": "FullSubNet (Full-band Sub-band Fusion)",
-        "description": "全带和子带融合网络的实时语音增强算法，结合全局频谱特征和局部频段精细处理",
-        "type": "深度学习",
-        "paper": "FullSubNet: A Full-Band and Sub-Band Fusion Model for Real-Time Speech Enhancement (ICASSP 2021)",
-        "pros": ["实时处理", "全带+子带融合", "轻量高效"],
-        "cons": ["极端噪声场景待优化", "需要16kHz输入"]
-    }
 }
 
 

@@ -149,7 +149,7 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
             # (clearvoice 使用相对路径 checkpoint_dir，需要从项目根目录运行)
             original_cwd = os.getcwd()
 
-            # 查找项目根目录（包含 checkpoints 或 models 目录的父目录）
+            # 查找项目根目录（包含 models/clearvoice 目录的父目录）
             project_root = self._find_project_root()
             os.chdir(project_root)
 
@@ -338,7 +338,7 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
         """
         查找项目根目录
 
-        从当前文件向上搜索包含 checkpoints 或 pyproject.toml 的目录
+        从当前文件向上搜索包含 models/clearvoice 或 pyproject.toml 的目录
         """
         current = os.path.dirname(os.path.abspath(__file__))
         for _ in range(10):

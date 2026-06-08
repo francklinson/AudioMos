@@ -409,9 +409,7 @@ const Denoise: React.FC = () => {
             <h4>🤖 其他深度学习模型</h4>
             <ul>
               <li><strong>SpeechBrain</strong>: MetricGAN+, SepFormer</li>
-              <li><strong>传统方法</strong>: 谱减法, 维纳滤波</li>
-              <li><strong>DCCRN</strong>: 复数卷积循环网络</li>
-              <li><strong>FullSubNet</strong>: 全带子带融合网络</li>
+              <li><strong>传统方法</strong>: 谱减法，维纳滤波</li>
             </ul>
           </div>
           <div className="info-card">

@@ -605,13 +605,19 @@ check_models() {
     local utmos_ok=true
 
     if [ -d "$utmos_model_dir" ]; then
-        local utmos_count=$(find "$utmos_model_dir" -name "*.pth" | wc -l)
+        # 只统计大于 0 的有效模型文件
+        local utmos_count=$(find "$utmos_model_dir" -name "*.pth" -size +0 | wc -l)
         echo "   模型文件:"
         for f in "$utmos_model_dir"/fold*.pth; do
             if [ -f "$f" ]; then
                 local fname=$(basename "$f")
                 local fsize=$(du -sh "$f" 2>/dev/null | cut -f1)
-                echo "      ✅ $fname ($fsize)"
+                # 检查文件大小是否为 0
+                if [ "$(stat -c%s "$f" 2>/dev/null)" -gt 0 ]; then
+                    echo "      ✅ $fname ($fsize)"
+                else
+                    echo "      ❌ $fname (0 字节 - 无效文件)"
+                fi
             fi
         done
         echo ""
@@ -705,7 +711,7 @@ check_models() {
     # 10. 检查降噪算法环境与模型
     # ========================
     echo "🔍 检查降噪算法环境与模型..."
-    echo "   说明: 包含 SpeechBrain / ClearerVoice / DCCRN / FullSubNet 等"
+    echo "   说明：包含 SpeechBrain / ClearerVoice 等"
     echo ""
 
     local denoise_all_ok=true
@@ -763,7 +769,9 @@ print('OK')
         local model_desc="${model_entry##*:}"
         local full_path="$sb_model_dir/$model_file"
         if [ -f "$full_path" ]; then
-            local model_size=$(du -sh "$(dirname "$full_path")" 2>/dev/null | cut -f1)
+            # 使用 -L 参数跟随符号链接，获取实际文件大小
+            local model_dir="$(dirname "$full_path")"
+            local model_size=$(du -shL "$model_dir" 2>/dev/null | cut -f1)
             echo "      ✅ $model_desc ($model_size)"
         else
             echo "      ⚠️  $model_desc — 首次使用自动下载"
@@ -771,87 +779,47 @@ print('OK')
     done
     echo ""
 
-    # 10c. 检查 ClearerVoice 模型 (FRCRN/MossFormer/MossFormer2)
-    echo "   🎙️  ClearerVoice 降噪模型 (阿里达摩院):"
-    local cv_model_dir="$SCRIPT_DIR/models/clearervoice"
+    # 10c. 检查 ClearVoice 模型 (FRCRN/MossFormer/MossFormer2)
+    echo "   🎙️  ClearVoice 降噪模型 (阿里达摩院):"
+    local cv_model_dir="$SCRIPT_DIR/models/clearvoice"
 
+    # 检查全部 5 个 ClearVoice 模型
     local cv_models=(
-        "frcrn/configuration.json:FRCRN 实时语音增强"
-        "mossformer/mossformer_separation_16k.pth:MossFormer 语音分离"
-        "mossformer2/configuration.json:MossFormer2 语音分离"
+        "FRCRN_SE_16K/last_best_checkpoint.pt:FRCRN 实时语音增强 (16kHz)"
+        "MossFormerGAN_SE_16K/last_best_checkpoint.pt:MossFormerGAN 语音增强 (16kHz)"
+        "MossFormer2_SS_16K/last_best_checkpoint.pt:MossFormer2 语音分离 (16kHz)"
+        "MossFormer2_SE_48K/last_best_checkpoint.pt:MossFormer2 语音增强 (48kHz)"
+        "MossFormer2_SR_48K/last_best_checkpoint_m.pt:MossFormer2 超分辨率 (48kHz)"
     )
     local cv_ok=true
+    local cv_count=0
+    local cv_total=5
+    
     for model_entry in "${cv_models[@]}"; do
         local model_file="${model_entry%%:*}"
         local model_desc="${model_entry##*:}"
         local full_path="$cv_model_dir/$model_file"
         if [ -f "$full_path" ]; then
             local model_size=$(du -sh "$(dirname "$full_path")" 2>/dev/null | cut -f1)
-            echo "      ✅ $model_desc ($model_size)"
+            echo "      ✅ $model_desc — 已下载 ($model_size)"
+            ((cv_count++))
         else
-            echo "      ⚠️  $model_desc — 首次使用需从 ModelScope 下载"
+            echo "      ❌ $model_desc — 缺失"
             cv_ok=false
         fi
     done
 
-    # 检查 ClearerVoice 回退模型 (SpeechBrain)
-    if [ -d "$cv_model_dir/speechbrain_fallback" ] && [ "$(ls -A "$cv_model_dir/speechbrain_fallback" 2>/dev/null)" ]; then
-        echo "      ✅ SpeechBrain 回退模型已缓存"
-    fi
-
-    if ! $cv_ok; then
-        echo "      ℹ️  缺失模型将在首次调用时自动在线下载"
-    fi
     echo ""
-
-    # 10d. 检查 DCCRN 模型
-    echo "   🔄 DCCRN 降噪模型:"
-    local dccrn_model_dir="$SCRIPT_DIR/models/dccrn"
-    local dccrn_ok=false
-
-    if [ -f "$dccrn_model_dir/sb/enhance_model.ckpt" ]; then
-        local sb_size=$(du -sh "$dccrn_model_dir/sb" 2>/dev/null | cut -f1)
-        echo "      ✅ SpeechBrain 替代模型 (MetricGAN+) ($sb_size)"
-        dccrn_ok=true
-    fi
-
-    # 检查 ModelScope 本地模型
-    if [ -d "$dccrn_model_dir/modelscope" ] && [ "$(ls -A "$dccrn_model_dir/modelscope" 2>/dev/null)" ]; then
-        local ms_size=$(du -sh "$dccrn_model_dir/modelscope" 2>/dev/null | cut -f1)
-        echo "      ✅ ModelScope 本地模型 ($ms_size)"
-        dccrn_ok=true
-    fi
-
-    if [ -d "$dccrn_model_dir/huggingface" ] && [ "$(ls -A "$dccrn_model_dir/huggingface" 2>/dev/null)" ]; then
-        local hf_size=$(du -sh "$dccrn_model_dir/huggingface" 2>/dev/null | cut -f1)
-        echo "      ✅ HuggingFace 本地模型 ($hf_size)"
-        dccrn_ok=true
-    fi
-
-    if ! $dccrn_ok; then
-        echo "      ⚠️  DCCRN 专用模型缺失，将回退到 MetricGAN+/谱减法"
-    fi
-    echo ""
-
-    # 10e. 检查 FullSubNet 模型
-    echo "   🌐 FullSubNet 降噪模型:"
-    local fsn_model_dir="$SCRIPT_DIR/models/fullsubnet"
-    local fsn_ok=false
-
-    if [ -f "$fsn_model_dir/speechbrain/enhance_model.ckpt" ]; then
-        local sb_size=$(du -sh "$fsn_model_dir/speechbrain" 2>/dev/null | cut -f1)
-        echo "      ✅ SpeechBrain 替代模型 (MetricGAN+) ($sb_size)"
-        fsn_ok=true
-    fi
-
-    if [ -f "$fsn_model_dir/wham/encoder.ckpt" ]; then
-        local wham_size=$(du -sh "$fsn_model_dir/wham" 2>/dev/null | cut -f1)
-        echo "      ✅ SepFormer WHAM 替代模型 ($wham_size)"
-        fsn_ok=true
-    fi
-
-    if ! $fsn_ok; then
-        echo "      ⚠️  FullSubNet 专用模型缺失 (HF上不存在)，使用替代模型"
+    if [ $cv_count -eq $cv_total ]; then
+        echo "      ✅ ClearVoice 模型已全部就绪 ($cv_count/$cv_total)"
+        local total_size=$(du -sh "$cv_model_dir" 2>/dev/null | cut -f1)
+        echo "      总大小：$total_size"
+    elif [ $cv_count -gt 0 ]; then
+        echo "      ⚠️  ClearVoice 模型部分可用 ($cv_count/$cv_total)"
+        echo "      提示：运行 'python scripts/download_clearvoice_models.py' 下载缺失模型"
+    else
+        echo "      ❌ ClearVoice 模型全部缺失"
+        echo "      提示：运行 'python scripts/download_clearvoice_models.py' 批量下载"
     fi
     echo ""
 
