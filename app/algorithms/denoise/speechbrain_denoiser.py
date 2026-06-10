@@ -279,26 +279,32 @@ class SepFormerDenoiser(BaseDenoiser):
         try:
             # 转换为tensor
             audio_tensor = torch.tensor(audio, dtype=torch.float32).unsqueeze(0)
-            
+
             # 分离
             est_sources = self._separator.separate_batch(audio_tensor)
-            
+
             # 取第一个源(语音)
             enhanced = est_sources[:, :, 0].squeeze().cpu().numpy()
-            
+
             # 重采样回目标采样率
             if self.sample_rate != 8000:
                 enhanced = librosa.resample(enhanced, orig_sr=8000, target_sr=self.sample_rate)
-            
+
+            # 检查并防止削波失真
+            peak = np.max(np.abs(enhanced))
+            if peak > 1.0:
+                # 如果峰值超过1.0，进行归一化
+                enhanced = enhanced / peak * 0.95
+
             processing_time = time.time() - start_time
-            
+
             return DenoiseResult(
                 audio=enhanced,
                 sample_rate=self.sample_rate,
                 processing_time=processing_time,
                 algorithm_name=self.name
             )
-            
+
         except Exception as e:
             print(f"SepFormer增强失败: {e}")
             return DenoiseResult(
