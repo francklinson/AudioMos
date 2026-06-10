@@ -407,6 +407,7 @@ async def process_denoise_task(queue_task):
         queue_task: 队列任务对象
     """
     task_id = queue_task.task_id
+    logger.info(f"[批量降噪] 开始处理任务 {task_id}")
     
     try:
         task_data = queue_task.data
@@ -414,18 +415,25 @@ async def process_denoise_task(queue_task):
         ref_files = task_data.get("reference_files", [])
         algorithms = task_data.get("algorithms", [])
         
+        logger.info(f"[批量降噪] 任务配置: {len(noisy_files)} 个文件, {len(algorithms)} 个算法")
+        logger.info(f"[批量降噪] 算法列表: {algorithms}")
+        logger.info(f"[批量降噪] 文件列表: {[Path(f).name for f in noisy_files]}")
+        
         # 创建输出目录
         output_dir = Path(settings.paths.result_dir) / "denoise" / task_id
         output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[批量降噪] 输出目录: {output_dir}")
         
         # 初始化批量测评器
         evaluator = BatchEvaluator(output_dir=str(output_dir))
+        logger.info(f"[批量降噪] 批量测评器初始化完成")
         
         all_results = {}
         total_algorithms = len(algorithms)
         
         for idx, algo_name in enumerate(algorithms):
             progress = int((idx / total_algorithms) * 80)
+            logger.info(f"[批量降噪] 开始测评算法 {idx+1}/{total_algorithms}: {algo_name}")
             await update_denoise_task_progress(
                 task_id, progress, 
                 f"正在测评算法 {idx+1}/{total_algorithms}: {algo_name}..."
@@ -439,23 +447,44 @@ async def process_denoise_task(queue_task):
                     output_subdir=task_id
                 )
                 all_results[algo_name] = results
+                logger.info(f"[批量降噪] 算法 {algo_name} 测评完成: {len(results)} 个结果")
+                
+                # 记录每个结果文件的详细信息
+                for i, result in enumerate(results):
+                    if hasattr(result, 'denoised_audio_path') and result.denoised_audio_path:
+                        import os
+                        if os.path.exists(result.denoised_audio_path):
+                            file_size = os.path.getsize(result.denoised_audio_path)
+                            logger.info(f"[批量降噪]   结果 {i+1}: {result.denoised_audio_path} ({file_size} bytes)")
+                        else:
+                            logger.warning(f"[批量降噪]   结果 {i+1}: 文件不存在 {result.denoised_audio_path}")
+                    else:
+                        logger.warning(f"[批量降噪]   结果 {i+1}: 无音频路径")
+                        
             except Exception as e:
-                logger.error(f"算法 {algo_name} 测评失败: {e}")
+                logger.error(f"[批量降噪] 算法 {algo_name} 测评失败: {e}", exc_info=True)
                 all_results[algo_name] = []
         
         # 生成报告
+        logger.info(f"[批量降噪] 开始生成报告...")
         await update_denoise_task_progress(task_id, 90, "正在生成报告...")
         
         report_gen = ReportGenerator(output_dir=str(output_dir))
         
         # 生成Excel报告
+        logger.info(f"[批量降噪] 生成 Excel 报告...")
         excel_file = report_gen.generate_excel_report(all_results)
+        logger.info(f"[批量降噪] Excel 报告: {excel_file}")
         
         # 生成HTML报告
+        logger.info(f"[批量降噪] 生成 HTML 报告...")
         html_file = report_gen.generate_html_report(all_results)
+        logger.info(f"[批量降噪] HTML 报告: {html_file}")
         
         # 生成Markdown报告
+        logger.info(f"[批量降噪] 生成 Markdown 报告...")
         md_file = report_gen.generate_markdown_report(all_results)
+        logger.info(f"[批量降噪] Markdown 报告: {md_file}")
         
         # 更新任务状态
         denoise_tasks[task_id]["status"] = "completed"
@@ -469,14 +498,15 @@ async def process_denoise_task(queue_task):
         }
         denoise_tasks[task_id]["updated_at"] = datetime.now().isoformat()
         
-        logger.info(f"降噪任务完成: {task_id}")
+        logger.info(f"[批量降噪] 任务完成: {task_id}")
+        logger.info(f"[批量降噪] 报告文件: Excel={excel_file}, HTML={html_file}, MD={md_file}")
         
     except Exception as e:
         error_msg = str(e)
         denoise_tasks[task_id]["status"] = "failed"
         denoise_tasks[task_id]["message"] = f"处理失败: {error_msg}"
         denoise_tasks[task_id]["updated_at"] = datetime.now().isoformat()
-        logger.error(f"降噪任务失败 {task_id}: {e}")
+        logger.error(f"[批量降噪] 任务失败 {task_id}: {e}", exc_info=True)
 
 
 async def update_denoise_task_progress(task_id: str, progress: int, message: str):
@@ -579,6 +609,87 @@ async def download_result(
         file_path,
         filename=filename,
         media_type=media_type
+    )
+
+
+@router.get("/audio/{task_id}/{algorithm}/{filename}")
+async def get_denoised_audio(
+    task_id: str,
+    algorithm: str,
+    filename: str,
+    current_user: Annotated[User, Depends(get_current_active_user)]
+) -> FileResponse:
+    """
+    获取降噪后的音频文件（用于前端预览播放）
+
+    Args:
+        task_id: 任务ID
+        algorithm: 算法名称
+        filename: 文件名
+
+    Returns:
+        降噪后的WAV音频文件
+    """
+    logger.info(f"[获取音频] 请求音频文件: task_id={task_id}, algorithm={algorithm}, filename={filename}")
+    logger.info(f"[获取音频] 当前用户: {current_user.username}")
+
+    if task_id not in denoise_tasks:
+        logger.error(f"[获取音频] 任务不存在: {task_id}")
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    task = denoise_tasks[task_id]
+    logger.info(f"[获取音频] 任务存在，任务用户: {task.get('user')}")
+
+    if task.get("user") != current_user.username:
+        logger.error(f"[获取音频] 无权访问: 任务用户={task.get('user')}, 当前用户={current_user.username}")
+        raise HTTPException(status_code=403, detail="无权访问此任务")
+
+    # 构建文件路径
+    result_dir = Path(settings.paths.result_dir) / "denoise" / task_id / algorithm
+    audio_file = result_dir / f"denoised_{filename}"
+
+    logger.info(f"[获取音频] 构建文件路径: {audio_file}")
+    logger.info(f"[获取音频] 结果目录: {result_dir}")
+    logger.info(f"[获取音频] 目录是否存在: {result_dir.exists()}")
+
+    if result_dir.exists():
+        try:
+            files_in_dir = list(result_dir.iterdir())
+            logger.info(f"[获取音频] 目录内容: {[f.name for f in files_in_dir]}")
+        except Exception as e:
+            logger.warning(f"[获取音频] 无法列出目录内容: {e}")
+
+    if not audio_file.exists():
+        logger.error(f"[获取音频] 音频文件不存在: {audio_file}")
+        # 尝试查找类似文件
+        if result_dir.exists():
+            try:
+                wav_files = list(result_dir.glob("*.wav"))
+                if wav_files:
+                    logger.info(f"[获取音频] 目录中的WAV文件: {[f.name for f in wav_files]}")
+            except Exception as e:
+                logger.warning(f"[获取音频] 无法查找WAV文件: {e}")
+        raise HTTPException(status_code=404, detail="音频文件不存在")
+
+    # 获取文件信息
+    try:
+        file_size = audio_file.stat().st_size
+        logger.info(f"[获取音频] 找到音频文件: {audio_file}, 大小: {file_size} bytes")
+
+        # 验证音频文件内容
+        import soundfile as sf
+        audio_data, sr = sf.read(str(audio_file))
+        logger.info(f"[获取音频] 音频文件验证: 形状={audio_data.shape}, 采样率={sr}Hz")
+        logger.info(f"[获取音频] 音频范围: [{audio_data.min():.6f}, {audio_data.max():.6f}]")
+    except Exception as e:
+        logger.warning(f"[获取音频] 无法验证音频文件: {e}")
+
+    logger.info(f"[获取音频] 返回音频文件: {audio_file}")
+    
+    return FileResponse(
+        str(audio_file),
+        media_type="audio/wav",
+        filename=f"denoised_{algorithm}_{filename}"
     )
 
 
@@ -707,31 +818,54 @@ async def denoise_single_file(
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        logger.info(f"[单文件降噪] 开始处理任务 {task_id}")
+        logger.info(f"[单文件降噪] 算法: {algorithm}, 文件名: {file.filename}, 格式: {ext}")
+        
         # 保存上传文件
         input_path = temp_dir / f"input{ext}"
         content = await file.read()
+        content_size = len(content)
+        logger.info(f"[单文件降噪] 接收文件内容: {content_size} bytes")
+        
         with open(input_path, "wb") as f:
             f.write(content)
+        logger.info(f"[单文件降噪] 已保存上传文件: {input_path}")
 
         # 读取音频
+        logger.info(f"[单文件降噪] 读取音频文件: {input_path}")
         audio, sr = sf.read(str(input_path))
+        logger.info(f"[单文件降噪] 音频信息: 形状={audio.shape}, 采样率={sr}Hz, 数据类型={audio.dtype}")
+        logger.info(f"[单文件降噪] 音频范围: [{np.min(audio):.6f}, {np.max(audio):.6f}], RMS={np.sqrt(np.mean(audio**2)):.6f}")
 
         # 执行降噪
+        logger.info(f"[单文件降噪] 开始执行降噪算法: {algorithm}")
         result = denoiser.denoise(audio, sr)
+        logger.info(f"[单文件降噪] 降噪完成: 处理时间={result.processing_time:.3f}s")
+        logger.info(f"[单文件降噪] 输出音频信息: 形状={result.audio.shape}, 采样率={result.sample_rate}Hz")
+        logger.info(f"[单文件降噪] 输出音频范围: [{np.min(result.audio):.6f}, {np.max(result.audio):.6f}], RMS={np.sqrt(np.mean(result.audio**2)):.6f}")
+        logger.info(f"[单文件降噪] 输出音频非零元素: {np.count_nonzero(result.audio)} / {len(result.audio)}")
 
         # 保存降噪结果
         output_path = temp_dir / "output.wav"
+        logger.info(f"[单文件降噪] 保存降噪结果到: {output_path}")
         sf.write(str(output_path), result.audio, result.sample_rate)
-
+        
+        # 验证保存的文件
+        saved_audio, saved_sr = sf.read(str(output_path))
+        logger.info(f"[单文件降噪] 验证保存的文件: 形状={saved_audio.shape}, 采样率={saved_sr}Hz")
+        logger.info(f"[单文件降噪] 验证音频范围: [{np.min(saved_audio):.6f}, {np.max(saved_audio):.6f}]")
+        
         logger.info(
-            f"单文件降噪完成: algorithm={algorithm}, "
-            f"file={file.filename}, time={result.processing_time:.3f}s"
+            f"[单文件降噪] 处理完成: algorithm={algorithm}, "
+            f"file={file.filename}, time={result.processing_time:.3f}s, "
+            f"output_size={output_path.stat().st_size} bytes"
         )
 
         # 返回降噪后的音频文件（使用 background 清理临时文件）
         from fastapi import BackgroundTasks
 
         # 返回降噪后的音频文件
+        logger.info(f"[单文件降噪] 返回音频文件: {output_path}")
         return FileResponse(
             str(output_path),
             media_type="audio/wav",

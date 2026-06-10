@@ -238,11 +238,17 @@ async def process_restoration(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """提交音频修复任务"""
+    logger.info(f"[音频修复] 收到处理请求 - task_id: {task_id}, user: {current_user.username}")
+
     if task_id not in restoration_tasks:
+        logger.error(f"[音频修复] 任务不存在: {task_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
     task_info = restoration_tasks[task_id]
+    logger.info(f"[音频修复] 任务信息: {task_info}")
+
     if task_info["status"] == "processing":
+        logger.warning(f"[音频修复] 任务正在处理中: {task_id}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="任务正在处理中")
 
     algorithm = task_info["algorithm"]
@@ -250,28 +256,47 @@ async def process_restoration(
     filename = task_info["filename"]
     file_path = os.path.join(upload_dir, filename)
 
+    logger.info(f"[音频修复] 算法: {algorithm}, 文件名: {filename}")
+    logger.info(f"[音频修复] 文件路径: {file_path}")
+
     if not os.path.exists(file_path):
+        logger.error(f"[音频修复] 文件不存在: {file_path}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
 
     # 更新状态
     task_info["status"] = "processing"
     task_info["message"] = "正在处理..."
+    logger.info(f"[音频修复] 任务状态已更新为 processing")
 
     # 在子线程中处理
     import threading
 
     def process():
         try:
+            logger.info(f"[音频修复] 开始处理任务: {task_id}")
+            logger.info(f"[音频修复] 算法: {algorithm}, 文件: {filename}")
+            logger.info(f"[音频修复] 文件路径: {file_path}")
+
             task_info["progress"] = 0.1
 
             # 获取算法实例
             restorers = get_available_restorers()
+            logger.info(f"[音频修复] 可用算法: {list(restorers.keys())}")
+
             if algorithm not in restorers:
                 raise ValueError(f"算法不可用: {algorithm}")
 
             restorer_cls = restorers[algorithm]["class"]
-            restorer = restorer_cls(device="cuda" if settings.cuda.enabled else "cpu")
+            logger.info(f"[音频修复] 使用算法类: {restorer_cls.__name__}")
+
+            device = "cuda" if settings.cuda.enabled else "cpu"
+            logger.info(f"[音频修复] 使用设备: {device}")
+
+            restorer = restorer_cls(device=device)
+            logger.info(f"[音频修复] 开始初始化算法...")
+
             success = restorer.initialize()
+            logger.info(f"[音频修复] 算法初始化结果: {success}")
 
             if not success:
                 raise RuntimeError("算法初始化失败")
@@ -282,18 +307,35 @@ async def process_restoration(
             import soundfile as sf
             import numpy as np
 
+            logger.info(f"[音频修复] 读取音频文件: {file_path}")
             audio, sr = sf.read(file_path)
+            logger.info(f"[音频修复] 音频读取完成 - 形状: {audio.shape}, 采样率: {sr}, 数据类型: {audio.dtype}")
+            logger.info(f"[音频修复] 音频范围: [{audio.min():.4f}, {audio.max():.4f}], RMS: {np.sqrt(np.mean(audio**2)):.4f}")
+
             task_info["progress"] = 0.5
 
             # 执行修复
+            logger.info(f"[音频修复] 开始执行修复...")
             result = restorer.restore(audio, sr)
+            logger.info(f"[音频修复] 修复完成 - 输出形状: {result.audio.shape}, 采样率: {result.sample_rate}")
+            logger.info(f"[音频修复] 输出范围: [{result.audio.min():.4f}, {result.audio.max():.4f}]")
+            logger.info(f"[音频修复] 处理时间: {result.processing_time:.3f}s")
+            logger.info(f"[音频修复] 元数据: {result.metadata}")
+
             task_info["progress"] = 0.8
 
             # 保存结果
             result_dir = os.path.join(settings.paths.result_dir, task_id)
             os.makedirs(result_dir, exist_ok=True)
             result_path = os.path.join(result_dir, f"restored_{filename}")
+
+            logger.info(f"[音频修复] 保存结果到: {result_path}")
             sf.write(result_path, result.audio, result.sample_rate)
+            logger.info(f"[音频修复] 结果保存完成")
+
+            # 验证保存的文件
+            saved_audio, saved_sr = sf.read(result_path)
+            logger.info(f"[音频修复] 验证保存文件 - 形状: {saved_audio.shape}, 采样率: {saved_sr}")
 
             task_info["status"] = "completed"
             task_info["progress"] = 1.0
@@ -302,10 +344,14 @@ async def process_restoration(
             task_info["processing_time"] = result.processing_time
             task_info["metadata"] = result.metadata
 
+            logger.info(f"[音频修复] 任务完成: {task_id}")
+
         except Exception as e:
             task_info["status"] = "failed"
             task_info["message"] = str(e)
-            logger.error(f"音频修复失败: {e}")
+            logger.error(f"[音频修复] 任务失败: {task_id}, 错误: {e}")
+            import traceback
+            logger.error(f"[音频修复] 错误堆栈: {traceback.format_exc()}")
 
     threading.Thread(target=process, daemon=True).start()
 
@@ -332,7 +378,10 @@ async def get_source_audio(
     current_user: User = Depends(get_current_user_optional),
 ):
     """获取上传的原始音频文件（用于试听对比，支持 ?token= 查询参数）"""
+    logger.info(f"[音频修复] 获取原始音频 - task_id: {task_id}")
+
     if task_id not in restoration_tasks:
+        logger.error(f"[音频修复] 任务不存在: {task_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
     task_info = restoration_tasks[task_id]
@@ -340,9 +389,21 @@ async def get_source_audio(
     filename = task_info["filename"]
     file_path = os.path.join(upload_dir, filename)
 
+    logger.info(f"[音频修复] 原始音频路径: {file_path}")
+
     if not os.path.exists(file_path):
+        logger.error(f"[音频修复] 原始文件不存在: {file_path}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="原始文件不存在")
 
+    # 验证音频文件
+    try:
+        import soundfile as sf
+        audio, sr = sf.read(file_path)
+        logger.info(f"[音频修复] 原始音频验证 - 形状: {audio.shape}, 采样率: {sr}, 范围: [{audio.min():.4f}, {audio.max():.4f}]")
+    except Exception as e:
+        logger.warning(f"[音频修复] 无法验证原始音频: {e}")
+
+    logger.info(f"[音频修复] 返回原始音频文件: {file_path}")
     return FileResponse(
         file_path,
         media_type="audio/wav",
@@ -360,17 +421,42 @@ async def download_result(
     current_user: User = Depends(get_current_user_optional),
 ):
     """下载/播放修复结果（支持 ?token= 查询参数）"""
+    logger.info(f"[音频修复] 下载修复结果 - task_id: {task_id}")
+
     if task_id not in restoration_tasks:
+        logger.error(f"[音频修复] 任务不存在: {task_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
     task_info = restoration_tasks[task_id]
+    logger.info(f"[音频修复] 任务状态: {task_info.get('status')}, 结果文件: {task_info.get('result_file')}")
+
     if task_info["status"] != "completed":
+        logger.warning(f"[音频修复] 任务未完成: {task_id}, 状态: {task_info['status']}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="任务未完成")
 
     result_file = task_info.get("result_file")
-    if not result_file or not os.path.exists(result_file):
+    if not result_file:
+        logger.error(f"[音频修复] 结果文件路径为空: {task_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="结果文件不存在")
 
+    if not os.path.exists(result_file):
+        logger.error(f"[音频修复] 结果文件不存在: {result_file}")
+        # 列出结果目录内容
+        result_dir = os.path.dirname(result_file)
+        if os.path.exists(result_dir):
+            files = os.listdir(result_dir)
+            logger.info(f"[音频修复] 结果目录内容: {files}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="结果文件不存在")
+
+    # 验证结果音频文件
+    try:
+        import soundfile as sf
+        audio, sr = sf.read(result_file)
+        logger.info(f"[音频修复] 结果音频验证 - 形状: {audio.shape}, 采样率: {sr}, 范围: [{audio.min():.4f}, {audio.max():.4f}]")
+    except Exception as e:
+        logger.warning(f"[音频修复] 无法验证结果音频: {e}")
+
+    logger.info(f"[音频修复] 返回修复结果文件: {result_file}")
     return FileResponse(
         result_file,
         filename=os.path.basename(result_file),

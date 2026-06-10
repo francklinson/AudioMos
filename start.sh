@@ -990,7 +990,7 @@ start_services() {
         # 设置环境变量供后端使用
         export AUDIOMOS_BACKEND_HOST="$BACKEND_HOST"
         export AUDIOMOS_BACKEND_PORT="$BACKEND_PORT"
-        nohup python run.py > "$SCRIPT_DIR/logs/backend.log" 2>&1 &
+        nohup python run.py > "$SCRIPT_DIR/logs/unified.log" 2>&1 &
         BACKEND_PID=$!
         echo "$BACKEND_PID" > "$BACKEND_PID_FILE"
         echo "后端服务已启动, PID: $BACKEND_PID"
@@ -1006,7 +1006,7 @@ start_services() {
             # 检查进程是否还在运行
             if ! ps -p "$BACKEND_PID" > /dev/null 2>&1; then
                 echo "❌ 后端进程已退出，启动失败"
-                echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/backend.log"
+                echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/unified.log"
                 rm -f "$BACKEND_PID_FILE"
                 return 1
             fi
@@ -1030,7 +1030,7 @@ start_services() {
         
         if [ "$backend_ready" = false ]; then
             echo "⚠️  后端服务启动超时，可能仍在初始化中"
-            echo "查看日志: tail -f $SCRIPT_DIR/logs/backend.log"
+            echo "查看日志: tail -f $SCRIPT_DIR/logs/unified.log"
         fi
     fi
 
@@ -1058,7 +1058,7 @@ start_services() {
         export AUDIOMOS_FRONTEND_PORT="$FRONTEND_PORT"
         # 不再传递 --host 参数，让 Vite 使用配置文件中的设置
         # Vite 配置会将 0.0.0.0 转换为 true，避免 Node.js 解析问题
-        nohup npx vite > "$SCRIPT_DIR/logs/frontend.log" 2>&1 &
+        nohup npx vite > "$SCRIPT_DIR/logs/unified.log" 2>&1 &
         FRONTEND_PID=$!
         echo "$FRONTEND_PID" > "$FRONTEND_PID_FILE"
         echo "前端服务已启动, PID: $FRONTEND_PID"
@@ -1073,7 +1073,7 @@ start_services() {
             # 检查进程是否还在运行
             if ! ps -p "$FRONTEND_PID" > /dev/null 2>&1; then
                 echo "❌ 前端进程已退出，启动失败"
-                echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/frontend.log"
+                echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/unified.log"
                 rm -f "$FRONTEND_PID_FILE"
                 return 1
             fi
@@ -1097,7 +1097,7 @@ start_services() {
         
         if [ "$frontend_ready" = false ]; then
             echo "⚠️  前端服务启动超时，可能仍在初始化中"
-            echo "查看日志: tail -f $SCRIPT_DIR/logs/frontend.log"
+            echo "查看日志: tail -f $SCRIPT_DIR/logs/unified.log"
         fi
     fi
 

@@ -20,12 +20,13 @@ import time
 import tempfile
 import soundfile as sf
 from typing import Optional, Dict, Any
-import logging
 
 from .base import BaseDenoiser, DenoiseResult
 from .registry import DenoiserRegistry
 
-logger = logging.getLogger(__name__)
+# 使用统一的 logger
+import logging
+logger = logging.getLogger("audiomos")
 
 # ── 模型配置表 ──────────────────────────────────────────────────
 # 每个模型的任务类型、采样率、显示信息
@@ -139,36 +140,141 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
             # 确保模型目录存在
             os.makedirs(self.model_dir, exist_ok=True)
 
-            # 设置 checkpoint_dir 环境变量，让 clearvoice 找到正确的路径
-            checkpoint_dir = os.path.join(
-                self.model_dir, self._spec["model_name"]
-            )
-            os.makedirs(checkpoint_dir, exist_ok=True)
-
-            # 保存当前工作目录并切换到项目根目录
-            # (clearvoice 使用相对路径 checkpoint_dir，需要从项目根目录运行)
+            # 保存当前工作目录
             original_cwd = os.getcwd()
+            logger.info(f"[模型初始化] 当前工作目录: {original_cwd}")
 
             # 查找项目根目录（包含 models/clearvoice 目录的父目录）
             project_root = self._find_project_root()
+            logger.info(f"[模型初始化] 项目根目录: {project_root}")
+            
+            # 设置 checkpoint_dir 为本地模型路径（使用绝对路径）
+            # ClearVoice 默认使用 checkpoints/模型名，我们需要指向 models/clearvoice/模型名
+            checkpoint_dir = os.path.join(
+                project_root, self.model_dir, self._spec["model_name"]
+            )
+            logger.info(f"[模型初始化] 模型目录: {checkpoint_dir}")
+            
+            # 检查本地模型是否存在
+            last_best_file = os.path.join(checkpoint_dir, 'last_best_checkpoint')
+            logger.info(f"[模型初始化] 检查模型文件: {last_best_file}")
+            
+            if not os.path.isfile(last_best_file):
+                logger.error(
+                    f"[模型初始化] 本地模型文件不存在: {last_best_file}\n"
+                    f"[模型初始化] 请确保模型已下载到 {checkpoint_dir}"
+                )
+                # 列出模型目录内容以便调试
+                if os.path.isdir(checkpoint_dir):
+                    logger.info(f"[模型初始化] 目录 {checkpoint_dir} 存在，内容:")
+                    for item in os.listdir(checkpoint_dir):
+                        logger.info(f"  - {item}")
+                else:
+                    logger.error(f"[模型初始化] 目录 {checkpoint_dir} 不存在")
+                    # 检查父目录
+                    parent_dir = os.path.dirname(checkpoint_dir)
+                    if os.path.isdir(parent_dir):
+                        logger.info(f"[模型初始化] 父目录 {parent_dir} 存在，内容:")
+                        for item in os.listdir(parent_dir):
+                            logger.info(f"  - {item}")
+                return False
+            
+            logger.info(f"[模型初始化] 模型文件存在: {last_best_file}")
+            
+            # 读取 checkpoint 文件名
+            with open(last_best_file, 'r') as f:
+                checkpoint_name = f.readline().strip()
+            logger.info(f"[模型初始化] Checkpoint 文件名: {checkpoint_name}")
+            
+            # 切换到项目根目录
+            # (clearvoice 使用相对路径 checkpoint_dir，需要从项目根目录运行)
             os.chdir(project_root)
+            logger.info(f"[模型初始化] 切换到项目根目录: {project_root}")
+
+            # 设置环境变量禁用 HuggingFace Hub 网络访问
+            os.environ['HF_HUB_OFFLINE'] = '1'
+            os.environ['TRANSFORMERS_OFFLINE'] = '1'
+            logger.info("[模型初始化] 已设置离线模式环境变量")
 
             try:
                 logger.info(
-                    f"正在加载 ClearVoice 模型: {self._spec['model_name']} "
+                    f"[模型初始化] 开始加载 ClearVoice 模型: {self._spec['model_name']} "
                     f"(task={self._spec['task']})"
                 )
-                self._cv_instance = ClearVoice(
-                    task=self._spec["task"],
-                    model_names=[self._spec["model_name"]],
-                )
+                
+                # 使用 monkey patch 修改 load_model 方法，强制使用本地模型
+                import clearvoice.networks as cv_networks
+                original_load_model = cv_networks.SpeechModel.load_model
+                logger.info("[模型初始化] 已保存原始 load_model 方法")
+                
+                def patched_load_model(self):
+                    """修改后的 load_model，使用本地模型路径"""
+                    import os
+                    import torch.nn as nn
+                    
+                    logger.info(f"[模型初始化] 进入 patched_load_model，模型名称: {self.name}")
+                    
+                    # 使用本地模型路径
+                    self.args.checkpoint_dir = checkpoint_dir
+                    logger.info(f"[模型初始化] 设置 checkpoint_dir: {checkpoint_dir}")
+                    
+                    # 检查本地模型是否存在
+                    best_name = os.path.join(self.args.checkpoint_dir, 'last_best_checkpoint')
+                    logger.info(f"[模型初始化] 检查 checkpoint 文件: {best_name}")
+                    
+                    if not os.path.isfile(best_name):
+                        logger.error(f"[模型初始化] 本地模型文件不存在: {best_name}")
+                        return
+                    
+                    logger.info(f"[模型初始化] 找到 checkpoint 文件，开始加载模型权重...")
+                    
+                    # 调用原始的 _load_model 逻辑（跳过 download_model）
+                    if isinstance(self.model, nn.ModuleList):
+                        logger.info("[模型初始化] 检测到 ModuleList 模型结构")
+                        with open(best_name, 'r') as f:
+                            model_name = f.readline().strip()
+                            checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
+                            logger.info(f"[模型初始化] 加载第一个模型: {checkpoint_path}")
+                            self._load_model(self.model[0], checkpoint_path, model_key='mossformer')
+                            
+                            model_name = f.readline().strip()
+                            checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
+                            logger.info(f"[模型初始化] 加载第二个模型: {checkpoint_path}")
+                            self._load_model(self.model[1], checkpoint_path, model_key='generator')
+                    else:
+                        with open(best_name, 'r') as f:
+                            model_name = f.readline().strip()
+                        checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
+                        logger.info(f"[模型初始化] 加载模型权重: {checkpoint_path}")
+                        self._load_model(self.model, checkpoint_path, model_key='model')
+                    
+                    logger.info("[模型初始化] 模型权重加载完成")
+                
+                # 应用 monkey patch
+                cv_networks.SpeechModel.load_model = patched_load_model
+                logger.info("[模型初始化] 已应用 patched_load_model")
+                
+                try:
+                    # 创建 ClearVoice 实例（会使用 patched_load_model）
+                    logger.info("[模型初始化] 创建 ClearVoice 实例...")
+                    self._cv_instance = ClearVoice(
+                        task=self._spec["task"],
+                        model_names=[self._spec["model_name"]],
+                    )
+                    logger.info("[模型初始化] ClearVoice 实例创建完成")
+                finally:
+                    # 恢复原始方法
+                    cv_networks.SpeechModel.load_model = original_load_model
+                    logger.info("[模型初始化] 已恢复原始 load_model 方法")
+                    
             finally:
                 os.chdir(original_cwd)
+                logger.info(f"[模型初始化] 恢复工作目录: {original_cwd}")
 
             self._is_initialized = True
             self._model_loaded = True
             logger.info(
-                f"✓ ClearVoice 模型加载成功: {self._spec['model_name']}"
+                f"[模型初始化] ✓ ClearVoice 模型加载成功: {self._spec['model_name']}"
             )
             return True
 
@@ -202,9 +308,13 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
             DenoiseResult 对象
         """
         start_time = time.time()
+        logger.info(f"[降噪处理] 开始处理音频，输入采样率: {sample_rate}, 目标采样率: {self._spec['sample_rate']}")
+        logger.info(f"[降噪处理] 输入音频形状: {audio.shape}, 数据类型: {audio.dtype}")
 
         if not self._is_initialized:
+            logger.info("[降噪处理] 模型未初始化，开始初始化...")
             if not self.initialize():
+                logger.error("[降噪处理] 模型初始化失败")
                 return DenoiseResult(
                     audio=audio,
                     sample_rate=sample_rate or self.sample_rate,
@@ -216,15 +326,20 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
 
         # ── 预处理: 重采样 + 单声道 ──
         if sample_rate is not None and sample_rate != target_sr:
+            logger.info(f"[降噪处理] 重采样: {sample_rate} Hz -> {target_sr} Hz")
             audio = librosa.resample(
                 audio, orig_sr=sample_rate, target_sr=target_sr
             )
+            logger.info(f"[降噪处理] 重采样后音频形状: {audio.shape}")
 
         if len(audio.shape) > 1:
+            logger.info(f"[降噪处理] 转换为单声道，原形状: {audio.shape}")
             audio = np.mean(audio, axis=1)
+            logger.info(f"[降噪处理] 转换后形状: {audio.shape}")
 
         # 确保 float32 范围
         if audio.dtype != np.float32:
+            logger.info(f"[降噪处理] 转换数据类型: {audio.dtype} -> float32")
             audio = audio.astype(np.float32)
 
         # ── 使用临时文件进行推理 ──
@@ -237,26 +352,64 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
             )
             temp_input_path = temp_input.name
             temp_input.close()
+            logger.info(f"[降噪处理] 创建临时输入文件: {temp_input_path}")
 
             # 写入输入音频
             sf.write(temp_input_path, audio, target_sr)
+            logger.info(f"[降噪处理] 已写入临时文件，采样率: {target_sr} Hz")
 
             # 调用 ClearVoice 推理
+            logger.info("[降噪处理] 调用 ClearVoice 推理...")
             result = self._cv_instance(
                 input_path=temp_input_path,
                 online_write=False,
             )
+            logger.info("[降噪处理] ClearVoice 推理完成")
 
             # 解析输出
+            logger.info("[降噪处理] 解析输出结果...")
             enhanced = self._parse_output(result, audio)
+            logger.info(f"[降噪处理] 解析后音频形状: {enhanced.shape}")
 
-            # ── 后处理: 重采样回目标采样率 ──
+            # 后处理：重采样回目标采样率 + 音量归一化
             if self.sample_rate != target_sr:
+                logger.info(f"[降噪处理] 重采样回目标采样率: {target_sr} Hz -> {self.sample_rate} Hz")
                 enhanced = librosa.resample(
                     enhanced, orig_sr=target_sr, target_sr=self.sample_rate
                 )
+                logger.info(f"[降噪处理] 重采样后形状: {enhanced.shape}")
+
+            # 音量归一化：防止音量过小或削波失真
+            original_peak = np.max(np.abs(enhanced))
+            logger.info(f"[降噪处理] 音量归一化前，Peak: {original_peak:.4f}")
+            
+            peak = original_peak
+            if peak > 0:
+                # 归一化到 -3dB (0.707) 峰值，留出余量防止 clipping
+                target_peak = 0.707
+                enhanced = enhanced * (target_peak / peak)
+                logger.info(f"[降噪处理] 音量归一化: Peak {peak:.4f} -> {target_peak:.4f}")
+            
+            # 如果音量仍然太小，进行增益补偿
+            rms = np.sqrt(np.mean(enhanced**2))
+            logger.info(f"[降噪处理] 当前 RMS: {rms:.4f}")
+            
+            if rms < 0.05:  # 如果 RMS 小于 0.05，提升到 0.1
+                gain = 0.1 / rms
+                enhanced = enhanced * gain
+                logger.info(f"[降噪处理] 增益补偿: RMS {rms:.4f} -> 0.1, 增益: {gain:.2f}x")
+                
+                # 重新检查峰值，防止 clipping
+                peak = np.max(np.abs(enhanced))
+                if peak > 0.95:
+                    enhanced = enhanced * (0.95 / peak)
+                    logger.info(f"[降噪处理] 防止削波，Peak 限制到 0.95")
 
             processing_time = time.time() - start_time
+            final_peak = np.max(np.abs(enhanced))
+            final_rms = np.sqrt(np.mean(enhanced**2))
+            logger.info(f"[降噪处理] 处理完成，耗时: {processing_time:.3f}s")
+            logger.info(f"[降噪处理] 输出音频 - Peak: {final_peak:.4f}, RMS: {final_rms:.4f}")
 
             return DenoiseResult(
                 audio=enhanced.astype(np.float32),
@@ -302,22 +455,64 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
         Returns:
             处理后的音频 numpy array
         """
+        logger.info(f"[降噪处理] _parse_output 开始解析，result 类型: {type(result)}")
+        
         if result is None:
+            logger.warning("[降噪处理] _parse_output 收到 None，返回 fallback")
             return fallback
 
+        # 记录 result 的详细信息
+        if isinstance(result, np.ndarray):
+            logger.info(f"[降噪处理] result 是 numpy 数组，形状: {result.shape}, ndim: {result.ndim}")
+            logger.info(f"[降噪处理] result 范围: [{np.min(result):.6f}, {np.max(result):.6f}], 均值: {np.mean(result):.6f}")
+        elif isinstance(result, list):
+            logger.info(f"[降噪处理] result 是列表，长度: {len(result)}")
+            if len(result) > 0:
+                logger.info(f"[降噪处理] result[0] 类型: {type(result[0])}")
+                if hasattr(result[0], 'shape'):
+                    logger.info(f"[降噪处理] result[0] 形状: {result[0].shape}")
+                if hasattr(result[0], 'min'):
+                    logger.info(f"[降噪处理] result[0] 范围: [{result[0].min():.6f}, {result[0].max():.6f}]")
+        elif isinstance(result, dict):
+            logger.info(f"[降噪处理] result 是字典，键: {list(result.keys())}")
+        
         # 语音分离模型返回多个说话人，取第一个（目标说话人）
         if isinstance(result, list):
             if len(result) > 0:
-                audio = np.array(result[0], dtype=np.float32)
-                return audio if audio.ndim <= 1 else audio[:, 0]
+                # 直接使用 result[0]，避免 np.array() 重新创建数组导致维度问题
+                first_result = result[0]
+                if isinstance(first_result, np.ndarray):
+                    audio = first_result.astype(np.float32)
+                else:
+                    audio = np.array(first_result, dtype=np.float32)
+                logger.info(f"[降噪处理] 从列表中提取 result[0]，提取后形状: {audio.shape}, ndim: {audio.ndim}, 范围: [{np.min(audio):.6f}, {np.max(audio):.6f}]")
+                if audio.ndim == 1:
+                    logger.info(f"[降噪处理] 语音分离输出1D数组，直接返回")
+                    return audio
+                elif audio.ndim == 2:
+                    # 2D数组: 如果第一维很小(<=2)，取第一个元素；否则取第一列
+                    if audio.shape[0] <= 2:
+                        extracted = audio[0].astype(np.float32)
+                        logger.info(f"[降噪处理] 语音分离输出2D数组，取 audio[0]，原形状: {audio.shape}, 提取后形状: {extracted.shape}")
+                        return extracted
+                    else:
+                        extracted = audio[:, 0].astype(np.float32)
+                        logger.info(f"[降噪处理] 语音分离输出2D数组，取 audio[:, 0]，原形状: {audio.shape}, 提取后形状: {extracted.shape}")
+                        return extracted
+                else:
+                    logger.warning(f"[降噪处理] 语音分离输出异常维度: {audio.ndim}, 形状: {audio.shape}")
+                return audio
+            logger.warning("[降噪处理] 列表为空，返回 fallback")
             return fallback
 
         # numpy 数组
         if isinstance(result, np.ndarray):
             if result.ndim == 1:
+                logger.info(f"[降噪处理] 返回 1D 数组，形状: {result.shape}")
                 return result.astype(np.float32)
             elif result.ndim == 2:
                 # 多维数组取第一个通道
+                logger.info(f"[降噪处理] 返回 2D 数组，取 result[0]，原形状: {result.shape}")
                 return result[0].astype(np.float32) if result.shape[0] <= 2 else result[:, 0].astype(np.float32)
 
         # dict 格式
@@ -325,13 +520,35 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
             for key in ["output", "enhanced", "separated", "audio"]:
                 if key in result:
                     val = result[key]
+                    logger.info(f"[降噪处理] 从字典中找到 key '{key}'")
                     if isinstance(val, np.ndarray):
-                        return val.astype(np.float32) if val.ndim == 1 else val[:, 0].astype(np.float32)
+                        logger.info(f"[降噪处理] key '{key}' 值形状: {val.shape}, ndim: {val.ndim}")
+                        if val.ndim == 1:
+                            return val.astype(np.float32)
+                        elif val.ndim == 2:
+                            # 2D数组: 如果第一维很小(<=2)，取第一个元素；否则取第一列
+                            if val.shape[0] <= 2:
+                                logger.info(f"[降噪处理] 2D数组，取 result[0]，原形状: {val.shape}")
+                                return val[0].astype(np.float32)
+                            else:
+                                logger.info(f"[降噪处理] 2D数组，取 result[:, 0]，原形状: {val.shape}")
+                                return val[:, 0].astype(np.float32)
             # 取第一个 numpy 值
             for val in result.values():
                 if isinstance(val, np.ndarray):
-                    return val.astype(np.float32) if val.ndim == 1 else val[:, 0].astype(np.float32)
+                    logger.info(f"[降噪处理] 从字典值中提取数组，形状: {val.shape}")
+                    if val.ndim == 1:
+                        return val.astype(np.float32)
+                    elif val.ndim == 2:
+                        # 2D数组: 如果第一维很小(<=2)，取第一个元素；否则取第一列
+                        if val.shape[0] <= 2:
+                            logger.info(f"[降噪处理] 2D数组，取 result[0]，原形状: {val.shape}")
+                            return val[0].astype(np.float32)
+                        else:
+                            logger.info(f"[降噪处理] 2D数组，取 result[:, 0]，原形状: {val.shape}")
+                            return val[:, 0].astype(np.float32)
 
+        logger.warning("[降噪处理] 无法解析 result 类型，返回 fallback")
         return fallback
 
     def _find_project_root(self) -> str:

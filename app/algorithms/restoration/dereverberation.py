@@ -118,10 +118,16 @@ class DereverbRestorer(BaseRestorer):
                 enhanced = self._model.separate_batch(audio_tensor)
 
             # 取第一个输出（增强后的语音）
+            # 输出格式：[batch, time, channels] -> 取 [0, :, 0] 得到 (time,)
             if isinstance(enhanced, torch.Tensor):
-                enhanced_np = enhanced.squeeze(0).squeeze(0).cpu().numpy()
+                if enhanced.dim() == 3:
+                    enhanced_np = enhanced[0, :, 0].cpu().numpy()
+                elif enhanced.dim() == 2:
+                    enhanced_np = enhanced[0].cpu().numpy()
+                else:
+                    enhanced_np = enhanced.squeeze().cpu().numpy()
             else:
-                enhanced_np = enhanced[0].squeeze(0).squeeze(0).cpu().numpy()
+                enhanced_np = enhanced[0].squeeze().cpu().numpy()
 
             # 重采样回原始采样率
             if original_sr != self.sample_rate:

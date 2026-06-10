@@ -6,6 +6,8 @@
 """
 
 import numpy as np
+import os
+import sys
 from typing import Optional, Dict, Any
 
 from .base import BaseRestorer, RestorationResult
@@ -28,6 +30,10 @@ class DenoiseRestorerAdapter(BaseRestorer):
         adapter.initialize()
         result = adapter.restore(noisy_audio, sr=16000)
     """
+
+    # 类级别的缓存，避免重复导入和初始化
+    _DenoiserRegistry = None
+    _import_attempted = False
 
     def __init__(
         self,
@@ -53,9 +59,64 @@ class DenoiseRestorerAdapter(BaseRestorer):
             return True
 
         try:
-            from denoise import DenoiserRegistry
+            # 使用类级别的缓存，避免重复导入
+            if DenoiseRestorerAdapter._DenoiserRegistry is None and not DenoiseRestorerAdapter._import_attempted:
+                # 确保项目根目录在路径中
+                project_root = self._find_project_root()
+                print(f"[DenoiseAdapter] 项目根目录: {project_root}")
+                print(f"[DenoiseAdapter] 当前 sys.path 前5项: {sys.path[:5]}")
 
-            self._denoiser = DenoiserRegistry.get(
+                # 确保项目根目录在路径最前面
+                if project_root in sys.path:
+                    sys.path.remove(project_root)
+                sys.path.insert(0, project_root)
+                print(f"[DenoiseAdapter] 已添加项目根目录到 sys.path[0]")
+
+                # 使用绝对导入
+                print(f"[DenoiseAdapter] 尝试导入 DenoiserRegistry...")
+                import importlib.util
+                import importlib.machinery
+
+                # 先尝试直接导入
+                DenoiserRegistry = None
+                try:
+                    from app.algorithms.denoise import DenoiserRegistry
+                    print(f"[DenoiseAdapter] 成功导入 DenoiserRegistry (方法1)")
+                except ImportError as e1:
+                    print(f"[DenoiseAdapter] 方法1导入失败: {e1}")
+                    # 方法2：使用 importlib 动态导入
+                    denoise_path = os.path.join(project_root, "app", "algorithms", "denoise", "__init__.py")
+                    print(f"[DenoiseAdapter] 尝试从 {denoise_path} 导入")
+
+                    if os.path.exists(denoise_path):
+                        try:
+                            spec = importlib.util.spec_from_file_location("app.algorithms.denoise", denoise_path)
+                            denoise_module = importlib.util.module_from_spec(spec)
+                            sys.modules["app.algorithms.denoise"] = denoise_module
+                            spec.loader.exec_module(denoise_module)
+                            DenoiserRegistry = denoise_module.DenoiserRegistry
+                            print(f"[DenoiseAdapter] 成功导入 DenoiserRegistry (方法2)")
+                        except Exception as e2:
+                            print(f"[DenoiseAdapter] 方法2导入也失败: {e2}")
+                            import traceback
+                            traceback.print_exc()
+                            DenoiseRestorerAdapter._import_attempted = True
+                            return False
+                    else:
+                        print(f"[DenoiseAdapter] 找不到 denoise 模块: {denoise_path}")
+                        DenoiseRestorerAdapter._import_attempted = True
+                        return False
+
+                # 缓存导入结果
+                DenoiseRestorerAdapter._DenoiserRegistry = DenoiserRegistry
+                DenoiseRestorerAdapter._import_attempted = True
+
+            if DenoiseRestorerAdapter._DenoiserRegistry is None:
+                print("[DenoiseAdapter] DenoiserRegistry 导入失败")
+                return False
+
+            # 使用缓存的 Registry
+            self._denoiser = DenoiseRestorerAdapter._DenoiserRegistry.get(
                 self._denoiser_name,
                 sample_rate=self.sample_rate,
                 device=self.device,
@@ -74,12 +135,45 @@ class DenoiseRestorerAdapter(BaseRestorer):
             self._is_initialized = True
             return True
 
-        except ImportError:
-            print("降噪模块不可用")
+        except ImportError as e:
+            print(f"降噪模块不可用: {e}")
             return False
         except Exception as e:
             print(f"适配器初始化失败 ({self._denoiser_name}): {e}")
+            import traceback
+            traceback.print_exc()
             return False
+
+    def _find_project_root(self) -> str:
+        """查找项目根目录"""
+        # 从当前文件开始向上查找
+        current = os.path.dirname(os.path.abspath(__file__))
+        print(f"[DenoiseAdapter] 当前文件目录: {current}")
+
+        # 向上遍历目录树
+        for _ in range(10):
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+
+            # 检查是否包含 app 目录和 backend 目录（项目根目录的标志）
+            if os.path.isdir(os.path.join(parent, "app")) and os.path.isdir(os.path.join(parent, "backend")):
+                print(f"[DenoiseAdapter] 找到项目根目录: {parent}")
+                return parent
+
+            # 备选：检查标志文件
+            for marker in ["models/clearvoice", ".git"]:
+                marker_path = os.path.join(parent, marker)
+                if os.path.exists(marker_path):
+                    print(f"[DenoiseAdapter] 通过标志 {marker} 找到项目根目录: {parent}")
+                    return parent
+
+            current = parent
+
+        # 如果找不到，使用当前工作目录
+        cwd = os.getcwd()
+        print(f"[DenoiseAdapter] 未找到项目根目录，使用当前工作目录: {cwd}")
+        return cwd
 
     def restore(
         self, audio: np.ndarray, sample_rate: Optional[int] = None
