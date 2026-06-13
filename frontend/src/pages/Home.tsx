@@ -21,7 +21,11 @@ import {
   Collapse,
   Tooltip,
   Tabs,
-  Select
+  Select,
+  Input,
+  Popconfirm,
+  Descriptions,
+  Alert
 } from 'antd';
 import {
   SoundOutlined,
@@ -38,11 +42,17 @@ import {
   LogoutOutlined,
   EyeOutlined,
   SettingOutlined,
-  ToolOutlined
+  ToolOutlined,
+  FileAddOutlined,
+  EditOutlined,
+  DatabaseOutlined,
+  SearchOutlined,
+  InfoCircleOutlined,
+  SafetyOutlined
 } from '@ant-design/icons';
 import type { UploadFile, UploadProps } from 'antd/es/upload';
 import { useAuth } from '../contexts/AuthContext';
-import { mosApi, restorationApi } from '../services/api';
+import { mosApi, restorationApi, referenceAudioApi } from '../services/api';
 import AudioComparison from '../components/AudioComparison';
 import dayjs from 'dayjs';
 import './Home.css';
@@ -129,6 +139,74 @@ const Home: React.FC = () => {
   const [restorationLoading, setRestorationLoading] = useState(false);
   const [expandedRestorationTask, setExpandedRestorationTask] = useState<string | null>(null);
 
+  // ── 参考音频管理状态 ──
+  interface ReferenceAudioItem {
+    id: string;
+    filename: string;
+    original_name: string;
+    file_size: number;
+    file_size_formatted: string;
+    duration: number | null;
+    sample_rate: number | null;
+    channels: number | null;
+    description: string | null;
+    ground_truth_text: string | null;
+    created_at: string;
+    updated_at: string;
+  }
+  interface ReferenceAudioStatus {
+    has_reference: boolean;
+    total_count: number;
+    valid_count: number;
+    total_size_formatted: string;
+    files: Array<{ id: string; filename: string }>;
+  }
+  interface FingerprintStatus {
+    has_database: boolean;
+    statistics?: any;
+    error?: string;
+  }
+  const [refAudioList, setRefAudioList] = useState<ReferenceAudioItem[]>([]);
+  const [refAudioStatus, setRefAudioStatus] = useState<ReferenceAudioStatus | null>(null);
+  const [refUploading, setRefUploading] = useState(false);
+  const [refUploadFiles, setRefUploadFiles] = useState<File[]>([]);
+  const [refEditModalVisible, setRefEditModalVisible] = useState(false);
+  const [refEditItem, setRefEditItem] = useState<ReferenceAudioItem | null>(null);
+  const [refEditDescription, setRefEditDescription] = useState('');
+  const [refEditGroundTruth, setRefEditGroundTruth] = useState('');
+  const [fingerprintStatus, setFingerprintStatus] = useState<FingerprintStatus | null>(null);
+  const [fingerprintBuilding, setFingerprintBuilding] = useState(false);
+  const [matchTestModalVisible, setMatchTestModalVisible] = useState(false);
+  const [matchTestTaskId, setMatchTestTaskId] = useState('');
+  const [matchTestResult, setMatchTestResult] = useState<any>(null);
+  const [matchTestLoading, setMatchTestLoading] = useState(false);
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const [playingAudioUrl, setPlayingAudioUrl] = useState<string | null>(null);
+
+  const handleRefPlay = async (audioId: string) => {
+    if (playingAudioId === audioId) {
+      setPlayingAudioId(null);
+      setPlayingAudioUrl(null);
+      return;
+    }
+    try {
+      const token = localStorage.getItem('token');
+      const baseUrl = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${baseUrl}/api/reference-audio/download/${audioId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('下载失败');
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      // 释放旧 URL
+      if (playingAudioUrl) URL.revokeObjectURL(playingAudioUrl);
+      setPlayingAudioUrl(url);
+      setPlayingAudioId(audioId);
+    } catch {
+      message.error('加载音频失败');
+    }
+  };
+
   const loadTasks = async () => {
     try {
       const data = await mosApi.getTasks();
@@ -160,14 +238,46 @@ const Home: React.FC = () => {
     }
   };
 
+  const loadRefAudios = async () => {
+    try {
+      const data = await referenceAudioApi.list();
+      setRefAudioList(data.items || []);
+    } catch (error) {
+      console.error('加载参考音频列表失败:', error);
+    }
+  };
+
+  const loadRefStatus = async () => {
+    try {
+      const data = await referenceAudioApi.checkStatus();
+      setRefAudioStatus(data);
+    } catch (error) {
+      console.error('加载参考音频状态失败:', error);
+    }
+  };
+
+  const loadFingerprintStatus = async () => {
+    try {
+      const data = await referenceAudioApi.getFingerprintStatus();
+      setFingerprintStatus(data);
+    } catch (error) {
+      console.error('加载指纹库状态失败:', error);
+    }
+  };
+
   useEffect(() => {
     loadTasks();
     loadRestorationAlgorithms();
     loadRestorationTasks();
+    loadRefAudios();
+    loadRefStatus();
+    loadFingerprintStatus();
 
     const interval = setInterval(() => {
       loadTasks();
       loadRestorationTasks();
+      loadRefAudios();
+      loadRefStatus();
     }, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -485,6 +595,103 @@ const Home: React.FC = () => {
       ),
     },
   ];
+
+  // ── 参考音频管理 事件处理 ──
+  const handleRefUpload = async () => {
+    if (refUploadFiles.length === 0) {
+      message.warning('请选择参考音频文件');
+      return;
+    }
+    setRefUploading(true);
+    try {
+      if (refUploadFiles.length === 1) {
+        await referenceAudioApi.upload(refUploadFiles[0]);
+      } else {
+        await referenceAudioApi.uploadBatch(refUploadFiles);
+      }
+      message.success(`成功上传 ${refUploadFiles.length} 个参考音频`);
+      setRefUploadFiles([]);
+      loadRefAudios();
+      loadRefStatus();
+      loadFingerprintStatus();  // 后端已增量更新，仅刷新状态
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '上传失败');
+    } finally {
+      setRefUploading(false);
+    }
+  };
+
+  const handleRefDelete = async (audioId: string) => {
+    try {
+      await referenceAudioApi.delete(audioId);
+      message.success('删除成功');
+      loadRefAudios();
+      loadRefStatus();
+      loadFingerprintStatus();  // 后端已增量移除，仅刷新状态
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '删除失败');
+    }
+  };
+
+  const handleRefDownload = async (audioId: string) => {
+    try {
+      await referenceAudioApi.download(audioId);
+    } catch (error: any) {
+      message.error('下载失败');
+    }
+  };
+
+  const handleRefEdit = (item: ReferenceAudioItem) => {
+    setRefEditItem(item);
+    setRefEditDescription(item.description || '');
+    setRefEditGroundTruth(item.ground_truth_text || '');
+    setRefEditModalVisible(true);
+  };
+
+  const handleRefEditSave = async () => {
+    if (!refEditItem) return;
+    try {
+      await referenceAudioApi.update(refEditItem.id, {
+        description: refEditDescription || undefined,
+        ground_truth_text: refEditGroundTruth || undefined,
+      });
+      message.success('更新成功');
+      setRefEditModalVisible(false);
+      setRefEditItem(null);
+      loadRefAudios();
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '更新失败');
+    }
+  };
+
+  const handleBuildFingerprint = async () => {
+    setFingerprintBuilding(true);
+    try {
+      const result = await referenceAudioApi.buildFingerprint();
+      message.success(result.message || '指纹数据库建立成功');
+      loadFingerprintStatus();
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '建立失败');
+    } finally {
+      setFingerprintBuilding(false);
+    }
+  };
+
+  const handleMatchTest = async () => {
+    if (!matchTestTaskId.trim()) {
+      message.warning('请输入MOS评分任务的ID');
+      return;
+    }
+    setMatchTestLoading(true);
+    try {
+      const result = await referenceAudioApi.testMatch(matchTestTaskId.trim());
+      setMatchTestResult(result);
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || '匹配测试失败');
+    } finally {
+      setMatchTestLoading(false);
+    }
+  };
 
   const renderMosTab = () => (
     <div>
@@ -855,11 +1062,397 @@ const Home: React.FC = () => {
     </div>
   );
 
+  const renderReferenceTab = () => (
+    <div>
+      {/* ── 状态概览卡片 ── */}
+      <Row gutter={[24, 24]} style={{ marginBottom: 24 }}>
+        <Col xs={24} sm={8}>
+          <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
+            <Statistic
+              title="参考音频总数"
+              value={refAudioStatus?.valid_count ?? 0}
+              prefix={<SoundOutlined />}
+              suffix={refAudioStatus ? `/ ${refAudioStatus.total_count}` : ''}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
+            <Statistic
+              title="指纹数据库"
+              value={fingerprintStatus?.has_database ? '已就绪' : '未建立'}
+              valueStyle={{ color: fingerprintStatus?.has_database ? '#3f8600' : '#cf1322' }}
+              prefix={<DatabaseOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
+            <Statistic
+              title="总占用空间"
+              value={refAudioStatus?.total_size_formatted || '0 B'}
+              prefix={<FileExcelOutlined />}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ── 上传参考音频 ── */}
+      <Row gutter={[24, 24]} style={{ marginBottom: 24 }}>
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><FileAddOutlined /><span>上传参考音频</span></Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+          >
+            <Text type="secondary" style={{ fontSize: 13, marginBottom: 16, display: 'block' }}>
+              💡 上传的参考音频将用于带参考MOS分计算。系统会自动提取音频指纹，在测试音频中搜索匹配的参考音频内容。支持上传.wav/.mp3格式。
+            </Text>
+            <Upload.Dragger
+              multiple
+              accept=".wav,.mp3"
+              beforeUpload={(file) => {
+                setRefUploadFiles(prev => {
+                  if (prev.find(f => f.name === file.name && f.size === file.size)) return prev;
+                  return [...prev, file];
+                });
+                return false;
+              }}
+              onRemove={(file) => {
+                setRefUploadFiles(prev => prev.filter(f => f.name !== file.name || f.size !== file.size));
+              }}
+              fileList={refUploadFiles.map((f, i) => ({
+                uid: `-${i}`,
+                name: f.name,
+                status: 'done' as const,
+                size: f.size,
+              } as any))}
+              style={{ marginBottom: 16 }}
+            >
+              <p className="ant-upload-drag-icon">
+                <SoundOutlined style={{ color: '#667eea', fontSize: 36 }} />
+              </p>
+              <p className="ant-upload-text">点击或拖拽参考音频文件到此处（支持批量）</p>
+              <p className="ant-upload-hint">格式：.wav / .mp3</p>
+            </Upload.Dragger>
+            {refUploadFiles.length > 0 && (
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 12, display: 'block' }}>
+                已选择 {refUploadFiles.length} 个文件，共 {(refUploadFiles.reduce((s, f) => s + f.size, 0) / 1024).toFixed(1)} KB
+              </Text>
+            )}
+            <Button
+              type="primary"
+              onClick={handleRefUpload}
+              loading={refUploading}
+              disabled={refUploadFiles.length === 0}
+              block
+              size="large"
+              icon={<UploadOutlined />}
+              style={{
+                background: refUploadFiles.length === 0
+                  ? 'linear-gradient(135deg, #d9d9d9 0%, #bfbfbf 100%)'
+                  : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                border: 'none', borderRadius: 10, height: 44,
+              }}
+            >
+              上传参考音频
+            </Button>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ── 参考音频列表 ── */}
+      <Row gutter={[24, 24]} style={{ marginBottom: 24 }}>
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><SoundOutlined /><span>参考音频列表</span><Tag color="blue">{refAudioList.length} 个</Tag></Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+            extra={
+              <Space>
+                <Button icon={<SyncOutlined />} onClick={() => { loadRefAudios(); loadRefStatus(); }}>刷新</Button>
+              </Space>
+            }
+          >
+            {refAudioList.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无参考音频，请上传" />
+            ) : (
+              <Table
+                dataSource={refAudioList}
+                rowKey="id"
+                size="small"
+                pagination={{ pageSize: 10 }}
+                scroll={{ x: 720 }}
+                columns={[
+                  {
+                    title: '文件名',
+                    dataIndex: 'original_name',
+                    key: 'original_name',
+                    width: 160,
+                    ellipsis: true,
+                  },
+                  {
+                    title: '时长',
+                    dataIndex: 'duration',
+                    key: 'duration',
+                    width: 60,
+                    render: (val: number | null) => val !== null ? `${val.toFixed(1)}s` : '-',
+                  },
+                  {
+                    title: '采样率',
+                    dataIndex: 'sample_rate',
+                    key: 'sample_rate',
+                    width: 70,
+                    render: (val: number | null) => val !== null ? `${val}Hz` : '-',
+                  },
+                  {
+                    title: '大小',
+                    dataIndex: 'file_size_formatted',
+                    key: 'file_size_formatted',
+                    width: 70,
+                  },
+                  {
+                    title: '描述',
+                    dataIndex: 'description',
+                    key: 'description',
+                    width: 120,
+                    ellipsis: true,
+                    render: (val: string | null) => val || <Text type="secondary">-</Text>,
+                  },
+                  {
+                    title: '创建时间',
+                    dataIndex: 'created_at',
+                    key: 'created_at',
+                    width: 100,
+                    render: (date: string) => dayjs(date).format('MM-DD HH:mm'),
+                  },
+                  {
+                    title: '操作',
+                    key: 'action',
+                    width: 140,
+                    render: (_: any, record: ReferenceAudioItem) => (
+                      <Space size="small">
+                        <Tooltip title={playingAudioId === record.id ? '暂停' : '试听'}>
+                          <Button type="text" size="small"
+                            icon={playingAudioId === record.id ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                            onClick={() => handleRefPlay(record.id)}
+                            style={{ color: playingAudioId === record.id ? '#667eea' : undefined }}
+                          />
+                        </Tooltip>
+                        <Tooltip title="编辑描述/文本">
+                          <Button type="text" size="small" icon={<EditOutlined />}
+                            onClick={() => handleRefEdit(record)} />
+                        </Tooltip>
+                        <Tooltip title="下载">
+                          <Button type="text" size="small" icon={<DownloadOutlined />}
+                            onClick={() => handleRefDownload(record.id)} />
+                        </Tooltip>
+                        <Popconfirm title="确定删除此参考音频？" onConfirm={() => handleRefDelete(record.id)}>
+                          <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+                        </Popconfirm>
+                      </Space>
+                    ),
+                  },
+                ]}
+                expandable={{
+                  expandedRowRender: (record: ReferenceAudioItem) =>
+                    playingAudioId === record.id && playingAudioUrl ? (
+                      <div style={{ padding: '8px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                          🎧 {record.original_name}
+                        </Text>
+                        <audio
+                          controls
+                          autoPlay
+                          style={{ height: 36, flex: 1 }}
+                          src={playingAudioUrl}
+                          onEnded={() => { setPlayingAudioId(null); setPlayingAudioUrl(null); }}
+                          onError={() => { setPlayingAudioId(null); setPlayingAudioUrl(null); }}
+                        >
+                          您的浏览器不支持音频播放
+                        </audio>
+                      </div>
+                    ) : null,
+                  expandedRowKeys: playingAudioId ? [playingAudioId] : [],
+                }}
+              />
+            )}
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ── 指纹数据库管理 ── */}
+      <Row gutter={[24, 24]} style={{ marginBottom: 24 }}>
+        <Col span={24}>
+          <Card
+            className="home-card"
+            title={<Space><DatabaseOutlined /><span>音频指纹数据库</span>
+              {fingerprintStatus?.has_database && <Tag color="green">已就绪</Tag>}
+              {fingerprintStatus && !fingerprintStatus.has_database && <Tag color="red">未建立</Tag>}
+            </Space>}
+            variant="borderless"
+            style={{ borderRadius: 12 }}
+          >
+            <Text type="secondary" style={{ fontSize: 13, marginBottom: 16, display: 'block' }}>
+              💡 指纹数据库用于在测试音频中快速搜索匹配的参考音频内容（基于Shazam算法的STFT音频指纹）。上传或删除参考音频后建议重建。
+            </Text>
+
+            {fingerprintStatus?.statistics?.database && (
+              <Descriptions size="small" bordered style={{ marginBottom: 16 }}>
+                <Descriptions.Item label="参考音频数">
+                  {fingerprintStatus.statistics.database.total_references}
+                </Descriptions.Item>
+                <Descriptions.Item label="指纹Hash总数">
+                  {fingerprintStatus.statistics.database.total_hashes}
+                </Descriptions.Item>
+                <Descriptions.Item label="唯一Hash数">
+                  {fingerprintStatus.statistics.database.unique_hashes}
+                </Descriptions.Item>
+                {fingerprintStatus.statistics.database.build_time > 0 && (
+                  <Descriptions.Item label="构建耗时">
+                    {fingerprintStatus.statistics.database.build_time.toFixed(2)}s
+                  </Descriptions.Item>
+                )}
+              </Descriptions>
+            )}
+
+            {fingerprintStatus?.error && (
+              <Alert type="error" message={fingerprintStatus.error} style={{ marginBottom: 16 }} />
+            )}
+
+            <Space>
+              <Button
+                type="primary"
+                icon={<DatabaseOutlined />}
+                onClick={handleBuildFingerprint}
+                loading={fingerprintBuilding}
+              >
+                重建指纹数据库
+              </Button>
+              <Button
+                icon={<SearchOutlined />}
+                onClick={() => setMatchTestModalVisible(true)}
+              >
+                测试内容匹配
+              </Button>
+            </Space>
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ── 编辑参考音频信息 Modal ── */}
+      <Modal
+        title={<Space><EditOutlined /><span>编辑参考音频信息</span></Space>}
+        open={refEditModalVisible}
+        onCancel={() => { setRefEditModalVisible(false); setRefEditItem(null); }}
+        onOk={handleRefEditSave}
+        okText="保存"
+        cancelText="取消"
+      >
+        {refEditItem && (
+          <div>
+            <Descriptions size="small" bordered column={1} style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="文件名">{refEditItem.original_name}</Descriptions.Item>
+              <Descriptions.Item label="时长">{refEditItem.duration?.toFixed(1)}s</Descriptions.Item>
+              <Descriptions.Item label="采样率">{refEditItem.sample_rate}Hz</Descriptions.Item>
+            </Descriptions>
+            <div style={{ marginBottom: 12 }}>
+              <Text strong>描述信息</Text>
+              <Input.TextArea
+                value={refEditDescription}
+                onChange={(e) => setRefEditDescription(e.target.value)}
+                placeholder="输入参考音频的描述信息..."
+                rows={2}
+                style={{ marginTop: 4 }}
+              />
+            </div>
+            <div>
+              <Text strong>
+                <Tooltip title="用于WER（词错误率）评估的参考文本，留空则使用默认文本或跳过WER计算">
+                  Ground Truth 文本 <InfoCircleOutlined />
+                </Tooltip>
+              </Text>
+              <Input.TextArea
+                value={refEditGroundTruth}
+                onChange={(e) => setRefEditGroundTruth(e.target.value)}
+                placeholder="输入WER评估用的参考文本..."
+                rows={3}
+                style={{ marginTop: 4 }}
+              />
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── 内容匹配测试 Modal ── */}
+      <Modal
+        title={<Space><SearchOutlined /><span>测试音频内容匹配</span></Space>}
+        open={matchTestModalVisible}
+        onCancel={() => { setMatchTestModalVisible(false); setMatchTestResult(null); }}
+        footer={null}
+        width={700}
+      >
+        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+          输入一个MOS评分任务的ID，测试该任务中的音频文件能匹配到哪些参考音频。
+        </Text>
+        <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
+          <Input
+            value={matchTestTaskId}
+            onChange={(e) => setMatchTestTaskId(e.target.value)}
+            placeholder="输入上传任务ID（如: 550e8400-e29b-...）"
+            onPressEnter={handleMatchTest}
+          />
+          <Button type="primary" icon={<SearchOutlined />} onClick={handleMatchTest} loading={matchTestLoading}>
+            测试匹配
+          </Button>
+        </Space.Compact>
+
+        {matchTestResult?.test_files?.map((tf: any, idx: number) => (
+          <Card key={idx} size="small" style={{ marginBottom: 8 }}>
+            <Text strong>{tf.test_file}</Text>
+            <Tag color={tf.match_count > 0 ? 'green' : 'red'} style={{ marginLeft: 8 }}>
+              {tf.match_count} 个匹配
+            </Tag>
+            <Text type="secondary" style={{ marginLeft: 8 }}>耗时 {tf.elapsed_seconds}s</Text>
+            {tf.matches?.length > 0 && (
+              <Table
+                dataSource={tf.matches}
+                rowKey="ref_id"
+                size="small"
+                pagination={false}
+                style={{ marginTop: 8 }}
+                columns={[
+                  { title: '参考音频', dataIndex: 'ref_name', key: 'ref_name' },
+                  { title: '偏移时间', dataIndex: 'offset_in_test', key: 'offset', render: (v: number) => `${v}s` },
+                  { title: '置信度', dataIndex: 'confidence', key: 'conf', render: (v: number) => `${(v*100).toFixed(0)}%` },
+                  { title: 'Hash匹配数', dataIndex: 'hash_matches', key: 'hash' },
+                  { title: 'DTW距离', dataIndex: 'dtw_distance', key: 'dtw', render: (v: number | null) => v !== null ? v.toFixed(0) : '-' },
+                  { title: 'WER文本', dataIndex: 'has_ground_truth', key: 'gt', render: (v: boolean) => v ? <CheckCircleOutlined style={{ color: 'green' }} /> : <CloseCircleOutlined style={{ color: 'red' }} /> },
+                ]}
+              />
+            )}
+          </Card>
+        ))}
+
+        {matchTestResult && (!matchTestResult.test_files || matchTestResult.test_files.length === 0) && (
+          <Empty description="未找到匹配结果" />
+        )}
+      </Modal>
+    </div>
+  );
+
   const tabItems = [
     {
       key: 'mos',
       label: <Space><SoundOutlined />MOS评分</Space>,
       children: renderMosTab(),
+    },
+    {
+      key: 'reference',
+      label: <Space><SafetyOutlined />参考音频</Space>,
+      children: renderReferenceTab(),
     },
     {
       key: 'restoration',

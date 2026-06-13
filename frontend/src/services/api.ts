@@ -296,4 +296,101 @@ export const restorationApi = {
   },
 };
 
+// 参考音频管理相关API
+export const referenceAudioApi = {
+  /** 获取参考音频列表 */
+  list: async () => {
+    const response = await api.get('/api/reference-audio/list');
+    return response.data;
+  },
+
+  /** 上传单个参考音频 */
+  upload: async (file: File, description?: string, setAsDefault?: boolean) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (description) formData.append('description', description);
+    if (setAsDefault) formData.append('set_as_default', 'true');
+
+    const response = await api.post('/api/reference-audio/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  /** 批量上传参考音频 */
+  uploadBatch: async (files: File[], setFirstAsDefault?: boolean) => {
+    const formData = new FormData();
+    files.forEach((file) => formData.append('files', file));
+    if (setFirstAsDefault) formData.append('set_first_as_default', 'true');
+
+    const response = await api.post('/api/reference-audio/upload-batch', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  /** 获取参考音频详情 */
+  getDetail: async (audioId: string) => {
+    const response = await api.get(`/api/reference-audio/detail/${audioId}`);
+    return response.data;
+  },
+
+  /** 下载参考音频 */
+  download: async (audioId: string) => {
+    const response = await api.get(`/api/reference-audio/download/${audioId}`, {
+      responseType: 'blob',
+    });
+    const blob = new Blob([response.data]);
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `reference_${audioId.slice(0, 8)}.wav`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    return response.data;
+  },
+
+  /** 更新参考音频信息（描述、ground truth文本） */
+  update: async (audioId: string, data: { description?: string; ground_truth_text?: string }) => {
+    const response = await api.put(`/api/reference-audio/update/${audioId}`, data);
+    return response.data;
+  },
+
+  /** 删除参考音频 */
+  delete: async (audioId: string) => {
+    const response = await api.delete(`/api/reference-audio/delete/${audioId}`);
+    return response.data;
+  },
+
+  /** 检查参考音频状态 */
+  checkStatus: async () => {
+    const response = await api.get('/api/reference-audio/check/status');
+    return response.data;
+  },
+
+  /** 建立/重建指纹数据库 */
+  buildFingerprint: async () => {
+    const response = await api.post('/api/reference-audio/fingerprint/build');
+    return response.data;
+  },
+
+  /** 获取指纹数据库状态 */
+  getFingerprintStatus: async () => {
+    const response = await api.get('/api/reference-audio/fingerprint/status');
+    return response.data;
+  },
+
+  /** 测试内容匹配 */
+  testMatch: async (testAudioId: string) => {
+    const formData = new FormData();
+    formData.append('test_audio_id', testAudioId);
+    const response = await api.post('/api/reference-audio/fingerprint/match-test', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+};
+
 export default api;

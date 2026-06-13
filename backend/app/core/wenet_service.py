@@ -37,11 +37,14 @@ class WeNetService:
                 self._download_model()
 
             # 初始化 WeNet 模型
-            # 使用本地模型目录
-            if os.path.exists(self.model_dir):
-                self.model = wenet.load_model(model_dir=self.model_dir)
+            # 优先级: 项目模型目录 > 本地缓存 > 自动下载
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            project_model = os.path.join(project_root, "models", "wenet")
+            if os.path.exists(project_model) and os.path.exists(os.path.join(project_model, "final.pt")):
+                self.model = wenet.load_model(project_model)
+            elif os.path.exists(self.model_dir):
+                self.model = wenet.load_model(self.model_dir)
             else:
-                # 尝试使用语言名称自动下载
                 self.model = wenet.load_model(self.language)
 
             self._initialized = True
@@ -135,13 +138,15 @@ class WeNetService:
             # 使用 WeNet 进行识别
             result = self.model.transcribe(audio_file)
 
-            # 提取文本
-            if isinstance(result, dict):
+            # 提取文本（兼容多种返回类型）
+            if hasattr(result, 'text'):
+                text = result.text
+            elif isinstance(result, dict):
                 text = result.get("text", "")
             else:
                 text = str(result)
 
-            logger.info(f"识别结果: {text}")
+            logger.info(f"识别结果: {text[:80]}...")
             return text
 
         except Exception as e:

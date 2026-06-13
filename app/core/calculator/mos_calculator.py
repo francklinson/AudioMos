@@ -189,6 +189,150 @@ def timed_execution(stage_name: str):
     return decorator
 
 
+# ============ 基于内容匹配的参考文件查找 ============
+
+def get_ref_file_by_content(input_wav_file, ref_dir):
+    """
+    使用音频内容匹配（指纹+DTW）查找对应的参考文件。
+    这是增强版的 get_ref_file，支持任意自定义参考音频。
+
+    匹配策略（按优先级）：
+    1. 基于文件名的传统匹配（快速，兼容旧模式）
+    2. 基于音频指纹的内容匹配（支持任意参考音频）
+
+    Args:
+        input_wav_file: 测试音频文件路径
+        ref_dir: 参考音频目录
+
+    Returns:
+        (ref_file_path, match_info) 或 (None, None)
+        match_info: {"ref_id": str, "confidence": float, "offset": float, ...}
+    """
+    import json
+
+    # 策略1: 传统文件名匹配（快速路径）
+    input_basename = os.path.basename(input_wav_file)
+    input_name = input_basename.removesuffix('.wav')
+
+    # 加载参考音频元数据
+    metadata_file = os.path.join(ref_dir, ".metadata.json")
+    metadata = {}
+    if os.path.exists(metadata_file):
+        try:
+            with open(metadata_file, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+        except Exception:
+            pass
+
+    audios = metadata.get("audios", {})
+
+    # 方式1: 直接匹配相同文件名
+    ref_file = os.path.join(ref_dir, input_basename)
+    if os.path.exists(ref_file):
+        logger.info(f"[参考匹配-文件名] 直接匹配: {input_basename} -> {input_basename}")
+        return ref_file, {"method": "filename_exact", "ref_name": input_basename}
+
+    # 方式2: 匹配 ref_前缀 + 完整文件名
+    ref_file_name = "ref_" + input_basename
+    ref_file = os.path.join(ref_dir, ref_file_name)
+    if os.path.exists(ref_file):
+        logger.info(f"[参考匹配-文件名] ref_前缀匹配: {input_basename} -> {ref_file_name}")
+        return ref_file, {"method": "filename_ref_prefix", "ref_name": ref_file_name}
+
+    # 方式3: 从文件名提取ID匹配 (如 test_001.wav -> ref_001.wav)
+    parts = input_name.split('_')
+    if len(parts) >= 2:
+        file_id = parts[-1]
+        ref_file_name = f"ref_{file_id}.wav"
+        ref_file = os.path.join(ref_dir, ref_file_name)
+        if os.path.exists(ref_file):
+            logger.info(f"[参考匹配-文件名] ID匹配: {input_basename} -> {ref_file_name}")
+            return ref_file, {"method": "filename_id", "ref_name": ref_file_name}
+
+    # 方式4: 尝试匹配不带后缀的文件名 (如 test.wav -> ref_test.wav)
+    ref_file_name = f"ref_{input_name}.wav"
+    ref_file = os.path.join(ref_dir, ref_file_name)
+    if os.path.exists(ref_file):
+        logger.info(f"[参考匹配-文件名] 全名匹配: {input_basename} -> {ref_file_name}")
+        return ref_file, {"method": "filename_full", "ref_name": ref_file_name}
+
+    # 策略2: 音频内容指纹匹配（较慢但支持任意参考音频）
+    logger.info(f"[参考匹配-内容] 文件名匹配均失败，尝试内容指纹匹配: {input_basename}")
+    try:
+        from reference_matcher import get_reference_matcher
+
+        matcher = get_reference_matcher(ref_dir=ref_dir)
+        # 确保数据库已建立
+        if not matcher.database.entries:
+            matcher.build_database(ref_dir)
+
+        match_results = matcher.match_test_audio(input_wav_file, min_confidence=0.2)
+
+        if match_results:
+            best_match = match_results[0]
+            ref_file = best_match.ref_file
+            ref_name = best_match.ref_name
+            logger.info(f"[参考匹配-内容] ✓ 指纹匹配成功: {input_basename} -> {ref_name} "
+                         f"(confidence={best_match.confidence:.3f}, "
+                         f"offset={best_match.offset_in_test:.2f}s)")
+            return ref_file, {
+                "method": "content_fingerprint",
+                "ref_id": best_match.ref_id,
+                "ref_name": ref_name,
+                "confidence": best_match.confidence,
+                "offset": best_match.offset_in_test,
+                "hash_matches": best_match.hash_matches
+            }
+        else:
+            logger.warning(f"[参考匹配-内容] ✗ 未找到匹配的参考音频: {input_basename}")
+    except ImportError as e:
+        logger.warning(f"[参考匹配-内容] 指纹匹配模块不可用: {e}")
+    except Exception as e:
+        logger.error(f"[参考匹配-内容] 匹配失败: {e}")
+
+    return None, None
+
+
+def get_ref_ground_truth_text(ref_dir: str, ref_filename: str) -> Optional[str]:
+    """
+    从参考音频元数据中获取ground truth文本（用于WER计算）
+
+    Args:
+        ref_dir: 参考音频目录
+        ref_filename: 参考音频文件名
+
+    Returns:
+        ground truth文本或None
+    """
+    import json
+    metadata_file = os.path.join(ref_dir, ".metadata.json")
+    if not os.path.exists(metadata_file):
+        return None
+
+    try:
+        with open(metadata_file, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+
+        audios = metadata.get("audios", {})
+        for audio_id, info in audios.items():
+            if info.get("filename") == ref_filename:
+                gt_text = info.get("ground_truth_text")
+                if gt_text:
+                    logger.debug(f"[WER文本] 从元数据获取ground truth: {ref_filename} -> {gt_text[:30]}...")
+                    return gt_text
+    except Exception as e:
+        logger.warning(f"[WER文本] 读取元数据失败: {e}")
+
+    # 回退到硬编码的默认文本（兼容旧模式）
+    fallback_texts = {
+        'ref_001.wav': '他为儿子买了一整根甘蔗市区的停车收费将大幅提高他醒来后发现自己脸上有黑眼圈',
+        'ref_002.wav': '大风刮倒了一处在建厂房姚大爷觉得车夫的想法蛮有道理汹涌的河水顺利而下流的很快',
+        'ref_003.wav': '坚持终于让他有所收获据说这是当地最古老的小区你就是那个爱打篮球的人',
+        'ref_004.wav': '总理对任何事情都要刨根问底渐渐的他还真就睡着了这身衣服就像被大雨淋过似的'
+    }
+    return fallback_texts.get(ref_filename)
+
+
 # ============ 音频缓存 ============
 class AudioCache:
     """音频文件缓存"""
@@ -504,32 +648,15 @@ class OptimizedRefScore:
     
     @staticmethod
     def get_ref_file(input_wav_file, ref_dir):
-        """获取参考文件 - 支持多种匹配方式"""
-        input_basename = os.path.basename(input_wav_file)
-        input_name = input_basename.removesuffix('.wav')
-        
-        # 方式1: 直接匹配相同文件名
-        ref_file = os.path.join(ref_dir, input_basename)
-        if os.path.exists(ref_file):
+        """获取参考文件 - 支持多种匹配方式（含内容匹配）"""
+        # 先尝试内容增强匹配（包含文件名匹配和指纹匹配）
+        ref_file, match_info = get_ref_file_by_content(input_wav_file, ref_dir)
+        if ref_file is not None:
+            logger.info(f"[RefScore] 匹配参考文件(方法={match_info.get('method')}): "
+                         f"{os.path.basename(input_wav_file)} -> {os.path.basename(ref_file)}")
             return ref_file
-        
-        # 方式2: 匹配 ref_前缀
-        ref_file_name = "ref_" + input_basename
-        ref_file = os.path.join(ref_dir, ref_file_name)
-        if os.path.exists(ref_file):
-            return ref_file
-        
-        # 方式3: 从文件名提取ID匹配 (如 test_001.wav -> ref_001.wav)
-        parts = input_name.split('_')
-        if len(parts) >= 2:
-            file_id = parts[-1]
-            ref_file_name = f"ref_{file_id}.wav"
-            ref_file = os.path.join(ref_dir, ref_file_name)
-            if os.path.exists(ref_file):
-                return ref_file
-        
         return None
-    
+
     @timed_execution("ref_score")
     def get_mos(self, file_list, ref_dir):
         """计算stoi、sisdr、pesq分"""
@@ -537,92 +664,83 @@ class OptimizedRefScore:
         STOI = [0.0 for _ in range(file_num)]
         SISDR = [0.0 for _ in range(file_num)]
         PESQ = [0.0 for _ in range(file_num)]
-        
-        print(f"\n[RefScore] 开始计算参考相关指标，文件数: {file_num}")
-        print(f"[RefScore] 参考音频目录: {ref_dir}")
-        
+
+        logger.info(f"\n[RefScore] 开始计算参考相关指标，文件数: {file_num}")
+        logger.info(f"[RefScore] 参考音频目录: {ref_dir}")
+
         # 检查参考目录是否存在
         if not os.path.exists(ref_dir):
-            print(f"[RefScore] ❌ 参考目录不存在: {ref_dir}")
+            logger.warning(f"[RefScore] ❌ 参考目录不存在: {ref_dir}")
             return {'STOI': STOI, 'SISDR': SISDR, 'pesq': PESQ}
-        
+
         # 列出参考目录中的文件
-        ref_files = [f for f in os.listdir(ref_dir) if f.endswith('.wav')]
-        print(f"[RefScore] 参考目录中的音频文件: {ref_files}")
-        
+        ref_files = [f for f in os.listdir(ref_dir) if f.endswith(('.wav', '.mp3', '.flac'))]
+        logger.info(f"[RefScore] 参考目录中的音频文件: {ref_files}")
+
+        matched_count = 0
         for file_index, file in enumerate(file_list):
             file_basename = os.path.basename(file)
-            print(f"\n[RefScore] 处理文件 {file_index+1}/{file_num}: {file_basename}")
-            print(f"[RefScore] 完整路径: {file}")
-            
+            logger.info(f"\n[RefScore] 处理文件 {file_index+1}/{file_num}: {file_basename}")
+
             path_to_reference = self.get_ref_file(file, ref_dir)
-            print(f"[RefScore] 匹配到的参考文件: {path_to_reference}")
-            
+
             if path_to_reference is None:
-                print(f"[RefScore] ⚠️ 未找到参考文件 for {file_basename}")
-                print(f"[RefScore]   尝试匹配: ref_{file_basename}")
-                # 尝试列出可能的参考文件名
-                input_name = file_basename.removesuffix('.wav')
-                parts = input_name.split('_')
-                if len(parts) >= 2:
-                    print(f"[RefScore]   文件名拆分: {parts}")
-                    print(f"[RefScore]   尝试 ref_{parts[-1]}.wav")
-                    if len(parts) >= 3:
-                        print(f"[RefScore]   尝试 ref_{parts[-2]}.wav")
+                logger.warning(f"[RefScore] ⚠️ 未找到参考文件 for {file_basename}，"
+                               f"参考指标将返回0")
                 continue
-            
-            print(f"[RefScore] ✓ 找到参考文件: {os.path.basename(path_to_reference)}")
-            
+
+            logger.info(f"[RefScore] ✓ 找到参考文件: {os.path.basename(path_to_reference)}")
+
             try:
                 # 检查文件是否存在
                 if not os.path.exists(file):
-                    print(f"[RefScore] ❌ 测试文件不存在: {file}")
+                    logger.error(f"[RefScore] ❌ 测试文件不存在: {file}")
                     continue
                 if not os.path.exists(path_to_reference):
-                    print(f"[RefScore] ❌ 参考文件不存在: {path_to_reference}")
+                    logger.error(f"[RefScore] ❌ 参考文件不存在: {path_to_reference}")
                     continue
-                
+
                 # stoi 和 sisdr
-                print(f"[RefScore] 调用speechmetrics计算STOI/SISDR...")
                 scores = self.metrics(file, path_to_reference)
-                stoi_val = float(scores['stoi'].mean())  # 转换为Python float
-                sisdr_val = float(scores['sisdr'].mean())  # 转换为Python float
+                stoi_val = float(scores['stoi'].mean())
+                sisdr_val = float(scores['sisdr'].mean())
                 STOI[file_index] = stoi_val
                 SISDR[file_index] = sisdr_val
-                print(f"[RefScore] ✓ STOI={stoi_val:.4f}, SISDR={sisdr_val:.4f}")
-                
+                logger.info(f"[RefScore] ✓ STOI={stoi_val:.4f}, SISDR={sisdr_val:.4f}")
+
                 # pesq
                 if PESQ_AVAILABLE:
-                    print(f"[RefScore] 计算PESQ...")
                     ref, sr_ref = sf.read(path_to_reference)
                     est, sr_est = sf.read(file)
-                    print(f"[RefScore]   参考音频: sr={sr_ref}, len={len(ref)}")
-                    print(f"[RefScore]   测试音频: sr={sr_est}, len={len(est)}")
-                    
+
                     if sr_est != 16000:
                         est = librosa.resample(est, orig_sr=sr_est, target_sr=16000)
                     if sr_ref != 16000:
                         ref = librosa.resample(ref, orig_sr=sr_ref, target_sr=16000)
-                    
-                    # 电平平滑：将est的电平调整到与ref一致
+
+                    # 电平平滑
                     rms_ref = np.sqrt(np.mean(ref**2))
                     rms_est = np.sqrt(np.mean(est**2))
                     if rms_est > 0:
                         gain = rms_ref / rms_est
                         est = est * gain
-                        print(f"[RefScore]   PESQ电平平滑: gain={gain:.3f}")
-                    
-                    pesq_val = float(pesq.pesq(fs=16000, ref=ref, deg=est, mode='wb'))  # 转换为Python float
+
+                    pesq_val = float(pesq.pesq(fs=16000, ref=ref, deg=est, mode='wb'))
                     PESQ[file_index] = pesq_val
-                    print(f"[RefScore] ✓ PESQ={pesq_val:.4f}")
+                    logger.info(f"[RefScore] ✓ PESQ={pesq_val:.4f}")
                 else:
-                    print(f"[RefScore] ⚠️ PESQ不可用")
+                    logger.warning(f"[RefScore] ⚠️ PESQ不可用")
+
+                matched_count += 1
             except Exception as e:
-                print(f"[RefScore] ❌ 计算失败 {file_basename}: {e}")
+                logger.error(f"[RefScore] ❌ 计算失败 {file_basename}: {e}")
                 import traceback
-                print(f"[RefScore] 错误详情: {traceback.format_exc()}")
-        
-        print(f"\n[RefScore] 计算完成 - STOI: {STOI}, SISDR: {SISDR}, PESQ: {PESQ}")
+                logger.error(f"[RefScore] 错误详情: {traceback.format_exc()}")
+
+        logger.info(f"\n[RefScore] 计算完成: {matched_count}/{file_num} 个文件匹配到参考, "
+                     f"STOI非零: {sum(1 for s in STOI if s != 0)}, "
+                     f"SISDR非零: {sum(1 for s in SISDR if s != 0)}, "
+                     f"PESQ非零: {sum(1 for p in PESQ if p != 0)}")
         return {'STOI': STOI, 'SISDR': SISDR, 'pesq': PESQ}
 
 
@@ -673,10 +791,20 @@ class OptimizedWerScore:
         print(f"[WeNet] 模型初始化完成 (总耗时: {init_time:.2f}s)")
         print(f"  ✓ WeNet语音识别器就绪")
     
-    @staticmethod
-    def __get_ref_gt_text(input_wav_file):
-        """获取参考文本"""
-        ref_texts = {
+    def __get_ref_gt_text(self, input_wav_file, ref_dir=None):
+        """获取参考文本 - 优先从元数据获取，回退到硬编码默认值"""
+        # 先尝试从参考音频匹配获取文本
+        if ref_dir:
+            ref_file, match_info = get_ref_file_by_content(input_wav_file, ref_dir)
+            if ref_file:
+                ref_filename = os.path.basename(ref_file)
+                gt_text = get_ref_ground_truth_text(ref_dir, ref_filename)
+                if gt_text:
+                    logger.info(f"[WER] 获取ground truth文本: {ref_filename} -> {gt_text[:30]}...")
+                    return gt_text
+
+        # 回退到硬编码默认文本
+        fallback_texts = {
             '001': '他为儿子买了一整根甘蔗市区的停车收费将大幅提高他醒来后发现自己脸上有黑眼圈',
             '002': '大风刮倒了一处在建厂房姚大爷觉得车夫的想法蛮有道理汹涌的河水顺利而下流的很快',
             '003': '坚持终于让他有所收获据说这是当地最古老的小区你就是那个爱打篮球的人',
@@ -684,36 +812,42 @@ class OptimizedWerScore:
         }
         input_file_name = os.path.basename(input_wav_file).removesuffix('.wav')
         suffix = input_file_name[-3:]
-        return ref_texts.get(suffix)
+        text = fallback_texts.get(suffix)
+        if text:
+            logger.debug(f"[WER] 使用硬编码ground truth: suffix={suffix}")
+        else:
+            logger.warning(f"[WER] 未找到ground truth文本 for {input_wav_file}，WER将返回0")
+        return text
     
     @timed_execution("wer")
-    def get_wer(self, file_dir_list):
-        """计算wer"""
+    def get_wer(self, file_dir_list, ref_dir=None):
+        """计算wer - 支持动态ground truth文本"""
         file_num = len(file_dir_list)
         wer_data = [0.0 for _ in range(file_num)]
         wcorr = [0.0 for _ in range(file_num)]
-        
+
         for file_index, file in enumerate(file_dir_list):
             try:
                 result = self.model.transcribe(file)
-                ref = self.__get_ref_gt_text(file)
+                ref = self.__get_ref_gt_text(file, ref_dir=ref_dir)
                 if ref is None:
+                    logger.warning(f"[WER] 无ground truth文本 for {os.path.basename(file)}，WER=0")
                     continue
-                
+
                 if hasattr(result, 'text'):
                     text = result.text
                 elif isinstance(result, dict):
                     text = result['text']
                 else:
                     text = str(result)
-                
+
                 from wer import wer
                 tmp_wer, tmp_wcorr = wer(ref, text)
                 wer_data[file_index] = tmp_wer
                 wcorr[file_index] = tmp_wcorr
             except Exception as e:
-                print(f"WER计算失败 {file}: {e}")
-        
+                logger.error(f"WER计算失败 {file}: {e}")
+
         return {'wer': wer_data, 'wcorr': wcorr}
 
 
@@ -847,36 +981,13 @@ class OptimizedToneColorFidelityScore:
     
     @staticmethod
     def get_ref_file(input_wav_file, ref_dir):
-        """获取参考文件 - 支持多种匹配方式（与RefScore保持一致）"""
-        input_basename = os.path.basename(input_wav_file)
-        input_name = input_basename.removesuffix('.wav')
-
-        # 方式1: 直接匹配相同文件名
-        ref_file = os.path.join(ref_dir, input_basename)
-        if os.path.exists(ref_file):
+        """获取参考文件 - 支持多种匹配方式（含内容匹配，与RefScore保持一致）"""
+        # 使用增强版匹配（文件名 + 内容匹配）
+        ref_file, match_info = get_ref_file_by_content(input_wav_file, ref_dir)
+        if ref_file is not None:
+            logger.info(f"[TCF] 匹配参考文件(方法={match_info.get('method')}): "
+                         f"{os.path.basename(input_wav_file)} -> {os.path.basename(ref_file)}")
             return ref_file
-
-        # 方式2: 匹配 ref_前缀 + 完整文件名
-        ref_file_name = "ref_" + input_basename
-        ref_file = os.path.join(ref_dir, ref_file_name)
-        if os.path.exists(ref_file):
-            return ref_file
-
-        # 方式3: 从文件名提取ID匹配 (如 test_001.wav -> ref_001.wav)
-        parts = input_name.split('_')
-        if len(parts) >= 2:
-            file_id = parts[-1]
-            ref_file_name = f"ref_{file_id}.wav"
-            ref_file = os.path.join(ref_dir, ref_file_name)
-            if os.path.exists(ref_file):
-                return ref_file
-
-        # 方式4: 尝试匹配不带后缀的文件名 (如 test.wav -> ref_test.wav)
-        ref_file_name = f"ref_{input_name}.wav"
-        ref_file = os.path.join(ref_dir, ref_file_name)
-        if os.path.exists(ref_file):
-            return ref_file
-
         return None
     
     @timed_execution("tcf")
@@ -1233,19 +1344,17 @@ class ParallelMOSCompute:
                 results.update({'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num})
         
         if 'wer' in metrics:
-            print(f"[DEBUG WER] 计算WER...")
-            print(f"[DEBUG WER] models中是否有wer: {'wer' in self.models}")
+            logger.info("[compute_all_with_ref] 计算WER...")
             try:
                 if 'wer' in self.models:
-                    print(f"[DEBUG WER] 调用get_wer, 文件数: {len(audio_files)}")
-                    wer_scores = self.models['wer'].get_wer(audio_files)
-                    print(f"[DEBUG WER] WER返回: {wer_scores}")
+                    wer_scores = self.models['wer'].get_wer(audio_files, ref_dir=ref_dir)
+                    logger.info(f"[compute_all_with_ref] WER返回: non-zero wer={sum(1 for w in wer_scores['wer'] if w != 0)}")
                     results.update(wer_scores)
                 else:
-                    print(f"[DEBUG WER] models中没有wer, 可用models: {list(self.models.keys())}")
+                    logger.warning("[compute_all_with_ref] WER模型未加载")
                     results.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
             except Exception as e:
-                print(f"[compute_all_with_ref] WER计算失败: {e}")
+                logger.error(f"[compute_all_with_ref] WER计算失败: {e}")
                 results.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
         
         if 'tcf' in metrics:
@@ -1288,7 +1397,12 @@ class ParallelMOSCompute:
         return results
     
     def compute_final_scores(self, results: Dict, audio_files: List[str], has_reference: bool, selected_metrics: Optional[List[str]] = None) -> List[float]:
-        """计算最终得分 - 使用字典键名访问，确保正确的指标映射，支持动态计算项目"""
+        """计算最终得分 - 使用字典键名访问，确保正确的指标映射，支持动态计算项目
+
+        关键规则：
+        - 有参考指标（pesq/stoi/sisdr/wer/tcf）中，如果某个指标值为0且未找到参考，则不参与final score计算
+        - 无参考指标始终参与计算
+        """
         file_num = len(audio_files)
         final_scores = []
 
@@ -1333,37 +1447,42 @@ class ParallelMOSCompute:
                 utmos_val = get_value('utmos', i)
                 scores.append(utmos_val)
 
-            # 有参考指标
+            # 有参考指标 — 只有has_reference=True且值非0时参与计算
             if has_reference:
-                # STOI: -1~1 映射到 0-5
+                # STOI: -1~1 映射到 0-5（值>0才参与）
                 if 'stoi' in selected_metrics:
                     stoi = get_value('STOI', i)
-                    scores.append((stoi + 1) * 2.5)
+                    if stoi != 0.0:
+                        scores.append((stoi + 1) * 2.5)
 
-                # SISDR: 使用sigmoid归一化到0-5
+                # SISDR: 使用sigmoid归一化到0-5（值>0才参与）
                 if 'sisdr' in selected_metrics:
                     sisdr = get_value('SISDR', i)
-                    scores.append((1 / (1 + np.exp(-sisdr/10))) * 5)
+                    if sisdr != 0.0:
+                        scores.append((1 / (1 + np.exp(-sisdr/10))) * 5)
 
-                # PESQ: 0-4.5 映射到 0-5
+                # PESQ: 0-4.5 映射到 0-5（值>0才参与）
                 if 'pesq' in selected_metrics:
                     pesq = get_value('pesq', i)
-                    scores.append(pesq * (5/4.5))
+                    if pesq != 0.0:
+                        scores.append(pesq * (5/4.5))
 
-                # WER: 0-1 映射到 0-5 (越低越好)
+                # WER: 0-1 映射到 0-5 (越低越好)（值>0才参与）
                 if 'wer' in selected_metrics:
                     wer = get_value('wer', i)
-                    scores.append((1 - wer) * 5)
+                    if wer != 0.0:
+                        scores.append((1 - wer) * 5)
 
-                # WCORR: 0-1 映射到 0-5
-                if 'wer' in selected_metrics:
+                    # WCORR: 0-1 映射到 0-5
                     wcorr = get_value('wcorr', i)
-                    scores.append(wcorr * 5)
+                    if wcorr != 0.0:
+                        scores.append(wcorr * 5)
 
-                # TCF: 0-1 映射到 0-5
+                # TCF: 0-1 映射到 0-5（值>0才参与）
                 if 'tcf' in selected_metrics:
                     tcf = get_value('tcf', i)
-                    scores.append(tcf * 5)
+                    if tcf != 0.0:
+                        scores.append(tcf * 5)
 
             # 计算最终得分
             if scores:
@@ -1372,9 +1491,9 @@ class ParallelMOSCompute:
                 tmp = 0.0
 
             # 打印调试信息
-            print(f"FinalScore计算 - 文件{i}: has_ref={has_reference}, 选择项目={selected_metrics}")
-            print(f"  所有分数: {[f'{s:.2f}' for s in scores]}")
-            print(f"  最终得分: {tmp:.2f}")
+            logger.debug(f"FinalScore计算 - 文件{i}: has_ref={has_reference}, 选择项目={selected_metrics}")
+            logger.debug(f"  所有有效分数({len(scores)}个): {[f'{s:.2f}' for s in scores]}")
+            logger.debug(f"  最终得分: {tmp:.2f}")
 
             final_scores.append(tmp)
 

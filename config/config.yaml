@@ -96,3 +96,41 @@ audio:
     - ".mp3"
   # 最大文件大小(MB)
   max_file_size: 100
+
+# 参考音频内容匹配配置（基于Shazam算法的音频指纹匹配）
+reference_matching:
+  # 是否启用内容匹配（关闭后仅使用文件名匹配）
+  enabled: true
+  # 指纹提取参数
+  fingerprint:
+    # 采样率
+    sr: 16000
+    # STFT参数
+    n_fft: 4096
+    hop_length: 1024
+    win_length: 4096
+    # 峰值检测: 能量最小值(dB)
+    amp_min: 5.0
+    # 局部最大值区域范围
+    neighborhood: 15
+    # 锚点近邻个数
+    near_num: 20
+    # Hash时间间隔范围(frames)
+    min_time_delta: 0
+    max_time_delta: 200
+  # 匹配参数
+  matching:
+    # 最少匹配Hash数（低于此值视为不匹配）
+    min_hash_match: 5
+    # 最低置信度阈值 (0-1)
+    min_confidence: 0.3
+  # DTW精确定位
+  dtw:
+    # 是否启用DTW精确定位
+    enabled: true
+    # DTW搜索范围扩展（秒），在指纹匹配位置前后各扩展
+    search_margin: 5.0
+    # MFCC参数
+    n_mfcc: 13
+    hop_length: 512
+    n_fft: 2048

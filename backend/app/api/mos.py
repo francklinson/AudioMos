@@ -99,13 +99,13 @@ performance_stats = {}
 
 
 def init_models():
-    """初始化所有评分模型"""
+    """初始化所有评分模型和参考音频指纹数据库"""
     global models
-    
+
     logger.info("=" * 60)
     logger.info("[模型初始化] 开始加载MOS评分模型...")
     logger.info("=" * 60)
-    
+
     if USE_OPTIMIZED:
         logger.info("[模型初始化] 使用优化版MOS计算模块")
         logger.info("[模型初始化] 正在初始化并行计算模型...")
@@ -118,6 +118,22 @@ def init_models():
             logger.error(f"❌ 优化版模型初始化失败: {e}")
             import traceback
             logger.error(f"错误详情: {traceback.format_exc()}")
+
+        # 初始化参考音频指纹数据库（用于内容匹配）
+        try:
+            logger.info("[模型初始化] 正在初始化参考音频指纹数据库...")
+            ref_dir = settings.paths.ref_dir
+            if os.path.exists(ref_dir):
+                import_start = time.time()
+                from reference_matcher import get_reference_matcher, rebuild_matcher_database
+                rebuild_matcher_database(ref_dir)
+                import_elapsed = time.time() - import_start
+                logger.info(f"✅ 参考音频指纹数据库初始化完成 (耗时: {import_elapsed:.2f}s)")
+            else:
+                logger.warning(f"⚠️ 参考音频目录不存在: {ref_dir}，跳过指纹数据库初始化")
+        except Exception as e:
+            logger.warning(f"⚠️ 参考音频指纹数据库初始化失败（非致命）: {e}")
+
         logger.info("=" * 60)
         return
     
@@ -390,44 +406,74 @@ async def process_audio_task(queue_task):
         need_ref_metrics = selected_metrics and any(m in ['pesq', 'stoi', 'sisdr', 'wer', 'tcf'] for m in selected_metrics)
 
         if has_reference and need_ref_metrics:
-            # 有参考音频且用户选择了有参考指标：执行切分、对齐流程
-            # Step 1: 音频切分
-            await update_task_progress(task_id, 10, "正在切分音频...")
-            split_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_split"
-            split_output_dir.mkdir(parents=True, exist_ok=True)
+            # 有参考音频且用户选择了有参考指标：执行内容匹配 + 切分 + 对齐流程
+            await update_task_progress(task_id, 10, "正在进行参考音频内容匹配...")
 
+            # 尝试使用新的内容匹配管道
+            aligned_files = []
+            content_match_used = False
             try:
-                split_files = cut_all_audio_files_from_list(
-                    input_files,
-                    output_dir=str(split_output_dir),
-                    ref_dir=str(ref_dir)
-                )
+                from reference_pipeline import ReferencePipeline
+
+                align_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_aligned"
+                align_output_dir.mkdir(parents=True, exist_ok=True)
+
+                pipeline = ReferencePipeline(ref_dir=str(ref_dir))
+                pipeline.initialize(str(ref_dir))
+
+                for input_file in input_files:
+                    result = pipeline.process_test_audio(
+                        test_audio_path=input_file,
+                        output_dir=str(align_output_dir),
+                        min_confidence=0.2,
+                        use_dtw=True
+                    )
+                    if not result["no_match"]:
+                        aligned_files.extend(result["aligned_files"])
+                        content_match_used = True
+                        logger.info(f"[MOS处理] ✓ 内容匹配成功: {os.path.basename(input_file)} "
+                                     f"-> {len(result['matches'])} 个匹配, "
+                                     f"{len(result['aligned_files'])} 个对齐文件")
+
+                if aligned_files:
+                    logger.info(f"[MOS处理] 内容匹配完成: 共 {len(aligned_files)} 个对齐文件")
+                else:
+                    logger.warning(f"[MOS处理] 内容匹配未找到任何匹配，回退到传统切分方法")
+            except ImportError as e:
+                logger.warning(f"[MOS处理] 内容匹配模块不可用: {e}，回退到传统方法")
             except Exception as e:
-                logger.error(f"音频切分失败: {e}")
-                split_files = input_files  # 如果切分失败,使用原始文件
+                logger.error(f"[MOS处理] 内容匹配失败: {e}，回退到传统方法")
 
-            # Step 2: 音频对齐
-            await update_task_progress(task_id, 30, "正在进行音频对齐...")
-            align_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_aligned"
-            align_output_dir.mkdir(parents=True, exist_ok=True)
+            # 如果内容匹配失败或没有结果，回退到传统切分方法
+            if not aligned_files:
+                await update_task_progress(task_id, 10, "正在切分音频(传统方法)...")
+                split_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_split"
+                split_output_dir.mkdir(parents=True, exist_ok=True)
 
-            try:
-                logger.info(f"【对齐流程】切分文件数: {len(split_files)}, 参考目录: {ref_dir}")
-                for i, f in enumerate(split_files[:3]):  # 只打印前3个
-                    logger.info(f"【对齐流程】切分文件 {i+1}: {os.path.basename(f)}")
+                try:
+                    split_files = cut_all_audio_files_from_list(
+                        input_files,
+                        output_dir=str(split_output_dir),
+                        ref_dir=str(ref_dir)
+                    )
+                except Exception as e:
+                    logger.error(f"音频切分失败: {e}")
+                    split_files = input_files
 
-                aligned_files = align_splited_wav_from_list(
-                    split_files,
-                    ref_dir=str(ref_dir),
-                    output_dir=str(align_output_dir)
-                )
+                # Step 2: 音频对齐
+                await update_task_progress(task_id, 30, "正在进行音频对齐...")
+                align_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_aligned"
+                align_output_dir.mkdir(parents=True, exist_ok=True)
 
-                logger.info(f"【对齐流程】对齐完成，对齐文件数: {len(aligned_files)}")
-                for i, f in enumerate(aligned_files[:3]):  # 只打印前3个
-                    logger.info(f"【对齐流程】对齐文件 {i+1}: {os.path.basename(f)}")
-            except Exception as e:
-                logger.error(f"音频对齐失败: {e}")
-                aligned_files = split_files  # 如果对齐失败,使用切分后的文件
+                try:
+                    aligned_files = align_splited_wav_from_list(
+                        split_files,
+                        ref_dir=str(ref_dir),
+                        output_dir=str(align_output_dir)
+                    )
+                except Exception as e:
+                    logger.error(f"音频对齐失败: {e}")
+                    aligned_files = split_files
 
             # Step 3: MOS评分计算（有参考）
             await update_task_progress(task_id, 50, "正在计算MOS得分...")
@@ -436,9 +482,9 @@ async def process_audio_task(queue_task):
             results = await loop.run_in_executor(
                 executor,
                 compute_mos_scores_sync,
-                aligned_files,
+                aligned_files if aligned_files else input_files,
                 str(ref_dir),
-                True,
+                True if aligned_files else False,  # 只有找到对齐文件才认为有参考
                 selected_metrics  # 传递计算项目配置
             )
         else:

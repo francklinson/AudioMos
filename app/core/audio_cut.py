@@ -474,6 +474,79 @@ def cut_all_audio_files_in_directory_dtw(input_dir, ref_dir, output_dir, max_wor
     # return cut_all_audio_files_from_list(inpit_file_list, ref_dir, output_dir)
 
 
+# ============================================================================
+# 基于内容匹配的切分方法（使用ReferencePipeline，支持动态参考音频集合）
+# ============================================================================
+
+def cut_all_audio_files_with_content_matching(
+    input_file_list: list,
+    ref_dir: str,
+    output_dir: str,
+    use_dtw: bool = True,
+    min_confidence: float = 0.3
+) -> list:
+    """
+    使用内容匹配（指纹+DTW）切分音频文件
+    这是音频切分的新主入口，支持任意数量的自定义参考音频。
+
+    工作流程：
+    1. 建立参考音频指纹数据库
+    2. 对每个测试音频进行内容匹配
+    3. 切分并对齐匹配到的片段
+    4. 返回对齐后的音频文件路径列表
+
+    Args:
+        input_file_list: 输入音频文件路径列表
+        ref_dir: 参考音频目录
+        output_dir: 输出目录
+        use_dtw: 是否使用DTW精确定位
+        min_confidence: 最低匹配置信度
+
+    Returns:
+        对齐后的音频文件路径列表
+    """
+    # 延迟导入，避免循环依赖
+    try:
+        from reference_pipeline import ReferencePipeline, process_multiple_test_files
+    except ImportError:
+        # 如果从其他位置调用，尝试从app.core导入
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+        from reference_pipeline import ReferencePipeline, process_multiple_test_files
+
+    import logging
+    logger = logging.getLogger('audiomos')
+
+    logger.info(f"[内容匹配切分] 开始处理 {len(input_file_list)} 个文件")
+    logger.info(f"[内容匹配切分] 参考目录: {ref_dir}")
+    logger.info(f"[内容匹配切分] 输出目录: {output_dir}")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    pipeline = ReferencePipeline(ref_dir=ref_dir)
+    pipeline.initialize(ref_dir, force_rebuild=True)
+
+    all_aligned_files = []
+
+    for test_path in input_file_list:
+        result = pipeline.process_test_audio(
+            test_audio_path=test_path,
+            output_dir=output_dir,
+            min_confidence=min_confidence,
+            use_dtw=use_dtw
+        )
+
+        if result["no_match"]:
+            logger.warning(f"[内容匹配切分] ⚠️ 未找到匹配的参考音频: {os.path.basename(test_path)}")
+        else:
+            aligned = result["aligned_files"]
+            logger.info(f"[内容匹配切分] ✓ {os.path.basename(test_path)}: "
+                         f"{len(result['matches'])} 个匹配, {len(aligned)} 个对齐文件")
+            all_aligned_files.extend(aligned)
+
+    logger.info(f"[内容匹配切分] 处理完成: 共 {len(all_aligned_files)} 个对齐文件")
+    return all_aligned_files
+
+
 # 示例调用
 if __name__ == "__main__":
     # cut_all_audio_files_in_directory_1k(input_dir=r"E:\阵列麦克风提测数据\251106试产后软件第一轮",

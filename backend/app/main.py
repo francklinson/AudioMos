@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.logging_config import logger
-from app.api import auth, mos, denoise, restoration
+from app.api import auth, mos, denoise, restoration, reference_audio
 
 
 @asynccontextmanager
@@ -155,6 +155,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(mos.router, prefix="/api")
 app.include_router(denoise.router, prefix="/api")
 app.include_router(restoration.router, prefix="/api")
+app.include_router(reference_audio.router, prefix="/api")
 
 
 # ========== 前后端一体模式：托管前端静态文件 ==========
