@@ -23,8 +23,8 @@ def main():
     logger.info("=" * 60)
     
     # 获取配置的 host
-    configured_host = settings.server.backend.host
-    configured_port = settings.server.backend.port
+    configured_host = settings.server.host
+    configured_port = settings.server.port
     
     # 如果配置的是 auto，进行自动检测
     if configured_host.lower() == "auto":

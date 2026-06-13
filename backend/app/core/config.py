@@ -9,22 +9,10 @@ from typing import List
 from pydantic_settings import BaseSettings
 
 
-class BackendConfig(BaseSettings):
-    """后端服务配置"""
-    host: str = "0.0.0.0"
-    port: int = 8000
-
-
-class FrontendConfig(BaseSettings):
-    """前端服务配置"""
-    host: str = "0.0.0.0"
-    port: int = 3000
-
-
 class ServerConfig(BaseSettings):
     """服务器配置"""
-    backend: BackendConfig = BackendConfig()
-    frontend: FrontendConfig = FrontendConfig()
+    host: str = "0.0.0.0"
+    port: int = 8000
     debug: bool = False
 
 
@@ -120,10 +108,10 @@ def load_config(config_path: str = None) -> Config:
             # 服务器配置
             if "server" in yaml_config:
                 server_data = yaml_config["server"]
-                if "backend" in server_data:
-                    config.server.backend = BackendConfig(**server_data["backend"])
-                if "frontend" in server_data:
-                    config.server.frontend = FrontendConfig(**server_data["frontend"])
+                if "host" in server_data:
+                    config.server.host = server_data["host"]
+                if "port" in server_data:
+                    config.server.port = server_data["port"]
                 if "debug" in server_data:
                     config.server.debug = server_data["debug"]
             
@@ -156,23 +144,11 @@ def load_config(config_path: str = None) -> Config:
     config.paths.models_dir = resolve_path(config.paths.models_dir)
     config.logging.file = resolve_path(config.logging.file)
     
-    # 从环境变量覆盖配置 - 后端
-    if os.getenv("AUDIOMOS_BACKEND_HOST"):
-        config.server.backend.host = os.getenv("AUDIOMOS_BACKEND_HOST")
-    if os.getenv("AUDIOMOS_BACKEND_PORT"):
-        config.server.backend.port = int(os.getenv("AUDIOMOS_BACKEND_PORT"))
-    
-    # 从环境变量覆盖配置 - 前端
-    if os.getenv("AUDIOMOS_FRONTEND_HOST"):
-        config.server.frontend.host = os.getenv("AUDIOMOS_FRONTEND_HOST")
-    if os.getenv("AUDIOMOS_FRONTEND_PORT"):
-        config.server.frontend.port = int(os.getenv("AUDIOMOS_FRONTEND_PORT"))
-    
-    # 向后兼容旧的环境变量
+    # 从环境变量覆盖配置
     if os.getenv("AUDIOMOS_HOST"):
-        config.server.backend.host = os.getenv("AUDIOMOS_HOST")
+        config.server.host = os.getenv("AUDIOMOS_HOST")
     if os.getenv("AUDIOMOS_PORT"):
-        config.server.backend.port = int(os.getenv("AUDIOMOS_PORT"))
+        config.server.port = int(os.getenv("AUDIOMOS_PORT"))
     
     if os.getenv("AUDIOMOS_SECRET_KEY"):
         config.auth.secret_key = os.getenv("AUDIOMOS_SECRET_KEY")

@@ -228,42 +228,26 @@ validate_host() {
 }
 
 # 读取配置（优先使用环境变量，其次配置文件，最后默认值）
-BACKEND_HOST="${AUDIOMOS_BACKEND_HOST:-$(read_nested_yaml "$CONFIG_FILE" "server" "backend" "host" "0.0.0.0")}"
-BACKEND_PORT="${AUDIOMOS_BACKEND_PORT:-$(read_nested_yaml "$CONFIG_FILE" "server" "backend" "port" "8000")}"
-FRONTEND_HOST="${AUDIOMOS_FRONTEND_HOST:-$(read_nested_yaml "$CONFIG_FILE" "server" "frontend" "host" "0.0.0.0")}"
-FRONTEND_PORT="${AUDIOMOS_FRONTEND_PORT:-$(read_nested_yaml "$CONFIG_FILE" "server" "frontend" "port" "3000")}"
+BACKEND_HOST="${AUDIOMOS_HOST:-$(read_yaml_value "$CONFIG_FILE" "host" "0.0.0.0")}"
+BACKEND_PORT="${AUDIOMOS_PORT:-$(read_yaml_value "$CONFIG_FILE" "port" "8077")}"
 
-# 向后兼容旧的环境变量
-if [ -n "$AUDIOMOS_HOST" ]; then
-    BACKEND_HOST="$AUDIOMOS_HOST"
-fi
-if [ -n "$AUDIOMOS_PORT" ]; then
-    BACKEND_PORT="$AUDIOMOS_PORT"
-fi
-
-# 显示配置信息
 echo ""
 echo "================================"
 echo "  服务配置"
 echo "================================"
 echo ""
-echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
-echo "  前端: $FRONTEND_HOST:$FRONTEND_PORT"
+echo "  服务地址: $BACKEND_HOST:$BACKEND_PORT"
 echo ""
 
 # 如果配置的是 auto，进行自动检测
 if [ "$BACKEND_HOST" = "auto" ]; then
-    BACKEND_HOST=$(validate_host "$BACKEND_HOST" "后端服务")
-fi
-if [ "$FRONTEND_HOST" = "auto" ]; then
-    FRONTEND_HOST=$(validate_host "$FRONTEND_HOST" "前端服务")
+    BACKEND_HOST=$(validate_host "$BACKEND_HOST" "AudioMOS")
 fi
 
 echo ""
 
 # PID 文件路径
 BACKEND_PID_FILE="$SCRIPT_DIR/.backend.pid"
-FRONTEND_PID_FILE="$SCRIPT_DIR/.frontend.pid"
 
 # 显示帮助信息
 show_help() {
@@ -274,39 +258,30 @@ show_help() {
     echo "用法: ./start.sh [命令] [选项]"
     echo ""
     echo "命令:"
-    echo "  start           启动服务（默认前后端一体模式）"
-    echo "  dev             启动前后端分离模式（适合开发）"
+    echo "  start           启动服务"
     echo "  stop            停止所有服务"
     echo "  restart         重启服务"
     echo "  status          查看服务状态"
     echo "  models          检查模型文件状态"
-    echo "  build-frontend  构建前端静态文件"
     echo "  help            显示帮助信息"
     echo ""
     echo "选项:"
     echo "  --port <port>   指定端口"
     echo "  --host <host>   指定地址"
     echo ""
-    echo "模式说明:"
-    echo "  start - 前后端一体模式（单服务单端口，推荐部署）"
-    echo "  dev   - 前后端分离模式（2个端口，适合开发）"
     echo ""
     echo "当前配置:"
     echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
-    echo "  前端: $FRONTEND_HOST:$FRONTEND_PORT"
     echo ""
     echo "环境变量:"
-    echo "  AUDIOMOS_BACKEND_HOST    后端主机地址"
-    echo "  AUDIOMOS_BACKEND_PORT    后端端口"
-    echo "  AUDIOMOS_FRONTEND_HOST   前端主机地址"
-    echo "  AUDIOMOS_FRONTEND_PORT   前端端口"
+    echo "  AUDIOMOS_HOST             服务主机地址"
+    echo "  AUDIOMOS_PORT             服务端口"
     echo ""
 }
 
 # 检查服务是否正在运行
 check_status() {
     local backend_running=false
-    local frontend_running=false
 
     if [ -f "$BACKEND_PID_FILE" ]; then
         local backend_pid=$(cat "$BACKEND_PID_FILE")
@@ -315,19 +290,8 @@ check_status() {
         fi
     fi
 
-    if [ -f "$FRONTEND_PID_FILE" ]; then
-        local frontend_pid=$(cat "$FRONTEND_PID_FILE")
-        if ps -p "$frontend_pid" > /dev/null 2>&1; then
-            frontend_running=true
-        fi
-    fi
-
-    if $backend_running && $frontend_running; then
+    if $backend_running; then
         echo "running"
-    elif $backend_running; then
-        echo "backend_only"
-    elif $frontend_running; then
-        echo "frontend_only"
     else
         echo "stopped"
     fi
@@ -343,28 +307,19 @@ show_status() {
     local status=$(check_status)
 
     if [ "$status" = "running" ]; then
-        echo "✅ 后端服务: 运行中 (PID: $(cat $BACKEND_PID_FILE))"
+        echo "✅ AudioMOS 服务: 运行中 (PID: $(cat $BACKEND_PID_FILE))"
         echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
         echo ""
-        echo "✅ 前端服务: 运行中 (PID: $(cat $FRONTEND_PID_FILE))"
-        echo "   地址: http://$FRONTEND_HOST:$FRONTEND_PORT"
-        echo ""
-        echo "🌐 前端访问: http://$FRONTEND_HOST:$FRONTEND_PORT"
-        echo "📡 后端API:  http://$BACKEND_HOST:$BACKEND_PORT"
+        echo "📡 前端页面: http://$BACKEND_HOST:$BACKEND_PORT"
         echo "📚 API文档:  http://$BACKEND_HOST:$BACKEND_PORT/docs"
     elif [ "$status" = "backend_only" ]; then
         echo "✅ 后端服务: 运行中 (PID: $(cat $BACKEND_PID_FILE))"
         echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
         echo ""
-        echo "❌ 前端服务: 未运行"
-    elif [ "$status" = "frontend_only" ]; then
         echo "❌ 后端服务: 未运行"
         echo ""
-        echo "✅ 前端服务: 运行中 (PID: $(cat $FRONTEND_PID_FILE))"
-        echo "   地址: http://$FRONTEND_HOST:$FRONTEND_PORT"
     else
         echo "❌ 后端服务: 未运行"
-        echo "❌ 前端服务: 未运行"
     fi
     echo ""
 }
@@ -918,215 +873,6 @@ print(f'{torch.cuda.get_device_name(0)} (CUDA {torch.version.cuda})')
 }
 
 # 启动服务
-start_services() {
-    local status=$(check_status)
-
-    if [ "$status" = "running" ]; then
-        echo "服务已经在运行中!"
-        show_status
-        return 0
-    fi
-
-    echo "================================"
-    echo "  AudioMOS 项目启动脚本"
-    echo "================================"
-    echo ""
-    echo "项目路径: $SCRIPT_DIR"
-    echo ""
-    echo "当前配置:"
-    echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
-    echo "  前端: $FRONTEND_HOST:$FRONTEND_PORT"
-    echo ""
-
-    # 检查虚拟环境
-    if [ ! -d ".venv" ]; then
-        echo "正在创建虚拟环境..."
-        python3 -m venv .venv
-    fi
-
-    # 激活虚拟环境
-    echo "激活虚拟环境..."
-    source .venv/bin/activate
-
-    # 检查依赖
-    if ! pip show fastapi > /dev/null 2>&1; then
-        echo "正在安装Python依赖..."
-        pip install --upgrade pip
-        pip install -r requirements.txt
-    fi
-
-    # 安装缺少的pesq(如果尚未安装)
-    if ! pip show pesq > /dev/null 2>&1; then
-        echo "安装pesq依赖..."
-        pip install pesq==0.0.1 2>/dev/null || echo "pesq安装失败(可选依赖)"
-    fi
-
-    # 检查模型文件
-    echo ""
-    check_models
-    local models_status=$?
-
-    if [ $models_status -ne 0 ]; then
-        echo "⚠️  模型检查未通过,是否继续启动? (y/N)"
-        read -r response
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            echo "启动已取消"
-            echo "请运行 'python download_models.py' 下载缺失的模型"
-            return 1
-        fi
-        echo "继续启动(部分功能可能不可用)..."
-        echo ""
-    fi
-
-    # 确保在项目根目录
-    cd "$SCRIPT_DIR"
-
-    # 启动后端
-    if [ "$status" = "stopped" ] || [ "$status" = "frontend_only" ]; then
-        echo ""
-        echo "启动后端服务..."
-        echo "  地址: http://$BACKEND_HOST:$BACKEND_PORT"
-        cd backend
-        # 设置环境变量供后端使用
-        export AUDIOMOS_BACKEND_HOST="$BACKEND_HOST"
-        export AUDIOMOS_BACKEND_PORT="$BACKEND_PORT"
-        nohup python run.py > "$SCRIPT_DIR/logs/unified.log" 2>&1 &
-        BACKEND_PID=$!
-        echo "$BACKEND_PID" > "$BACKEND_PID_FILE"
-        echo "后端服务已启动, PID: $BACKEND_PID"
-        
-        # 等待后端服务真正启动
-        echo ""
-        echo "等待后端服务就绪..."
-        local backend_ready=false
-        local backend_check_count=0
-        local backend_max_wait=30
-        
-        while [ $backend_check_count -lt $backend_max_wait ]; do
-            # 检查进程是否还在运行
-            if ! ps -p "$BACKEND_PID" > /dev/null 2>&1; then
-                echo "❌ 后端进程已退出，启动失败"
-                echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/unified.log"
-                rm -f "$BACKEND_PID_FILE"
-                return 1
-            fi
-            
-            # 检查端口是否监听
-            if lsof -i :"$BACKEND_PORT" > /dev/null 2>&1; then
-                # 尝试访问健康检查接口
-                if curl -s "http://$BACKEND_HOST:$BACKEND_PORT/health" > /dev/null 2>&1; then
-                    echo "✅ 后端服务已就绪"
-                    backend_ready=true
-                    break
-                fi
-            fi
-            
-            sleep 1
-            backend_check_count=$((backend_check_count + 1))
-            printf "\r  检查中... %d/%d 秒" "$backend_check_count" "$backend_max_wait"
-        done
-        
-        echo ""
-        
-        if [ "$backend_ready" = false ]; then
-            echo "⚠️  后端服务启动超时，可能仍在初始化中"
-            echo "查看日志: tail -f $SCRIPT_DIR/logs/unified.log"
-        fi
-    fi
-
-    # 确保回到项目根目录
-    cd "$SCRIPT_DIR"
-
-    # 检查前端依赖
-    if [ ! -d "frontend/node_modules" ]; then
-        echo ""
-        echo "正在安装前端依赖..."
-        cd frontend
-        npm install
-        cd "$SCRIPT_DIR"
-    fi
-
-    # 启动前端
-    local frontend_ready=false
-    if [ "$status" = "stopped" ] || [ "$status" = "backend_only" ]; then
-        echo ""
-        echo "启动前端服务..."
-        echo "  地址: http://$FRONTEND_HOST:$FRONTEND_PORT"
-        cd frontend
-        # 设置环境变量供 Vite 配置读取
-        export AUDIOMOS_FRONTEND_HOST="$FRONTEND_HOST"
-        export AUDIOMOS_FRONTEND_PORT="$FRONTEND_PORT"
-        # 不再传递 --host 参数，让 Vite 使用配置文件中的设置
-        # Vite 配置会将 0.0.0.0 转换为 true，避免 Node.js 解析问题
-        nohup npx vite > "$SCRIPT_DIR/logs/unified.log" 2>&1 &
-        FRONTEND_PID=$!
-        echo "$FRONTEND_PID" > "$FRONTEND_PID_FILE"
-        echo "前端服务已启动, PID: $FRONTEND_PID"
-        
-        # 等待前端服务真正启动
-        echo ""
-        echo "等待前端服务就绪..."
-        local frontend_check_count=0
-        local frontend_max_wait=30
-        
-        while [ $frontend_check_count -lt $frontend_max_wait ]; do
-            # 检查进程是否还在运行
-            if ! ps -p "$FRONTEND_PID" > /dev/null 2>&1; then
-                echo "❌ 前端进程已退出，启动失败"
-                echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/unified.log"
-                rm -f "$FRONTEND_PID_FILE"
-                return 1
-            fi
-            
-            # 检查端口是否监听
-            if lsof -i :"$FRONTEND_PORT" > /dev/null 2>&1; then
-                # 尝试访问前端页面
-                if curl -s "http://$FRONTEND_HOST:$FRONTEND_PORT" > /dev/null 2>&1; then
-                    echo "✅ 前端服务已就绪"
-                    frontend_ready=true
-                    break
-                fi
-            fi
-            
-            sleep 1
-            frontend_check_count=$((frontend_check_count + 1))
-            printf "\r  检查中... %d/%d 秒" "$frontend_check_count" "$frontend_max_wait"
-        done
-        
-        echo ""
-        
-        if [ "$frontend_ready" = false ]; then
-            echo "⚠️  前端服务启动超时，可能仍在初始化中"
-            echo "查看日志: tail -f $SCRIPT_DIR/logs/unified.log"
-        fi
-    fi
-
-    echo ""
-    echo "================================"
-    
-    # 最终状态检查
-    if [ "$backend_ready" = true ] && [ "$frontend_ready" = true ]; then
-        echo "  ✅ AudioMOS 启动成功!"
-    elif [ "$backend_ready" = true ]; then
-        echo "  ⚠️  AudioMOS 部分启动 (后端正常，前端可能仍在初始化)"
-    elif [ "$frontend_ready" = true ]; then
-        echo "  ⚠️  AudioMOS 部分启动 (前端正常，后端可能仍在初始化)"
-    else
-        echo "  ⚠️  AudioMOS 启动状态未知，请检查日志"
-    fi
-    echo "================================"
-    echo ""
-    echo "🌐 前端访问: http://$FRONTEND_HOST:$FRONTEND_PORT"
-    echo "📡 后端API:  http://$BACKEND_HOST:$BACKEND_PORT"
-    echo "📚 API文档:  http://$BACKEND_HOST:$BACKEND_PORT/docs"
-    echo ""
-    echo "默认登录账号:"
-    echo "  用户名: admin"
-    echo "  密码:   tp123456"
-    echo ""
-    echo "使用 './start.sh stop' 停止服务"
-    echo ""
-}
 
 # 停止服务
 stop_services() {
@@ -1136,89 +882,39 @@ stop_services() {
     echo ""
 
     local backend_stopped=false
-    local frontend_stopped=false
 
-    # 停止后端
+    # 停止 PID 文件记录的后端进程
     if [ -f "$BACKEND_PID_FILE" ]; then
         local backend_pid=$(cat "$BACKEND_PID_FILE")
         if ps -p "$backend_pid" > /dev/null 2>&1; then
-            echo "正在停止后端服务 (PID: $backend_pid)..."
+            echo "正在停止服务 (PID: $backend_pid)..."
             kill "$backend_pid" 2>/dev/null
             sleep 2
-            # 强制终止如果还在运行
             if ps -p "$backend_pid" > /dev/null 2>&1; then
                 kill -9 "$backend_pid" 2>/dev/null
             fi
-            echo "✅ 后端服务已停止"
+            echo "✅ 服务已停止"
         else
-            echo "后端服务未运行"
+            echo "服务未运行"
         fi
         rm -f "$BACKEND_PID_FILE"
         backend_stopped=true
     fi
 
-    # 停止前端 - 不仅通过 PID 文件，还查找所有 Vite 进程
-    if [ -f "$FRONTEND_PID_FILE" ]; then
-        local frontend_pid=$(cat "$FRONTEND_PID_FILE")
-        if ps -p "$frontend_pid" > /dev/null 2>&1; then
-            echo "正在停止前端服务 (PID: $frontend_pid)..."
-            kill "$frontend_pid" 2>/dev/null
-            sleep 2
-            # 强制终止如果还在运行
-            if ps -p "$frontend_pid" > /dev/null 2>&1; then
-                kill -9 "$frontend_pid" 2>/dev/null
-            fi
-            echo "✅ 前端服务已停止"
-        else
-            echo "前端服务未运行"
-        fi
-        rm -f "$FRONTEND_PID_FILE"
-        frontend_stopped=true
-    fi
-
-    # 额外检查：查找并停止所有项目相关的 Vite 和 Python 进程
-    echo ""
-    echo "检查残留进程..."
-
-    # 查找项目目录下的 Vite 进程
-    local vite_pids=$(pgrep -f "vite" | while read pid; do
-        if pwdx "$pid" 2>/dev/null | grep -q "$SCRIPT_DIR/frontend"; then
-            echo "$pid"
-        fi
-    done)
-
-    if [ -n "$vite_pids" ]; then
-        echo "发现残留的 Vite 进程，正在停止..."
-        for pid in $vite_pids; do
-            echo "  停止 Vite 进程 (PID: $pid)"
-            kill -9 "$pid" 2>/dev/null || true
-        done
-        frontend_stopped=true
-    fi
-
-    # 查找项目目录下的 Python 后端进程
-    local python_pids=$(pgrep -f "python.*run\.py" | while read pid; do
-        if pwdx "$pid" 2>/dev/null | grep -q "$SCRIPT_DIR/backend"; then
-            echo "$pid"
-        fi
-    done)
-
+    # 查找残留的 Python 后端进程
+    local python_pids=$(pgrep -f "uvicorn.*app.main" 2>/dev/null)
     if [ -n "$python_pids" ]; then
-        echo "发现残留的 Python 后端进程，正在停止..."
+        echo "发现残留进程，正在清理..."
         for pid in $python_pids; do
-            echo "  停止 Python 进程 (PID: $pid)"
+            echo "  停止进程 (PID: $pid)"
             kill -9 "$pid" 2>/dev/null || true
         done
         backend_stopped=true
     fi
 
-    if ! $backend_stopped && ! $frontend_stopped; then
+    if ! $backend_stopped; then
         echo "没有运行中的服务"
     fi
-
-    echo ""
-    echo "================================"
-    echo "  分离模式服务已停止"
     echo "================================"
     echo ""
 }
@@ -1227,7 +923,6 @@ stop_services() {
 wait_for_ports() {
     echo ""
     echo "等待端口释放..."
-    local ports=($BACKEND_PORT $FRONTEND_PORT)
     for port in "${ports[@]}"; do
         local count=0
         while lsof -i :"$port" > /dev/null 2>&1 && [ $count -lt 10 ]; do
@@ -1240,54 +935,6 @@ wait_for_ports() {
             echo "✅ 端口 $port 已释放"
         fi
     done
-}
-
-# 构建前端静态文件
-build_frontend() {
-    echo "================================"
-    echo "  构建前端静态文件"
-    echo "================================"
-    echo ""
-    
-    # 检查前端目录
-    if [ ! -d "$SCRIPT_DIR/frontend" ]; then
-        echo "❌ 前端目录不存在: $SCRIPT_DIR/frontend"
-        return 1
-    fi
-    
-    # 激活虚拟环境
-    source "$SCRIPT_DIR/.venv/bin/activate"
-    
-    cd "$SCRIPT_DIR/frontend"
-    
-    # 检查 node_modules
-    if [ ! -d "node_modules" ]; then
-        echo "📦 安装前端依赖..."
-        npm install
-        if [ $? -ne 0 ]; then
-            echo "❌ 安装依赖失败"
-            return 1
-        fi
-    fi
-    
-    # 构建前端
-    echo "🔨 构建前端..."
-    npm run build:prod
-    
-    if [ $? -ne 0 ]; then
-        echo "❌ 构建失败"
-        return 1
-    fi
-    
-    # 检查构建输出
-    if [ -f "$SCRIPT_DIR/backend/static/index.html" ]; then
-        echo "✅ 前端构建成功"
-        echo "   输出目录: $SCRIPT_DIR/backend/static/"
-        return 0
-    else
-        echo "❌ 构建输出不存在"
-        return 1
-    fi
 }
 
 # 启动前后端一体服务
@@ -1344,29 +991,9 @@ start_unified() {
     # 检查前端是否已构建
     if [ ! -f "$SCRIPT_DIR/backend/static/index.html" ]; then
         echo ""
-        echo "⚠️  未检测到前端构建文件"
+        echo "⚠️  未检测到前端构建文件，请先构建: cd frontend && npm install && npx vite build && cp -r dist/* ../backend/static/"
         echo ""
-        
-        # 检查 node_modules
-        if [ ! -d "$SCRIPT_DIR/frontend/node_modules" ]; then
-            echo "📦 安装前端依赖..."
-            cd "$SCRIPT_DIR/frontend"
-            npm install
-            cd "$SCRIPT_DIR"
-        fi
-        
-        echo "🔨 构建前端..."
-        cd "$SCRIPT_DIR/frontend"
-        npm run build:prod
-        cd "$SCRIPT_DIR"
-        
-        if [ ! -f "$SCRIPT_DIR/backend/static/index.html" ]; then
-            echo "❌ 前端构建失败"
-            return 1
-        fi
-        echo "✅ 前端构建成功"
-    else
-        echo "✅ 检测到前端构建文件"
+        return 1
     fi
     
     # 检查模型文件
@@ -1392,8 +1019,8 @@ start_unified() {
     # 启动一体服务
     echo ""
     echo "启动服务..."
-    export AUDIOMOS_BACKEND_HOST="$unified_host"
-    export AUDIOMOS_BACKEND_PORT="$unified_port"
+    export AUDIOMOS_HOST="$unified_host"
+    export AUDIOMOS_PORT="$unified_port"
     
     cd "$SCRIPT_DIR/backend"
     nohup python -c "
@@ -1533,22 +1160,11 @@ mkdir -p "$SCRIPT_DIR/logs"
 # 主逻辑
 case "${1:-start}" in
     start)
-        # 默认使用前后端一体模式（适合部署）
         shift
         start_unified "$@"
         ;;
-    dev)
-        # 使用前后端分离模式（适合开发）
-        echo "================================"
-        echo "  启动开发模式（前后端分离）"
-        echo "================================"
-        echo ""
-        start_services
-        ;;
     stop)
         stop_services
-        stop_unified
-        wait_for_ports
         echo ""
         echo "================================"
         echo "  服务已停止"
@@ -1557,15 +1173,13 @@ case "${1:-start}" in
         ;;
     restart)
         stop_services
-        stop_unified
-        wait_for_ports
         sleep 2
         shift
         start_unified "$@"
         ;;
     status)
         show_status
-        # 检查一体服务状态
+        # 检查服务状态
         if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
             local pid=$(cat "$SCRIPT_DIR/.unified.pid")
             if ps -p "$pid" > /dev/null 2>&1; then
@@ -1578,9 +1192,6 @@ case "${1:-start}" in
     models)
         check_models
         ;;
-    build-frontend)
-        build_frontend
-        ;;
     help|--help|-h)
         show_help
         ;;
@@ -1591,3 +1202,4 @@ case "${1:-start}" in
         exit 1
         ;;
 esac
+

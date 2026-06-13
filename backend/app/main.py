@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     
     # 系统信息日志
     logger.info("[系统配置]")
-    logger.info(f"  服务地址: {settings.server.backend.host}:{settings.server.backend.port}")
+    logger.info(f"  服务地址: {settings.server.host}:{settings.server.port}")
     logger.info(f"  调试模式: {settings.server.debug}")
     logger.info(f"  CUDA启用: {settings.cuda.enabled}")
     if settings.cuda.enabled:
@@ -159,65 +159,36 @@ app.include_router(reference_audio.router, prefix="/api")
 
 
 # ========== 前后端一体模式：托管前端静态文件 ==========
-# 检查是否存在前端构建文件
-# 使用绝对路径，确保在任何工作目录下都能正确找到静态文件
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STATIC_DIR = os.path.join(_PROJECT_ROOT, "backend", "static")
 INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
 
-if os.path.exists(STATIC_DIR) and os.path.exists(INDEX_HTML):
-    logger.info("检测到前端构建文件，启用前后端一体模式")
-    
-    # 挂载静态文件目录
-    app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
-    
-    # 其他静态资源目录
-    for static_subdir in ["images", "fonts", "icons"]:
-        subdir_path = os.path.join(STATIC_DIR, static_subdir)
-        if os.path.exists(subdir_path):
-            app.mount(f"/{static_subdir}", StaticFiles(directory=subdir_path), name=static_subdir)
-    
-    # 根路径返回前端首页
-    @app.get("/")
-    async def serve_index():
-        return FileResponse(INDEX_HTML)
-    
-    # 所有其他路径也返回前端首页（支持前端路由）
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        # 排除 API 路径
-        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
-            return {"detail": "Not Found"}
-        
-        # 检查是否是静态文件请求
-        static_file = os.path.join(STATIC_DIR, full_path)
-        if os.path.exists(static_file) and os.path.isfile(static_file):
-            return FileResponse(static_file)
-        
-        # 否则返回 index.html（前端路由处理）
-        return FileResponse(INDEX_HTML)
-    
-    logger.info(f"静态文件目录: {STATIC_DIR}")
-else:
-    logger.info("未检测到前端构建文件，仅 API 模式运行")
-    
-    # 原有的根路径响应
-    @app.get("/")
-    async def root():
-        return {
-            "name": "AudioMOS API",
-            "version": "1.0.0",
-            "description": "音频质量评估系统",
-            "docs": "/docs",
-            "mode": "api-only"
-        }
+logger.info(f"静态文件目录: {STATIC_DIR}")
+
+# 挂载静态资源
+app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
+
+# 根路径返回前端首页
+@app.get("/")
+async def serve_index():
+    return FileResponse(INDEX_HTML)
+
+# SPA 回退：非 API 路径返回前端首页
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+        return {"detail": "Not Found"}
+    static_file = os.path.join(STATIC_DIR, full_path)
+    if os.path.exists(static_file) and os.path.isfile(static_file):
+        return FileResponse(static_file)
+    return FileResponse(INDEX_HTML)
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "app.main:app",
-        host=settings.server.backend.host,
-        port=settings.server.backend.port,
+        host=settings.server.host,
+        port=settings.server.port,
         reload=settings.server.debug
     )
