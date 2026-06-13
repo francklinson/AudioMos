@@ -36,8 +36,7 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'app', 'algorithms'))
 sys.path.insert(0, os.path.join(project_root, 'app', 'core'))
 
-# 优先使用优化版,如果失败则回退到原版
-# 注意: 优化版模块已从 app/algorithms/tcf/tcf_calculator.py 迁移到 app/core/calculator/mos_calculator.py
+# 优先使用优化版,失败回退原版
 try:
     from calculator.mos_calculator import (
         compute_mos_scores_optimized,
@@ -46,26 +45,23 @@ try:
         parallel_compute
     )
     USE_OPTIMIZED = True
-    logger.info("✓ 使用优化版MOS计算模块 (from app.core.calculator)")
+    logger.info("✓ 使用优化版MOS计算模块")
 except ImportError as e:
-    logger.warning(f"优化版MOS模块加载失败,尝试旧路径: {e}")
-    try:
-        # 尝试旧路径（向后兼容）
-        from tcf.tcf_calculator import (
-            compute_mos_scores_optimized,
-            get_performance_report,
-            reset_performance_tracking,
-            parallel_compute
-        )
-        USE_OPTIMIZED = True
-        logger.info("✓ 使用优化版MOS计算模块 (from tcf - 已弃用)")
-    except ImportError as e2:
-        logger.warning(f"优化版MOS模块加载失败,使用原版: {e2}")
-        from mos_calculator import (
-            ToneColorFidelityScore, DNSMOScore, NisqaMosScore,
-            RefScore, WerScore, ScoreqScore, can_convert_to_float
-        )
-        USE_OPTIMIZED = False
+    logger.warning(f"优化版MOS模块加载失败,使用原版: {e}")
+    USE_OPTIMIZED = False
+
+# 原版类始终导入（runtime fallback 需要，路径已在文件顶部 setup）
+try:
+    from mos_calculator import (
+        ToneColorFidelityScore, DNSMOScore, NisqaMosScore,
+        RefScore, WerScore, ScoreqScore, can_convert_to_float
+    )
+except ImportError:
+    # 备用直接路径
+    from app.core.mos_calculator import (
+        ToneColorFidelityScore, DNSMOScore, NisqaMosScore,
+        RefScore, WerScore, ScoreqScore, can_convert_to_float
+    )
 
 try:
     from audio_cut import cut_all_audio_files_from_list
@@ -106,38 +102,21 @@ def init_models():
     logger.info("[模型初始化] 开始加载MOS评分模型...")
     logger.info("=" * 60)
 
+    # 优化版模型
+    optimized_ok = False
     if USE_OPTIMIZED:
-        logger.info("[模型初始化] 使用优化版MOS计算模块")
-        logger.info("[模型初始化] 正在初始化并行计算模型...")
+        logger.info("[模型初始化] 正在初始化优化版并行计算模型...")
         try:
             start_time = time.time()
             parallel_compute.init_models()
             elapsed = time.time() - start_time
             logger.info(f"✅ 优化版模型初始化完成 (耗时: {elapsed:.2f}s)")
+            optimized_ok = True
         except Exception as e:
             logger.error(f"❌ 优化版模型初始化失败: {e}")
-            import traceback
-            logger.error(f"错误详情: {traceback.format_exc()}")
 
-        # 初始化参考音频指纹数据库（用于内容匹配）
-        try:
-            logger.info("[模型初始化] 正在初始化参考音频指纹数据库...")
-            ref_dir = settings.paths.ref_dir
-            if os.path.exists(ref_dir):
-                import_start = time.time()
-                from reference_matcher import get_reference_matcher, rebuild_matcher_database
-                rebuild_matcher_database(ref_dir)
-                import_elapsed = time.time() - import_start
-                logger.info(f"✅ 参考音频指纹数据库初始化完成 (耗时: {import_elapsed:.2f}s)")
-            else:
-                logger.warning(f"⚠️ 参考音频目录不存在: {ref_dir}，跳过指纹数据库初始化")
-        except Exception as e:
-            logger.warning(f"⚠️ 参考音频指纹数据库初始化失败（非致命）: {e}")
-
-        logger.info("=" * 60)
-        return
-    
-    logger.info("[模型初始化] 使用标准版MOS计算模块")
+    # 原版模型始终加载（runtime fallback 需要）
+    logger.info("[模型初始化] 加载原版模型作为后备...")
     
     # 核心模型（必须）
     logger.info("[模型初始化] 加载核心模型...")
@@ -200,8 +179,23 @@ def init_models():
         logger.warning(f"  ⚠️ ScoreqScore 加载失败: {e} (Scoreq功能将不可用)")
     
     loaded_count = len(models)
+    logger.info(f"[模型初始化] 后备模型加载完成: {loaded_count} 个")
+
+    # 初始化参考音频指纹数据库
+    try:
+        ref_dir = settings.paths.ref_dir
+        if os.path.exists(ref_dir):
+            start = time.time()
+            from reference_matcher import get_reference_matcher, rebuild_matcher_database
+            rebuild_matcher_database(ref_dir)
+            logger.info(f"✅ 参考音频指纹数据库初始化完成 (耗时: {time.time() - start:.2f}s)")
+        else:
+            logger.warning(f"⚠️ 参考音频目录不存在: {ref_dir}")
+    except Exception as e:
+        logger.warning(f"⚠️ 参考音频指纹数据库初始化失败（非致命）: {e}")
+
     logger.info("=" * 60)
-    logger.info(f"[模型初始化] 完成! 成功加载 {loaded_count} 个模型")
+    logger.info(f"[模型初始化] 完成! 优化版={'✓' if optimized_ok else '✗'}, 后备模型={loaded_count}个")
     logger.info("=" * 60)
 
 

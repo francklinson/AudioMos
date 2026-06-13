@@ -664,7 +664,7 @@ def main(input_dir, ref_dir):
         # 加权 求最终分数
         tmp = np.mean([val_tmp[1] * 5, (1 / (1 + np.exp(-val_tmp[2]))) * 5, val_tmp[3],
                        val_tmp[4], val_tmp[5], val_tmp[7], (1 - val_tmp[8]) * 5, val_tmp[9] * 5,
-                       val_tmp[10], val_tmp[11], val_val_tmp[12], val_tmp[13], val_tmp[14], ])
+                       val_tmp[10], val_tmp[11], val_tmp[12], val_tmp[13], val_tmp[14], ])
         # val_tmp[15] * 5, ])
         final_scores.append(tmp)
     data.update({'final_scores': final_scores})

@@ -17,7 +17,7 @@ class TestTCFCalculator:
     def test_tcf_initialization(self):
         """测试TCF计算器初始化"""
         try:
-            from app.algorithms.tcf.tcf_calculator import OptimizedToneColorFidelityScore
+            from app.core.calculator.mos_calculator import OptimizedToneColorFidelityScore
             # 注意：实际测试需要模型文件
             # tcf = OptimizedToneColorFidelityScore()
             assert True
