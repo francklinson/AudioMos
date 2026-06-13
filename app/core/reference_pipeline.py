@@ -397,28 +397,46 @@ class ReferencePipeline:
                     )
                     lag = np.argmax(correlation) - (min_len - 1)
                     lag_seconds = lag / proc_sr
-                    logger.info(f"[匹配管道]   对齐 {match['ref_name']}: lag={lag} samples "
-                                 f"({lag_seconds:.3f}s)")
 
-                    # 应用对齐
-                    aligned = np.zeros_like(segment)
-                    if lag > 0:
-                        aligned[lag:] = segment[:-lag] if lag < len(segment) else segment
-                    elif lag < 0:
-                        aligned[:len(segment) + lag] = segment[-lag:]
+                    # 验证对齐质量：互相关峰值是否足够高
+                    # 用自相关峰值作为参考，互相关应达到其30%以上才算有效对齐
+                    auto_corr = scipy_signal.correlate(
+                        ref_audio[:min_len], ref_audio[:min_len], mode='same'
+                    )
+                    auto_peak = np.max(np.abs(auto_corr))
+                    cross_peak = np.max(np.abs(correlation))
+                    quality = cross_peak / auto_peak if auto_peak > 0 else 0
+
+                    # 限制 lag 在合理范围内（±1秒），防止随机匹配
+                    max_lag = int(1.0 * proc_sr)
+
+                    if quality >= 0.3 and abs(lag) <= max_lag:
+                        logger.info(f"[匹配管道]   对齐 {match['ref_name']}: "
+                                     f"lag={lag} samples ({lag_seconds:.3f}s), quality={quality:.3f}")
+                        # 应用对齐
+                        aligned = np.zeros_like(segment)
+                        if lag > 0:
+                            aligned[lag:] = segment[:-lag] if lag < len(segment) else segment
+                        elif lag < 0:
+                            aligned[:len(segment) + lag] = segment[-lag:]
+                        else:
+                            aligned = segment
                     else:
+                        logger.warning(f"[匹配管道]   对齐质量不足 {match['ref_name']}: "
+                                       f"lag={lag}, quality={quality:.3f}, "
+                                       f"跳过精细对齐，使用DTW切分结果")
                         aligned = segment
-
-                    # 去掉前置冗余
-                    if len(aligned) > redundancy_samples:
-                        aligned = aligned[redundancy_samples:]
-                    # 裁剪/填充到参考长度
-                    if len(aligned) > len(ref_audio):
-                        aligned = aligned[:len(ref_audio)]
-                    elif len(aligned) < len(ref_audio):
-                        aligned = np.pad(aligned, (0, len(ref_audio) - len(aligned)))
                 else:
                     aligned = segment
+
+                # 去掉前置冗余
+                if len(aligned) > redundancy_samples:
+                    aligned = aligned[redundancy_samples:]
+                # 裁剪/填充到参考长度
+                if len(aligned) > len(ref_audio):
+                    aligned = aligned[:len(ref_audio)]
+                elif len(aligned) < len(ref_audio):
+                    aligned = np.pad(aligned, (0, len(ref_audio) - len(aligned)))
 
                 # 保存对齐后的音频
                 ref_name = os.path.splitext(match["ref_name"])[0]

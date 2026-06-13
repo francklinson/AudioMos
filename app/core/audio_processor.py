@@ -77,29 +77,32 @@ def align_audio(test_audio_path, reference_audio_path, output_file_path, split_r
         print(f"【对齐算法】音频长度不足，保留前置冗余进行对齐")
 
     # 计算互相关
-    # 使用 signal.correlate(reference_audio, test_audio_for_align) 计算参考音频与测试音频的互相关
-    # 这样计算出的 lag 表示：测试音频需要移动多少才能与参考音频对齐
-    # lag > 0: 测试音频需要向前移动（内容提前）
-    # lag < 0: 测试音频需要向后移动（内容延后）
     correlation = signal.correlate(reference_audio, test_audio_for_align, mode='full')
-    # 找到互相关结果中的最大值的索引
     lag = np.argmax(correlation) - (len(reference_audio) - 1)
     lag_seconds = lag / test_sr
 
-    print(f"【对齐算法】互相关计算: 延迟 = {lag} 采样点 = {lag_seconds:.3f}s")
+    # 验证对齐质量：互相关峰值是否足够高
+    # 参考自相关峰值，互相关应达到其30%以上才算有效对齐
+    auto_corr = signal.correlate(reference_audio, reference_audio, mode='same')
+    auto_peak = np.max(np.abs(auto_corr))
+    cross_peak = np.max(np.abs(correlation))
+    quality = cross_peak / auto_peak if auto_peak > 0 else 0
+    max_lag_samples = int(1.0 * test_sr)  # 限制±1秒
 
-    # 根据对齐结果调整原始测试音频
-    # 注意：lag 是基于去掉冗余后的音频计算的
-    # 如果 lag > 0，表示测试音频内容比参考音频晚，需要向后移动（补零）
-    # 如果 lag < 0，表示测试音频内容比参考音频早，需要向前移动（删除）
-    if lag > 0:
-        print(f"【对齐算法】测试音频内容比参考音频晚 {lag_seconds:.3f}s，向后移动")
-    elif lag < 0:
-        print(f"【对齐算法】测试音频内容比参考音频早 {-lag_seconds:.3f}s，向前移动")
+    print(f"【对齐算法】互相关: lag={lag} samples ({lag_seconds:.3f}s), "
+          f"quality={quality:.3f}, |lag|<=1s={abs(lag) <= max_lag_samples}")
+
+    if quality >= 0.3 and abs(lag) <= max_lag_samples:
+        if lag > 0:
+            print(f"【对齐算法】测试音频内容比参考音频晚 {lag_seconds:.3f}s，向后移动")
+        elif lag < 0:
+            print(f"【对齐算法】测试音频内容比参考音频早 {-lag_seconds:.3f}s，向前移动")
+        else:
+            print(f"【对齐算法】测试音频与参考音频已对齐，无需移动")
+        aligned_test_audio = shift_audio(test_audio, lag)
     else:
-        print(f"【对齐算法】测试音频与参考音频已对齐，无需移动")
-
-    aligned_test_audio = shift_audio(test_audio, lag)
+        print(f"【对齐算法】⚠️ 对齐质量不足 (quality={quality:.3f})，跳过互相关对齐")
+        aligned_test_audio = test_audio
 
     # 对齐后去掉前置冗余，使输出音频与参考音频长度和结构一致
     # 参考音频本身可能有前置静音，对齐后的音频应该与之匹配
