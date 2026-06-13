@@ -33,38 +33,44 @@ class _SSLEncoder(nn.Module):
         
         load_start = time.time()
         
-        # 如果本地模型存在，使用本地模型
+        # 离线优先: 本地项目路径 > HF缓存路径 > 报错
+        loaded = False
+
+        # 路径1: 项目本地模型
         if "facebook/wav2vec2-base" in model_name and local_model_path.exists():
             print(f"\n[UTMOS._SSLEncoder] 使用本地wav2vec2模型")
             print(f"  路径: {local_model_path}")
-            
-            print(f"  加载FeatureExtractor...")
-            fe_start = time.time()
-            self.processor = AutoFeatureExtractor.from_pretrained(str(local_model_path), local_files_only=True)
-            fe_time = time.time() - fe_start
-            print(f"  ✓ FeatureExtractor加载完成 (耗时: {fe_time:.2f}s)")
-            
-            print(f"  加载Model...")
-            model_start = time.time()
-            self.model = AutoModel.from_pretrained(str(local_model_path), local_files_only=True)
-            model_time = time.time() - model_start
-            print(f"  ✓ Model加载完成 (耗时: {model_time:.2f}s)")
-        else:
-            # 否则从HuggingFace下载
-            print(f"\n[UTMOS._SSLEncoder] 从HuggingFace下载模型")
-            print(f"  模型: {model_name}")
-            
-            print(f"  下载FeatureExtractor...")
-            fe_start = time.time()
-            self.processor = AutoFeatureExtractor.from_pretrained(model_name)
-            fe_time = time.time() - fe_start
-            print(f"  ✓ FeatureExtractor下载完成 (耗时: {fe_time:.2f}s)")
-            
-            print(f"  下载Model...")
-            model_start = time.time()
-            self.model = AutoModel.from_pretrained(model_name)
-            model_time = time.time() - model_start
-            print(f"  ✓ Model下载完成 (耗时: {model_time:.2f}s)")
+            try:
+                self.processor = AutoFeatureExtractor.from_pretrained(str(local_model_path), local_files_only=True)
+                self.model = AutoModel.from_pretrained(str(local_model_path), local_files_only=True)
+                loaded = True
+                print(f"  ✓ 本地模型加载完成")
+            except Exception as e:
+                print(f"  ⚠️ 本地模型加载失败: {e}")
+
+        # 路径2: HuggingFace缓存 (离线可用)
+        if not loaded:
+            hf_cache = os.path.expanduser(f"~/.cache/huggingface/hub/models--{model_name.replace('/', '--')}")
+            if os.path.exists(hf_cache):
+                print(f"\n[UTMOS._SSLEncoder] 使用HuggingFace缓存模型")
+                print(f"  路径: {hf_cache}")
+                try:
+                    self.processor = AutoFeatureExtractor.from_pretrained(model_name, local_files_only=True)
+                    self.model = AutoModel.from_pretrained(model_name, local_files_only=True)
+                    loaded = True
+                    print(f"  ✓ HF缓存模型加载完成")
+                except Exception as e:
+                    print(f"  ⚠️ HF缓存加载失败: {e}")
+
+        # 路径3: 报错（不再尝试网络下载）
+        if not loaded:
+            raise RuntimeError(
+                f"无法离线加载 wav2vec2 模型 '{model_name}'。\n"
+                f"  请确保以下路径之一存在:\n"
+                f"  - 项目路径: {local_model_path}\n"
+                f"  - HF缓存:   {os.path.expanduser('~/.cache/huggingface/hub/')}\n"
+                f"  离线部署前请预先下载模型文件。"
+            )
         
         total_time = time.time() - load_start
         print(f"\n[UTMOS._SSLEncoder] SSL编码器初始化完成 (总耗时: {total_time:.2f}s)")

@@ -953,17 +953,12 @@ class OptimizedToneColorFidelityScore:
                         device='cuda' if cuda.is_available() else 'cpu'
                     )
                 else:
-                    logger.info(f"[TCF] 下载模型 [{alg}]: {model_config['model_id']}")
-                    import urllib3
-                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    os.environ['CURL_CA_BUNDLE'] = ''
-                    os.environ['PYTHONWARNINGS'] = 'ignore:Unverified HTTPS request'
-
-                    self._pipeline_cache[alg] = pipeline(
-                        task='speaker-verification',
-                        model=model_config["model_id"],
-                        model_revision=model_config["revision"],
-                        device='cuda' if cuda.is_available() else 'cpu'
+                    raise FileNotFoundError(
+                        f"TCF模型 [{alg}] 不存在。\n"
+                        f"  项目路径: {model_config['project_path']}\n"
+                        f"  缓存路径: {model_config['cache_path']}\n"
+                        f"  离线部署前请将模型放入以上任一目录。\n"
+                        f"  下载方式: python download_tcf_models.py"
                     )
             except Exception as e:
                 logger.error(f"[TCF] 模型 [{alg}] 初始化失败: {e}")

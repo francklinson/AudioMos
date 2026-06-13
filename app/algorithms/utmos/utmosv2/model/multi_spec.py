@@ -73,13 +73,11 @@ def load_model_from_local(cfg: Config, device: torch.device = torch.device("cpu"
         
         print(f"[load_model_from_local] 本地权重加载完成")
     else:
-        print(f"[load_model_from_local] ⚠ 本地模型不存在: {local_model_path}")
-        print(f"[load_model_from_local] 尝试从 Hugging Face 下载...")
-        # 如果本地不存在，尝试从 HF 加载 (会卡住如果无网络)
-        model = timm.create_model(
-            backbone_name,
-            pretrained=True,
-            num_classes=0,
+        # 离线部署：不尝试网络下载，直接报错
+        raise RuntimeError(
+            f"本地 timm 模型不存在: {local_model_path}\n"
+            f"  离线部署前请将 {backbone_name}.safetensors 放入 models/timm/ 目录。\n"
+            f"  下载方式: python -c \"import timm; timm.create_model('{backbone_name}', pretrained=True)\""
         )
     
     return model

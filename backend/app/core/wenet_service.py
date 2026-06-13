@@ -31,21 +31,22 @@ class WeNetService:
             device = "cuda" if torch.cuda.is_available() else "cpu"
             logger.info(f"使用设备: {device}")
 
-            # 检查模型是否已下载
-            if not self._check_model_exists():
-                logger.info("模型未找到，正在下载 WeNet 中文模型...")
-                self._download_model()
-
-            # 初始化 WeNet 模型
-            # 优先级: 项目模型目录 > 本地缓存 > 自动下载
+            # 初始化 WeNet 模型 — 仅使用本地路径，禁止网络下载
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
             project_model = os.path.join(project_root, "models", "wenet")
             if os.path.exists(project_model) and os.path.exists(os.path.join(project_model, "final.pt")):
                 self.model = wenet.load_model(project_model)
-            elif os.path.exists(self.model_dir):
+                logger.info(f"WeNet 使用项目模型: {project_model}")
+            elif os.path.exists(self.model_dir) and os.path.exists(os.path.join(self.model_dir, "train.yaml")):
                 self.model = wenet.load_model(self.model_dir)
+                logger.info(f"WeNet 使用缓存模型: {self.model_dir}")
             else:
-                self.model = wenet.load_model(self.language)
+                raise FileNotFoundError(
+                    f"WeNet 模型不存在。\n"
+                    f"  项目路径: {project_model}\n"
+                    f"  缓存路径: {self.model_dir}\n"
+                    f"  离线部署前请将 WeNet 模型放入以上任一目录。"
+                )
 
             self._initialized = True
             logger.info("WeNet 语音识别服务初始化成功")
@@ -54,64 +55,6 @@ class WeNetService:
         except Exception as e:
             logger.error(f"WeNet 初始化失败: {e}")
             self._initialized = False
-            return False
-
-    def _check_model_exists(self) -> bool:
-        """检查模型文件是否存在"""
-        train_yaml = os.path.join(self.model_dir, "train.yaml")
-        return os.path.exists(train_yaml)
-
-    def _download_model(self) -> bool:
-        """下载 WeNet 中文模型"""
-        try:
-            import urllib.request
-            import tarfile
-            import tempfile
-            import shutil
-
-            # WeNet 中文模型下载地址
-            model_url = "https://wenet-1256283475.cos.ap-shanghai.myqcloud.com/models/aishell2/20210618_unified_conformer_libtorch.tar.gz"
-
-            logger.info(f"正在从 {model_url} 下载模型...")
-
-            # 创建模型目录
-            os.makedirs(self.model_dir, exist_ok=True)
-
-            # 下载模型
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp_file:
-                urllib.request.urlretrieve(model_url, tmp_file.name)
-                tmp_path = tmp_file.name
-
-            logger.info("模型下载完成，正在解压...")
-
-            # 解压模型
-            with tarfile.open(tmp_path, "r:gz") as tar:
-                # 解压到临时目录
-                temp_extract_dir = tempfile.mkdtemp()
-                tar.extractall(temp_extract_dir)
-
-                # 查找解压后的目录
-                extracted_dirs = [d for d in os.listdir(temp_extract_dir) if os.path.isdir(os.path.join(temp_extract_dir, d))]
-
-                if extracted_dirs:
-                    source_dir = os.path.join(temp_extract_dir, extracted_dirs[0])
-                    # 移动文件到模型目录
-                    for item in os.listdir(source_dir):
-                        source = os.path.join(source_dir, item)
-                        dest = os.path.join(self.model_dir, item)
-                        if os.path.exists(dest):
-                            shutil.rmtree(dest) if os.path.isdir(dest) else os.remove(dest)
-                        shutil.move(source, dest)
-
-                # 清理临时文件
-                shutil.rmtree(temp_extract_dir)
-                os.remove(tmp_path)
-
-            logger.info(f"模型已安装到: {self.model_dir}")
-            return True
-
-        except Exception as e:
-            logger.error(f"模型下载失败: {e}")
             return False
 
     def recognize(self, audio_file: str) -> Optional[str]:

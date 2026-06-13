@@ -116,9 +116,13 @@ def create_model(
                 checkpoint_path = cache_checkpoint_path
                 print(f"  ✓ 找到缓存路径检查点")
             else:
-                print(f"  ⚠ 本地检查点不存在，尝试下载...")
-                download_pretrained_weights_from_hf(config, fold)
-                checkpoint_path = cache_checkpoint_path
+                raise FileNotFoundError(
+                    f"UTMOS 模型权重文件不存在。\n"
+                    f"  项目路径: {project_checkpoint_path}\n"
+                    f"  缓存路径: {cache_checkpoint_path}\n"
+                    f"  离线部署前请将预训练权重放入以上任一目录。\n"
+                    f"  下载方式: python download_utmos_models.py"
+                )
                 
         if isinstance(checkpoint_path, str):
             checkpoint_path = Path(checkpoint_path)
