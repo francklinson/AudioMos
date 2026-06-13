@@ -1,6 +1,6 @@
 # AudioMOS 项目依赖
-# 使用CUDA加速的深度学习库
 # 安装命令: pip install -r requirements.txt
+# 离线部署: pip install -r requirements.txt --no-index --find-links ./offline_packages/
 
 # ===== Web框架 =====
 fastapi==0.104.1
@@ -8,171 +8,64 @@ uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 pydantic==2.5.0
 pydantic-settings==2.1.0
-websockets==12.0
 
 # ===== 认证与安全 =====
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-python-jwt==4.1.0
 PyJWT==2.8.0
 
 # ===== 数据处理 =====
-numpy==1.26.3
-pandas==2.3.0
-scipy==1.13.1
-openpyxl==3.1.5
-PyYAML==6.0.2
+numpy
+pandas
+scipy
+openpyxl
+PyYAML
 
 # ===== 音频处理 =====
-librosa==0.11.0
-soundfile==0.13.1
-PySoundFile==0.9.0.post1
-audioread==3.0.1
-pesq==0.0.1
-pystoi==0.4.1
+librosa
+soundfile
+pesq
+pystoi
 
-# ===== 深度学习和AI =====
-# CUDA 12.8 版本 (根据实际CUDA版本调整)
+# ===== 深度学习 =====
 torch==2.8.0+cu128
 torchaudio==2.8.0+cu128
+onnxruntime-gpu
+timm
 
-onnxruntime==1.19.2
-onnxruntime-gpu==1.19.2
-tensorboard==2.19.0
-tensorboardX==2.6.4
-protobuf==6.31.1
+# ===== 语音识别 (WeNet) =====
+# WeNet 需从本地安装: pip install -e app/algorithms/wenet
+jieba
 
-# ===== 语音识别 =====
-openai-whisper==20250625
-sentencepiece==0.2.0
-tiktoken==0.9.0
-jieba==0.42.1
+# ===== 模型框架 =====
+modelscope
+speechbrain
+transformers
+huggingface-hub
 
-# ===== WeNet 语音识别 =====
-wenetruntime==1.14.0
+# ===== MOS评分 =====
+scoreq
+nisqa
 
-# ===== ModelScope (用于音色还原度评估和ClearerVoice) =====
-modelscope==1.15.0
-
-# ===== SpeechBrain (用于语音增强) =====
-speechbrain==1.0.2
-huggingface-hub==0.23.4
-transformers==4.42.4
-
-# ===== ClearerVoice-Studio (阿里语音处理) =====
-# 通过ModelScope使用，无需单独安装
-
-# ===== Scoreq =====
-scoreq==0.0.3
-
-# ===== NISQA =====
-tqdm==4.67.1
-
-# ===== 其他工具 =====
-ffmpeg-python==0.2.0
-future==1.0.0
-requests==2.32.4
-urllib3==2.5.0
-certifi==2025.6.15
-idna==3.10
-charset-normalizer==3.4.2
-
-# ===== 日志和监控 =====
-colorama==0.4.6
-coloredlogs==15.0.1
-humanfriendly==10.0
-
-# ===== 测试工具 =====
-pytest==8.4.1
-iniconfig==2.1.0
-pluggy==1.6.0
-
-# ===== 代码质量 =====
-flake8==3.8.2
-flake8-bugbear==23.3.12
-flake8-comprehensions==3.16.0
-flake8-executable==2.1.3
-flake8-pyi==20.5.0
-mccabe==0.6.1
-pycodestyle==2.6.0
-pyflakes==2.2.0
-
-# ===== 科学计算依赖 =====
-numba==0.60.0
-llvmlite==0.43.0
-scikit-learn==1.6.1
-threadpoolctl==3.6.0
-joblib==1.5.1
+# ===== 音频对齐 =====
+dtw-python
 
 # ===== 可视化 =====
-matplotlib==3.9.4
-contourpy==1.3.0
-cycler==0.12.1
-fonttools==4.58.4
-kiwisolver==1.4.7
-pillow==11.2.1
-pyparsing==3.2.3
+matplotlib
 
-# ===== 时间处理 =====
-python-dateutil==2.9.0.post0
-pytz==2025.2
-tzdata==2025.2
+# ===== 系统监控 =====
+psutil
+pynvml
 
-# ===== 其他依赖 =====
-absl-py==2.3.0
-attrs==25.3.0
-cffi==1.17.1
-flatbuffers==25.2.10
-grpcio==1.73.1
-h11==0.14.0
-markdown==3.8.2
-MarkupSafe==3.0.2
-mpmath==1.3.0
-msgpack==1.1.1
-packaging==25.0
-platformdirs==4.3.8
-pooch==1.8.2
-soxr==0.5.0.post1
-sympy==1.14.0
-six==1.17.0
-typing_extensions==4.14.0
-Werkzeug==3.1.3
-zipp==3.23.0
+# ===== 日志 =====
+coloredlogs
 
-# ===== 可选: 音乐分离评估 =====
-musdb==0.4.3
-museval==0.4.1
-stempeg==0.2.4
+# ===== 测试 =====
+pytest
 
-# ===== JSON处理 =====
-jsonschema==4.24.0
-jsonschema-specifications==2025.4.1
-referencing==0.36.2
-rpds-py==0.25.1
-pyaml==25.5.0
-
-# ===== 更多工具 =====
-exceptiongroup==1.3.0
-et_xmlfile==2.0.0
-importlib_metadata==8.7.0
-importlib_resources==6.5.2
-lazy_loader==0.4
-more-itertools==10.7.0
-pyreadline3==3.5.4
-regex==2024.11.6
-simplejson==3.20.1
-tomli==2.2.1
-
-# ===== 音频标注 =====
-TextGrid==1.6.1
-dtw-python==1.5.1
-
-# ===== 音频修复 (2026-06-06新增) =====
-# SpeechBrain - 用于去混响和超分辨率
-# modelscope - 用于DCCRN和FullSubNet算法加载
-# 注: nisqa安装可能需要额外步骤，通过 pip install nisqa 安装
-# 注: clearervoice需从GitHub安装: pip install git+https://github.com/alibaba-damo-academy/ClearerVoice-Studio.git
-
-# ===== DNS Challenge数据集 (2026-06-06新增) =====
-# 标准降噪评测基准数据集，需从官方渠道下载:
-# https://github.com/microsoft/DNS-Challenge
+# ===== 其他工具 =====
+tqdm
+numba
+scikit-learn
+requests
+certifi
