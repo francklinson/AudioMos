@@ -367,6 +367,12 @@ async def process_audio_task(queue_task):
     task_id = queue_task.task_id
     
     try:
+        # 标记为处理中
+        tasks[task_id]["status"] = "processing"
+        tasks[task_id]["progress"] = 5
+        tasks[task_id]["message"] = "正在初始化..."
+        tasks[task_id]["updated_at"] = datetime.now().isoformat()
+
         # 从队列任务数据中获取任务信息
         task_data = queue_task.data
         task_upload_dir = Path(settings.paths.upload_dir) / task_id
