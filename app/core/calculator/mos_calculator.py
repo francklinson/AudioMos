@@ -44,8 +44,28 @@ logger = logging.getLogger('audiomos')
 
 warnings.filterwarnings("ignore")
 
-# 设置CUDA环境变量
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+# CUDA设备配置 — 从config.yaml读取，不硬编码
+# 优先级: 环境变量 CUDA_VISIBLE_DEVICES > config.yaml cuda.device_id > 默认不设置
+_cuda_device_id = None
+_config_paths = [
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "config", "config.yaml"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "config.yaml"),
+]
+for _cfg_path in _config_paths:
+    if os.path.exists(_cfg_path):
+        try:
+            import yaml
+            with open(_cfg_path, 'r') as _f:
+                _config = yaml.safe_load(_f)
+            _cuda_cfg = _config.get('cuda', {})
+            if _cuda_cfg.get('enabled', True):
+                _cuda_device_id = _cuda_cfg.get('device_id', None)
+            break
+        except Exception:
+            pass
+
+if _cuda_device_id is not None and 'CUDA_VISIBLE_DEVICES' not in os.environ:
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(_cuda_device_id)
 
 # 启用cuDNN - 已安装cuDNN 9.8.0，与PyTorch 2.8.0+cu128兼容
 torch.backends.cudnn.enabled = True
@@ -53,12 +73,13 @@ torch.backends.cudnn.enabled = True
 # 初始化CUDA上下文
 try:
     if torch.cuda.is_available():
-        # 不手动调用torch.cuda.init()，让PyTorch自动初始化
         # 简单预热
         _ = torch.zeros(1).cuda()
-        cudnn_version = torch.backends.cudnn.version()
-        cudnn_status = "启用" if torch.backends.cudnn.enabled else "禁用"
-        print(f"✓ CUDA初始化完成: {torch.cuda.get_device_name(0)} (cuDNN{cudnn_status}, 版本{cudnn_version})")
+        _device_count = torch.cuda.device_count()
+        _device_name = torch.cuda.get_device_name(0)
+        _cudnn_version = torch.backends.cudnn.version()
+        _cudnn_status = "启用" if torch.backends.cudnn.enabled else "禁用"
+        print(f"✓ CUDA初始化完成: {_device_name} (共{_device_count}个GPU, cuDNN{_cudnn_status}, 版本{_cudnn_version})")
 except Exception as e:
     print(f"⚠️ CUDA初始化警告: {e}")
 

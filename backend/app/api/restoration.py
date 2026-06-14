@@ -25,6 +25,7 @@ executor = ThreadPoolExecutor(max_workers=2)
 
 # 导入修复模块
 import sys
+import torch
 
 project_root = str(Path(__file__).parent.parent.parent.parent)
 sys.path.insert(0, project_root)
@@ -289,7 +290,7 @@ async def process_restoration(
             restorer_cls = restorers[algorithm]["class"]
             logger.info(f"[音频修复] 使用算法类: {restorer_cls.__name__}")
 
-            device = "cuda" if settings.cuda.enabled else "cpu"
+            device = "cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
             logger.info(f"[音频修复] 使用设备: {device}")
 
             restorer = restorer_cls(device=device)

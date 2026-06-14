@@ -7,6 +7,7 @@ import os
 import shutil
 import uuid
 import time
+import torch
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Annotated
@@ -92,7 +93,7 @@ def init_denoisers():
             if name not in _denoisers:
                 logger.info(f"  初始化 {name}...")
                 denoiser = DenoiserRegistry.get(
-                    name, device="cuda" if settings.cuda.enabled else "cpu"
+                    name, device="cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
                 )
                 if denoiser:
                     denoiser.initialize()
@@ -792,7 +793,7 @@ async def denoise_single_file(
     if denoiser is None:
         # 延迟加载：首次使用时才创建和初始化
         denoiser = DenoiserRegistry.get(
-            algorithm, device="cuda" if settings.cuda.enabled else "cpu"
+            algorithm, device="cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
         )
         if denoiser is None:
             raise HTTPException(
