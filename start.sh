@@ -989,12 +989,73 @@ start_unified() {
         pip install -r requirements.txt
     fi
     
-    # 检查前端是否已构建
+    # 检查并自动构建前端
+    local needs_build=false
     if [ ! -f "$SCRIPT_DIR/backend/static/index.html" ]; then
         echo ""
-        echo "⚠️  未检测到前端构建文件，请先构建: cd frontend && npm install && npx vite build && cp -r dist/* ../backend/static/"
+        echo "📦 未检测到前端构建文件，需要自动构建..."
+        needs_build=true
+    elif [ "$AUDIOMOS_REBUILD_FRONTEND" = "1" ] || [ "$AUDIOMOS_REBUILD_FRONTEND" = "true" ]; then
         echo ""
-        return 1
+        echo "📦 已设置 AUDIOMOS_REBUILD_FRONTEND，强制重新构建前端..."
+        needs_build=true
+    elif [ "$SCRIPT_DIR/frontend/src" -nt "$SCRIPT_DIR/backend/static/index.html" ]; then
+        echo ""
+        echo "📦 检测到前端源码有更新，自动重新构建..."
+        needs_build=true
+    fi
+
+    if [ "$needs_build" = true ]; then
+        # 检查 Node.js 和 npm
+        if ! command -v node &> /dev/null; then
+            echo "❌ 未检测到 Node.js，无法构建前端"
+            echo "   请安装 Node.js (>=18): https://nodejs.org/"
+            echo "   或手动构建后复制到 backend/static/"
+            return 1
+        fi
+        if ! command -v npm &> /dev/null; then
+            echo "❌ 未检测到 npm，无法构建前端"
+            return 1
+        fi
+
+        echo "   Node.js: $(node --version)"
+        echo "   npm:     $(npm --version)"
+
+        cd "$SCRIPT_DIR/frontend"
+
+        # 安装依赖
+        if [ ! -d "node_modules" ] || [ "$AUDIOMOS_REBUILD_FRONTEND" = "1" ] || [ "$AUDIOMOS_REBUILD_FRONTEND" = "true" ]; then
+            echo "   📥 安装前端依赖..."
+            npm install --legacy-peer-deps || {
+                echo "❌ npm install 失败"
+                cd "$SCRIPT_DIR"
+                return 1
+            }
+        else
+            echo "   ✅ node_modules 已存在，跳过 npm install (设置 AUDIOMOS_REBUILD_FRONTEND=1 可强制重装)"
+        fi
+
+        # 构建
+        echo "   🔨 构建前端..."
+        npx vite build || {
+            echo "❌ 前端构建失败"
+            cd "$SCRIPT_DIR"
+            return 1
+        }
+
+        # 复制到后端静态目录
+        echo "   📋 复制构建产物到 backend/static/..."
+        mkdir -p "$SCRIPT_DIR/backend/static"
+        cp -r dist/* "$SCRIPT_DIR/backend/static/" || {
+            echo "❌ 复制构建产物失败"
+            cd "$SCRIPT_DIR"
+            return 1
+        }
+
+        cd "$SCRIPT_DIR"
+        echo "   ✅ 前端构建完成"
+    else
+        echo "   ✅ 前端已就绪 (设置 AUDIOMOS_REBUILD_FRONTEND=1 可强制重建)"
     fi
     
     # 检查模型文件
