@@ -1094,12 +1094,12 @@ from app.core.logging_config import logger
 logger.info('=' * 60)
 logger.info('AudioMOS 前后端一体模式启动')
 logger.info('=' * 60)
-logger.info('监听地址: ' + '"$unified_host"' + ':' + str('"$unified_port"'))
+logger.info('监听地址: ' + '$unified_host' + ':' + str($unified_port))
 
 uvicorn.run(
     'app.main:app',
-    host='"$unified_host"',
-    port="$unified_port",
+    host='$unified_host',
+    port=$unified_port,
     reload=False,
     access_log=True
 )
