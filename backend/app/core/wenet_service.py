@@ -3,12 +3,16 @@ WeNet 语音识别服务
 用于计算 WER (Word Error Rate) 词错误率
 """
 import os
+import sys
 import logging
 from typing import Optional, Dict, Any
 import torch
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# 项目根目录（从当前文件向上4层：core → app → backend → 项目根）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 class WeNetService:
@@ -109,8 +113,7 @@ class WeNetService:
         """
         try:
             # 导入项目中的 WER 计算模块
-            import sys
-            sys.path.insert(0, '/home/zhouchenghao/PycharmProjects/AudioMos')
+            sys.path.insert(0, _PROJECT_ROOT)
             from wenet.wer import wer
 
             # 分词
