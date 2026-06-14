@@ -942,26 +942,62 @@ class OptimizedToneColorFidelityScore:
             model_config = self.sv_model_dict[alg]
             exists, model_path, is_project = self._check_model_exists(model_config)
 
+            if not exists:
+                raise FileNotFoundError(
+                    f"TCF模型 [{alg}] 不存在。\n"
+                    f"  项目路径: {model_config['project_path']}\n"
+                    f"  缓存路径: {model_config['cache_path']}\n"
+                    f"  离线部署前请将模型放入以上任一目录。\n"
+                    f"  下载方式: python download_tcf_models.py"
+                )
+
+            location = "项目路径" if is_project else "本地缓存"
+            logger.info(f"[TCF] 使用{location}模型 [{alg}]: {model_path}")
+
+            # 加载前清理CUDA缓存，释放之前模型占用的显存
+            device = 'cuda' if cuda.is_available() else 'cpu'
+            if cuda.is_available():
+                cuda.empty_cache()
+                try:
+                    mem_free, mem_total = cuda.mem_get_info()
+                    mem_free_gb = mem_free / (1024 ** 3)
+                    mem_total_gb = mem_total / (1024 ** 3)
+                    logger.info(f"[TCF] GPU显存: {mem_free_gb:.1f}GB 可用 / {mem_total_gb:.1f}GB 总量")
+                except Exception:
+                    mem_free_gb = mem_total_gb = None
+
             try:
-                if exists:
-                    location = "项目路径" if is_project else "本地缓存"
-                    logger.info(f"[TCF] 使用{location}模型 [{alg}]: {model_path}")
-                    # 使用CUDA
+                # 使用catch_warnings抑制废弃API警告（防止 pynvml 等 FutureWarning 在
+                # PYTHONWARNINGS=error 环境下变成致命异常，导致 pipeline 创建失败）
+                import warnings as _warnings
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore")
                     self._pipeline_cache[alg] = pipeline(
                         task='speaker-verification',
                         model=model_path,
-                        device='cuda' if cuda.is_available() else 'cpu'
+                        device=device
+                    )
+                logger.info(f"[TCF] ✓ [{alg}] pipeline 创建成功 (device={device})")
+            except Exception as e:
+                import traceback
+                err_detail = traceback.format_exc()
+                if cuda.is_available() and mem_free_gb is not None:
+                    logger.error(
+                        f"[TCF] ✗ 模型 [{alg}] 初始化失败\n"
+                        f"  设备: {device}\n"
+                        f"  GPU显存: {mem_free_gb:.1f}GB 可用 / {mem_total_gb:.1f}GB 总量\n"
+                        f"  错误类型: {type(e).__name__}\n"
+                        f"  错误信息: {e}\n"
+                        f"  详细堆栈:\n{err_detail}"
                     )
                 else:
-                    raise FileNotFoundError(
-                        f"TCF模型 [{alg}] 不存在。\n"
-                        f"  项目路径: {model_config['project_path']}\n"
-                        f"  缓存路径: {model_config['cache_path']}\n"
-                        f"  离线部署前请将模型放入以上任一目录。\n"
-                        f"  下载方式: python download_tcf_models.py"
+                    logger.error(
+                        f"[TCF] ✗ 模型 [{alg}] 初始化失败\n"
+                        f"  设备: {device}\n"
+                        f"  错误类型: {type(e).__name__}\n"
+                        f"  错误信息: {e}\n"
+                        f"  详细堆栈:\n{err_detail}"
                     )
-            except Exception as e:
-                logger.error(f"[TCF] 模型 [{alg}] 初始化失败: {e}")
                 raise
 
         return self._pipeline_cache[alg]
@@ -1181,8 +1217,12 @@ class ParallelMOSCompute:
             if UTMOS_AVAILABLE:
                 self.models['utmos'] = UTMOSCore()
                 logger.info("✓ UTMOS模型初始化成功")
+            else:
+                logger.warning("UTMOS模块未安装(utmosv2导入失败)，UTMOS评分将不可用")
         except Exception as e:
-            logger.warning(f"UTMOS初始化失败: {e}")
+            logger.error(f"UTMOS初始化失败: {e}")
+            import traceback
+            logger.error(f"UTMOS初始化错误详情: {traceback.format_exc()}")
     
     def compute_all_no_ref(self, audio_files: List[str], selected_metrics: Optional[List[str]] = None) -> Dict:
         """

@@ -4,7 +4,8 @@ from pathlib import Path
 # 优先使用项目目录下的模型
 # 路径: utmos/utmosv2/utils/_constants.py -> 项目根目录
 # 计算项目根目录: app/algorithms/utmos/utmosv2/utils/ -> 项目根目录
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent.parent.parent  # AudioMos目录
+# 路径层级: utils -> utmosv2 -> utmos -> algorithms -> app -> AudioMos (6层)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent.parent  # AudioMos目录
 PROJECT_MODEL_PATH = PROJECT_ROOT / "models" / "utmos"
 
 # UTMOS期望的路径结构是 utmosv2/models/fusion_stage3/

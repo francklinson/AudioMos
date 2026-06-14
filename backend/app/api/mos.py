@@ -34,9 +34,11 @@ import sys
 project_root = str(Path(__file__).parent.parent.parent.parent)
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'app', 'algorithms'))
+sys.path.insert(0, os.path.join(project_root, 'app', 'algorithms', 'speechmetrics'))
 sys.path.insert(0, os.path.join(project_root, 'app', 'core'))
 
-# 优先使用优化版,失败回退原版
+# 优先使用优化版,如果失败则回退到原版
+# 注意: 优化版模块已从 app/algorithms/tcf/tcf_calculator.py 迁移到 app/core/calculator/mos_calculator.py
 try:
     from calculator.mos_calculator import (
         compute_mos_scores_optimized,
@@ -45,23 +47,26 @@ try:
         parallel_compute
     )
     USE_OPTIMIZED = True
-    logger.info("✓ 使用优化版MOS计算模块")
+    logger.info("✓ 使用优化版MOS计算模块 (from app.core.calculator)")
 except ImportError as e:
-    logger.warning(f"优化版MOS模块加载失败,使用原版: {e}")
-    USE_OPTIMIZED = False
-
-# 原版类始终导入（runtime fallback 需要，路径已在文件顶部 setup）
-try:
-    from mos_calculator import (
-        ToneColorFidelityScore, DNSMOScore, NisqaMosScore,
-        RefScore, WerScore, ScoreqScore, can_convert_to_float
-    )
-except ImportError:
-    # 备用直接路径
-    from app.core.mos_calculator import (
-        ToneColorFidelityScore, DNSMOScore, NisqaMosScore,
-        RefScore, WerScore, ScoreqScore, can_convert_to_float
-    )
+    logger.warning(f"优化版MOS模块加载失败,尝试旧路径: {e}")
+    try:
+        # 尝试旧路径（向后兼容）
+        from tcf.tcf_calculator import (
+            compute_mos_scores_optimized,
+            get_performance_report,
+            reset_performance_tracking,
+            parallel_compute
+        )
+        USE_OPTIMIZED = True
+        logger.info("✓ 使用优化版MOS计算模块 (from tcf - 已弃用)")
+    except ImportError as e2:
+        logger.warning(f"优化版MOS模块加载失败,使用原版: {e2}")
+        from mos_calculator import (
+            ToneColorFidelityScore, DNSMOScore, NisqaMosScore,
+            RefScore, WerScore, ScoreqScore, can_convert_to_float
+        )
+        USE_OPTIMIZED = False
 
 try:
     from audio_cut import cut_all_audio_files_from_list
@@ -95,28 +100,29 @@ performance_stats = {}
 
 
 def init_models():
-    """初始化所有评分模型和参考音频指纹数据库"""
+    """初始化所有评分模型"""
     global models
-
+    
     logger.info("=" * 60)
     logger.info("[模型初始化] 开始加载MOS评分模型...")
     logger.info("=" * 60)
-
-    # 优化版模型
-    optimized_ok = False
+    
     if USE_OPTIMIZED:
-        logger.info("[模型初始化] 正在初始化优化版并行计算模型...")
+        logger.info("[模型初始化] 使用优化版MOS计算模块")
+        logger.info("[模型初始化] 正在初始化并行计算模型...")
         try:
             start_time = time.time()
             parallel_compute.init_models()
             elapsed = time.time() - start_time
             logger.info(f"✅ 优化版模型初始化完成 (耗时: {elapsed:.2f}s)")
-            optimized_ok = True
         except Exception as e:
             logger.error(f"❌ 优化版模型初始化失败: {e}")
-
-    # 原版模型始终加载（runtime fallback 需要）
-    logger.info("[模型初始化] 加载原版模型作为后备...")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+        logger.info("=" * 60)
+        return
+    
+    logger.info("[模型初始化] 使用标准版MOS计算模块")
     
     # 核心模型（必须）
     logger.info("[模型初始化] 加载核心模型...")
@@ -179,23 +185,8 @@ def init_models():
         logger.warning(f"  ⚠️ ScoreqScore 加载失败: {e} (Scoreq功能将不可用)")
     
     loaded_count = len(models)
-    logger.info(f"[模型初始化] 后备模型加载完成: {loaded_count} 个")
-
-    # 初始化参考音频指纹数据库
-    try:
-        ref_dir = settings.paths.ref_dir
-        if os.path.exists(ref_dir):
-            start = time.time()
-            from reference_matcher import get_reference_matcher, rebuild_matcher_database
-            rebuild_matcher_database(ref_dir)
-            logger.info(f"✅ 参考音频指纹数据库初始化完成 (耗时: {time.time() - start:.2f}s)")
-        else:
-            logger.warning(f"⚠️ 参考音频目录不存在: {ref_dir}")
-    except Exception as e:
-        logger.warning(f"⚠️ 参考音频指纹数据库初始化失败（非致命）: {e}")
-
     logger.info("=" * 60)
-    logger.info(f"[模型初始化] 完成! 优化版={'✓' if optimized_ok else '✗'}, 后备模型={loaded_count}个")
+    logger.info(f"[模型初始化] 完成! 成功加载 {loaded_count} 个模型")
     logger.info("=" * 60)
 
 
@@ -367,12 +358,6 @@ async def process_audio_task(queue_task):
     task_id = queue_task.task_id
     
     try:
-        # 标记为处理中
-        tasks[task_id]["status"] = "processing"
-        tasks[task_id]["progress"] = 5
-        tasks[task_id]["message"] = "正在初始化..."
-        tasks[task_id]["updated_at"] = datetime.now().isoformat()
-
         # 从队列任务数据中获取任务信息
         task_data = queue_task.data
         task_upload_dir = Path(settings.paths.upload_dir) / task_id
@@ -406,47 +391,45 @@ async def process_audio_task(queue_task):
         need_ref_metrics = selected_metrics and any(m in ['pesq', 'stoi', 'sisdr', 'wer', 'tcf'] for m in selected_metrics)
 
         if has_reference and need_ref_metrics:
-            # 有参考音频且用户选择了有参考指标：执行内容匹配 + 切分 + 对齐流程
-            await update_task_progress(task_id, 10, "正在进行参考音频内容匹配...")
-
-            # 尝试使用新的内容匹配管道
-            aligned_files = []
-            content_match_used = False
+            # 有参考音频且用户选择了有参考指标：先检查测试音频是否能匹配到参考音频
+            # 预检测：如果测试音频无法匹配任何参考音频，则跳过切分/对齐/带参考MOS计算
+            actual_matched = False
             try:
-                from reference_pipeline import ReferencePipeline
-
-                align_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_aligned"
-                align_output_dir.mkdir(parents=True, exist_ok=True)
-
-                pipeline = ReferencePipeline(ref_dir=str(ref_dir))
-                pipeline.initialize(str(ref_dir))
-
-                for input_file in input_files:
-                    result = pipeline.process_test_audio(
-                        test_audio_path=input_file,
-                        output_dir=str(align_output_dir),
-                        min_confidence=0.2,
-                        use_dtw=True
-                    )
-                    if not result["no_match"]:
-                        aligned_files.extend(result["aligned_files"])
-                        content_match_used = True
-                        logger.info(f"[MOS处理] ✓ 内容匹配成功: {os.path.basename(input_file)} "
-                                     f"-> {len(result['matches'])} 个匹配, "
-                                     f"{len(result['aligned_files'])} 个对齐文件")
-
-                if aligned_files:
-                    logger.info(f"[MOS处理] 内容匹配完成: 共 {len(aligned_files)} 个对齐文件")
-                else:
-                    logger.warning(f"[MOS处理] 内容匹配未找到任何匹配，回退到传统切分方法")
+                from calculator.mos_calculator import get_ref_file_by_content
+                for test_file in input_files:
+                    ref_file, match_info = get_ref_file_by_content(test_file, str(ref_dir))
+                    if ref_file is not None:
+                        actual_matched = True
+                        logger.info(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 匹配到参考音频: "
+                                    f"'{os.path.basename(ref_file)}' (方法={match_info.get('method', 'unknown')})")
+                        break
+                if not actual_matched:
+                    logger.warning(f"[预检测] 所有测试音频均未匹配到任何参考音频，跳过切分/对齐/带参考MOS计算")
+                    logger.warning(f"[预检测] 参考目录: {ref_dir}, 参考文件数: {len(wav_files)}")
+                    for test_file in input_files:
+                        logger.warning(f"[预检测]   未匹配: {os.path.basename(test_file)}")
             except ImportError as e:
-                logger.warning(f"[MOS处理] 内容匹配模块不可用: {e}，回退到传统方法")
-            except Exception as e:
-                logger.error(f"[MOS处理] 内容匹配失败: {e}，回退到传统方法")
+                logger.warning(f"[预检测] 无法导入参考匹配模块: {e}，回退到传统模式")
+                actual_matched = True  # 如果无法检测，默认执行完整流程（向后兼容）
 
-            # 如果内容匹配失败或没有结果，回退到传统切分方法
-            if not aligned_files:
-                await update_task_progress(task_id, 10, "正在切分音频(传统方法)...")
+            if not actual_matched:
+                # 无匹配：直接进入无参考MOS计算分支
+                logger.info("执行无参考MOS计算（测试音频未匹配到任何参考音频）")
+                await update_task_progress(task_id, 20, "执行无参考MOS计算（未匹配到参考音频）...")
+                aligned_files = input_files
+                loop = asyncio.get_event_loop()
+                results = await loop.run_in_executor(
+                    executor,
+                    compute_mos_scores_sync,
+                    aligned_files,
+                    str(ref_dir) if ref_dir.exists() else "",
+                    False,
+                    selected_metrics
+                )
+            else:
+                # 有匹配：执行切分、对齐、有参考MOS计算
+                # Step 1: 音频切分
+                await update_task_progress(task_id, 10, "正在切分音频...")
                 split_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_split"
                 split_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -458,7 +441,7 @@ async def process_audio_task(queue_task):
                     )
                 except Exception as e:
                     logger.error(f"音频切分失败: {e}")
-                    split_files = input_files
+                    split_files = input_files  # 如果切分失败,使用原始文件
 
                 # Step 2: 音频对齐
                 await update_task_progress(task_id, 30, "正在进行音频对齐...")
@@ -466,27 +449,35 @@ async def process_audio_task(queue_task):
                 align_output_dir.mkdir(parents=True, exist_ok=True)
 
                 try:
+                    logger.info(f"【对齐流程】切分文件数: {len(split_files)}, 参考目录: {ref_dir}")
+                    for i, f in enumerate(split_files[:3]):  # 只打印前3个
+                        logger.info(f"【对齐流程】切分文件 {i+1}: {os.path.basename(f)}")
+
                     aligned_files = align_splited_wav_from_list(
                         split_files,
                         ref_dir=str(ref_dir),
                         output_dir=str(align_output_dir)
                     )
+
+                    logger.info(f"【对齐流程】对齐完成，对齐文件数: {len(aligned_files)}")
+                    for i, f in enumerate(aligned_files[:3]):  # 只打印前3个
+                        logger.info(f"【对齐流程】对齐文件 {i+1}: {os.path.basename(f)}")
                 except Exception as e:
                     logger.error(f"音频对齐失败: {e}")
-                    aligned_files = split_files
+                    aligned_files = split_files  # 如果对齐失败,使用切分后的文件
 
-            # Step 3: MOS评分计算（有参考）
-            await update_task_progress(task_id, 50, "正在计算MOS得分...")
-            # 使用线程池执行同步计算，避免阻塞事件循环
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                executor,
-                compute_mos_scores_sync,
-                aligned_files if aligned_files else input_files,
-                str(ref_dir),
-                True if aligned_files else False,  # 只有找到对齐文件才认为有参考
-                selected_metrics  # 传递计算项目配置
-            )
+                # Step 3: MOS评分计算（有参考）
+                await update_task_progress(task_id, 50, "正在计算MOS得分...")
+                # 使用线程池执行同步计算，避免阻塞事件循环
+                loop = asyncio.get_event_loop()
+                results = await loop.run_in_executor(
+                    executor,
+                    compute_mos_scores_sync,
+                    aligned_files,
+                    str(ref_dir),
+                    True,
+                    selected_metrics  # 传递计算项目配置
+                )
         else:
             # 无参考音频或用户未选择有参考指标：直接处理原始文件
             if not ref_dir.exists():

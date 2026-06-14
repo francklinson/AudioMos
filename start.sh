@@ -229,7 +229,7 @@ validate_host() {
 
 # 读取配置（优先使用环境变量，其次配置文件，最后默认值）
 BACKEND_HOST="${AUDIOMOS_HOST:-$(read_yaml_value "$CONFIG_FILE" "host" "0.0.0.0")}"
-BACKEND_PORT="${AUDIOMOS_PORT:-$(read_yaml_value "$CONFIG_FILE" "port" "8077")}"
+BACKEND_PORT="${AUDIOMOS_PORT:-$(read_yaml_value "$CONFIG_FILE" "port" "8002")}"
 
 echo ""
 echo "================================"
@@ -681,6 +681,7 @@ check_models() {
         "onnxruntime:ONNX Runtime 推理引擎"
         "pesq:PESQ 语音质量评估"
         "pystoi:STOI 短时可懂度评估"
+        "clearvoice:ClearVoice 降噪推理平台(阿里达摩院)"
     )
     for dep_entry in "${denoise_deps[@]}"; do
         local dep_module="${dep_entry%%:*}"
@@ -1032,12 +1033,12 @@ from app.core.logging_config import logger
 logger.info('=' * 60)
 logger.info('AudioMOS 前后端一体模式启动')
 logger.info('=' * 60)
-logger.info('监听地址: ' + '$unified_host' + ':' + str($unified_port))
+logger.info('监听地址: ' + '"$unified_host"' + ':' + str('"$unified_port"'))
 
 uvicorn.run(
     'app.main:app',
-    host='$unified_host',
-    port=$unified_port,
+    host='"$unified_host"',
+    port="$unified_port",
     reload=False,
     access_log=True
 )
