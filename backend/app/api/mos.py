@@ -391,30 +391,30 @@ async def process_audio_task(queue_task):
         need_ref_metrics = selected_metrics and any(m in ['pesq', 'stoi', 'sisdr', 'wer', 'tcf'] for m in selected_metrics)
 
         if has_reference and need_ref_metrics:
-            # 有参考音频且用户选择了有参考指标：先检查测试音频是否能匹配到参考音频
-            # 预检测：如果测试音频无法匹配任何参考音频，则跳过切分/对齐/带参考MOS计算
-            actual_matched = False
+            # 有参考音频且用户选择了有参考指标：逐文件检查匹配情况
+            # 区分能匹配到参考音频的文件和不能匹配的，分别处理
+            matched_files = []
+            unmatched_files = []
             try:
                 from calculator.mos_calculator import get_ref_file_by_content
                 for test_file in input_files:
                     ref_file, match_info = get_ref_file_by_content(test_file, str(ref_dir))
                     if ref_file is not None:
-                        actual_matched = True
+                        matched_files.append(test_file)
                         logger.info(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 匹配到参考音频: "
                                     f"'{os.path.basename(ref_file)}' (方法={match_info.get('method', 'unknown')})")
-                        break
-                if not actual_matched:
-                    logger.warning(f"[预检测] 所有测试音频均未匹配到任何参考音频，跳过切分/对齐/带参考MOS计算")
-                    logger.warning(f"[预检测] 参考目录: {ref_dir}, 参考文件数: {len(wav_files)}")
-                    for test_file in input_files:
-                        logger.warning(f"[预检测]   未匹配: {os.path.basename(test_file)}")
+                    else:
+                        unmatched_files.append(test_file)
+                        logger.warning(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 未匹配到任何参考音频")
+                logger.info(f"[预检测] 匹配结果: {len(matched_files)}个匹配, {len(unmatched_files)}个未匹配")
             except ImportError as e:
                 logger.warning(f"[预检测] 无法导入参考匹配模块: {e}，回退到传统模式")
-                actual_matched = True  # 如果无法检测，默认执行完整流程（向后兼容）
+                matched_files = list(input_files)
+                unmatched_files = []
 
-            if not actual_matched:
-                # 无匹配：直接进入无参考MOS计算分支
-                logger.info("执行无参考MOS计算（测试音频未匹配到任何参考音频）")
+            if not matched_files:
+                # 全部未匹配：直接进入无参考MOS计算分支
+                logger.info("执行无参考MOS计算（所有测试音频均未匹配到参考音频）")
                 await update_task_progress(task_id, 20, "执行无参考MOS计算（未匹配到参考音频）...")
                 aligned_files = input_files
                 loop = asyncio.get_event_loop()
@@ -426,9 +426,9 @@ async def process_audio_task(queue_task):
                     False,
                     selected_metrics
                 )
-            else:
-                # 有匹配：执行切分、对齐、有参考MOS计算
-                # Step 1: 音频切分
+            elif not unmatched_files:
+                # 全部匹配：执行完整的切分→对齐→有参考MOS流程
+                logger.info("所有测试音频均已匹配，执行完整切分/对齐/有参考MOS流程")
                 await update_task_progress(task_id, 10, "正在切分音频...")
                 split_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_split"
                 split_output_dir.mkdir(parents=True, exist_ok=True)
@@ -441,34 +441,23 @@ async def process_audio_task(queue_task):
                     )
                 except Exception as e:
                     logger.error(f"音频切分失败: {e}")
-                    split_files = input_files  # 如果切分失败,使用原始文件
+                    split_files = input_files
 
-                # Step 2: 音频对齐
                 await update_task_progress(task_id, 30, "正在进行音频对齐...")
                 align_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_aligned"
                 align_output_dir.mkdir(parents=True, exist_ok=True)
 
                 try:
-                    logger.info(f"【对齐流程】切分文件数: {len(split_files)}, 参考目录: {ref_dir}")
-                    for i, f in enumerate(split_files[:3]):  # 只打印前3个
-                        logger.info(f"【对齐流程】切分文件 {i+1}: {os.path.basename(f)}")
-
                     aligned_files = align_splited_wav_from_list(
                         split_files,
                         ref_dir=str(ref_dir),
                         output_dir=str(align_output_dir)
                     )
-
-                    logger.info(f"【对齐流程】对齐完成，对齐文件数: {len(aligned_files)}")
-                    for i, f in enumerate(aligned_files[:3]):  # 只打印前3个
-                        logger.info(f"【对齐流程】对齐文件 {i+1}: {os.path.basename(f)}")
                 except Exception as e:
                     logger.error(f"音频对齐失败: {e}")
-                    aligned_files = split_files  # 如果对齐失败,使用切分后的文件
+                    aligned_files = split_files
 
-                # Step 3: MOS评分计算（有参考）
                 await update_task_progress(task_id, 50, "正在计算MOS得分...")
-                # 使用线程池执行同步计算，避免阻塞事件循环
                 loop = asyncio.get_event_loop()
                 results = await loop.run_in_executor(
                     executor,
@@ -476,7 +465,27 @@ async def process_audio_task(queue_task):
                     aligned_files,
                     str(ref_dir),
                     True,
-                    selected_metrics  # 传递计算项目配置
+                    selected_metrics
+                )
+            else:
+                # 混合场景：部分文件匹配、部分不匹配
+                # 由于切分后片段数与原始文件数不一致，无法简单合并有参考/无参考结果
+                # 安全策略：全部文件仅计算无参考MOS，有参考MOS填0
+                logger.warning(f"[混合场景] {len(matched_files)}个匹配 + {len(unmatched_files)}个不匹配")
+                logger.warning(f"[混合场景] 匹配文件: {[os.path.basename(f) for f in matched_files]}")
+                logger.warning(f"[混合场景] 未匹配文件: {[os.path.basename(f) for f in unmatched_files]}")
+                logger.warning(f"[混合场景] 为保证结果一致性，全部文件仅计算无参考MOS，有参考MOS填0")
+                logger.warning(f"[混合场景] 建议：将匹配和不匹配的音频分开上传，或确保所有测试音频都能匹配到参考音频")
+                await update_task_progress(task_id, 20, "执行无参考MOS计算（混合场景）...")
+                aligned_files = input_files
+                loop = asyncio.get_event_loop()
+                results = await loop.run_in_executor(
+                    executor,
+                    compute_mos_scores_sync,
+                    aligned_files,
+                    str(ref_dir) if ref_dir.exists() else "",
+                    False,
+                    selected_metrics
                 )
         else:
             # 无参考音频或用户未选择有参考指标：直接处理原始文件
