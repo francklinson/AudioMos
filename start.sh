@@ -916,6 +916,12 @@ stop_services() {
     if ! $backend_stopped; then
         echo "没有运行中的服务"
     fi
+    
+    # 清理临时启动文件
+    if [ -f "$SCRIPT_DIR/.start_server.py" ]; then
+        rm -f "$SCRIPT_DIR/.start_server.py"
+    fi
+    
     echo "================================"
     echo ""
 }
@@ -1085,25 +1091,34 @@ start_unified() {
     export AUDIOMOS_PORT="$unified_port"
     
     cd "$SCRIPT_DIR/backend"
-    nohup python -c "
+    
+    # 使用临时Python文件启动，避免shell引号转义问题
+    cat > "$SCRIPT_DIR/.start_server.py" << 'PYEOF'
 import sys
+import os
 sys.path.insert(0, '.')
+
 import uvicorn
 from app.core.logging_config import logger
+
+host = os.environ.get('AUDIOMOS_HOST', '0.0.0.0')
+port = int(os.environ.get('AUDIOMOS_PORT', '8002'))
 
 logger.info('=' * 60)
 logger.info('AudioMOS 前后端一体模式启动')
 logger.info('=' * 60)
-logger.info('监听地址: ' + '$unified_host' + ':' + str($unified_port))
+logger.info(f'监听地址: {host}:{port}')
 
 uvicorn.run(
     'app.main:app',
-    host='$unified_host',
-    port=$unified_port,
+    host=host,
+    port=port,
     reload=False,
     access_log=True
 )
-" > "$SCRIPT_DIR/logs/unified.log" 2>&1 &
+PYEOF
+    
+    nohup python "$SCRIPT_DIR/.start_server.py" > "$SCRIPT_DIR/logs/unified.log" 2>&1 &
     
     UNIFIED_PID=$!
     echo "$UNIFIED_PID" > "$SCRIPT_DIR/.unified.pid"
