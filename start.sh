@@ -1124,7 +1124,13 @@ uvicorn.run(
             return 1
         fi
         
-        if curl -s "http://$unified_host:$unified_port/health" > /dev/null 2>&1; then
+    # 健康检查: 如果 host 是 0.0.0.0, 用 127.0.0.1 连接
+        local check_host="$unified_host"
+        if [ "$check_host" = "0.0.0.0" ]; then
+            check_host="127.0.0.1"
+        fi
+        
+        if curl -s "http://$check_host:$unified_port/health" > /dev/null 2>&1; then
             echo ""
             echo "================================"
             echo "  ✅ AudioMOS 启动成功!"

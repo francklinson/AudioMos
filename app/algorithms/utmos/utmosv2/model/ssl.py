@@ -28,7 +28,7 @@ class _SSLEncoder(nn.Module):
         print(f"  冻结参数: {freeze}")
         
         # 获取项目根目录
-        project_root = Path(__file__).parent.parent.parent.parent.parent.parent.parent
+        project_root = Path(__file__).parent.parent.parent.parent.parent.parent
         local_model_path = project_root / "models" / "wav2vec2" / "facebook--wav2vec2-base"
         
         load_start = time.time()

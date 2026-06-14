@@ -941,6 +941,37 @@ class OptimizedToneColorFidelityScore:
         self._pipeline_cache = {}
         self._init_error = None
     
+    def _check_and_fix_tcf_config(self, model_path: str) -> None:
+        """检查并修复 eres2netv2 的 configuration.json（ModelScope 官方配置缺少必需字段）"""
+        config_file = os.path.join(model_path, "configuration.json")
+        if not os.path.exists(config_file):
+            return
+        
+        try:
+            import json
+            with open(config_file, 'r') as f:
+                cfg = json.load(f)
+            
+            model_cfg = cfg.get('model', {})
+            mc = model_cfg.get('model_config', {})
+            
+            # eres2netv2 需要这些字段，但 ModelScope Hub 官方配置缺失
+            required_fields = {
+                'embed_dim': 192,
+                'baseWidth': 26,
+                'scale': 2,
+                'expansion': 2
+            }
+            
+            missing = {k: v for k, v in required_fields.items() if k not in mc}
+            if missing:
+                logger.info(f"[TCF] 修复 eres2netv2 configuration.json，补充缺失字段: {list(missing.keys())}")
+                mc.update(missing)
+                with open(config_file, 'w') as f:
+                    json.dump(cfg, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"[TCF] 检查/修复 configuration.json 失败: {e}")
+
     def _check_model_exists(self, model_config: dict) -> tuple:
         """检查模型是否存在，返回(是否存在, 实际路径, 是否项目路径)"""
         # 优先检查项目路径
@@ -974,6 +1005,10 @@ class OptimizedToneColorFidelityScore:
 
             location = "项目路径" if is_project else "本地缓存"
             logger.info(f"[TCF] 使用{location}模型 [{alg}]: {model_path}")
+
+            # 修复 eres2netv2 的 configuration.json（ModelScope 官方配置缺少必需字段）
+            if alg == 'eres2netv2':
+                self._check_and_fix_tcf_config(model_path)
 
             # 加载前清理CUDA缓存，释放之前模型占用的显存
             device = 'cuda' if cuda.is_available() else 'cpu'
