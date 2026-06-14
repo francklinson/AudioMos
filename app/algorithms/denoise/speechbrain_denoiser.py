@@ -9,9 +9,16 @@ import librosa
 from typing import Optional
 import time
 import os
+import logging
+
+logger = logging.getLogger('audiomos')
 
 from .base import BaseDenoiser, DenoiseResult
 from .registry import DenoiserRegistry
+
+# 项目根目录（绝对路径）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_DEFAULT_SAVEDIR = os.path.join(_PROJECT_ROOT, "models", "speechbrain")
 
 
 class SpeechBrainDenoiser(BaseDenoiser):
@@ -19,9 +26,9 @@ class SpeechBrainDenoiser(BaseDenoiser):
     SpeechBrain语音增强基类
     使用SpeechBrain预训练模型进行语音增强
     """
-    
-    def __init__(self, name: str, model_name: str, sample_rate: int = 16000, 
-                 device: str = "cuda", savedir: str = "./models/speechbrain"):
+
+    def __init__(self, name: str, model_name: str, sample_rate: int = 16000,
+                 device: str = "cuda", savedir: str = _DEFAULT_SAVEDIR):
         """
         初始化SpeechBrain降噪器
         
@@ -65,7 +72,7 @@ class SpeechBrainDenoiser(BaseDenoiser):
             return True
             
         except Exception as e:
-            print(f"SpeechBrain模型初始化失败: {e}")
+            logger.error(f"SpeechBrain模型初始化失败: {e}")
             self._is_initialized = False
             return False
     
@@ -113,7 +120,7 @@ class SpeechBrainDenoiser(BaseDenoiser):
             )
             
         except Exception as e:
-            print(f"SpeechBrain增强失败: {e}")
+            logger.error(f"SpeechBrain增强失败: {e}")
             # 返回原始音频
             return DenoiseResult(
                 audio=audio,
@@ -130,7 +137,7 @@ class MetricGANDenoiser(BaseDenoiser):
     """
     
     def __init__(self, sample_rate: int = 16000, device: str = "cuda",
-                 savedir: str = "./models/speechbrain"):
+                 savedir: str = _DEFAULT_SAVEDIR):
         """
         初始化MetricGAN+降噪器
         
@@ -165,7 +172,7 @@ class MetricGANDenoiser(BaseDenoiser):
             return True
             
         except Exception as e:
-            print(f"MetricGAN+模型初始化失败: {e}")
+            logger.error(f"MetricGAN+模型初始化失败: {e}")
             self._is_initialized = False
             return False
     
@@ -206,7 +213,7 @@ class MetricGANDenoiser(BaseDenoiser):
             )
             
         except Exception as e:
-            print(f"MetricGAN+增强失败: {e}")
+            logger.error(f"MetricGAN+增强失败: {e}")
             return DenoiseResult(
                 audio=audio,
                 sample_rate=self.sample_rate,
@@ -222,7 +229,7 @@ class SepFormerDenoiser(BaseDenoiser):
     """
     
     def __init__(self, sample_rate: int = 16000, device: str = "cuda",
-                 savedir: str = "./models/speechbrain"):
+                 savedir: str = _DEFAULT_SAVEDIR):
         """
         初始化SepFormer降噪器
         
@@ -257,7 +264,7 @@ class SepFormerDenoiser(BaseDenoiser):
             return True
             
         except Exception as e:
-            print(f"SepFormer模型初始化失败: {e}")
+            logger.error(f"SepFormer模型初始化失败: {e}")
             self._is_initialized = False
             return False
     
@@ -306,7 +313,7 @@ class SepFormerDenoiser(BaseDenoiser):
             )
 
         except Exception as e:
-            print(f"SepFormer增强失败: {e}")
+            logger.error(f"SepFormer增强失败: {e}")
             return DenoiseResult(
                 audio=audio,
                 sample_rate=self.sample_rate,

@@ -28,6 +28,10 @@ from .registry import DenoiserRegistry
 import logging
 logger = logging.getLogger("audiomos")
 
+# 项目根目录（绝对路径）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_DEFAULT_MODEL_DIR = os.path.join(_PROJECT_ROOT, "models", "clearvocie")
+
 # ── 模型配置表 ──────────────────────────────────────────────────
 # 每个模型的任务类型、采样率、显示信息
 
@@ -93,7 +97,7 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
         model_key: str = "clearvoice_frcrn_se_16k",
         sample_rate: int = 16000,
         device: str = "cuda",
-        model_dir: str = "./models/clearvoice",
+        model_dir: str = _DEFAULT_MODEL_DIR,
     ):
         """
         初始化 ClearVoice 适配器
@@ -601,7 +605,7 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
 class FRCRNSE16KDenoiser(ClearVoiceWrapperDenoiser):
     """FRCRN 16kHz 语音增强"""
 
-    def __init__(self, sample_rate=16000, device="cuda", model_dir="./models/clearvoice"):
+    def __init__(self, sample_rate=16000, device="cuda", model_dir=_DEFAULT_MODEL_DIR):
         super().__init__(
             model_key="clearvoice_frcrn_se_16k",
             sample_rate=sample_rate,
@@ -613,7 +617,7 @@ class FRCRNSE16KDenoiser(ClearVoiceWrapperDenoiser):
 class MossFormer2SE48KDenoiser(ClearVoiceWrapperDenoiser):
     """MossFormer2 48kHz 语音增强"""
 
-    def __init__(self, sample_rate=48000, device="cuda", model_dir="./models/clearvoice"):
+    def __init__(self, sample_rate=48000, device="cuda", model_dir=_DEFAULT_MODEL_DIR):
         super().__init__(
             model_key="clearvoice_mossformer2_se_48k",
             sample_rate=sample_rate,
@@ -625,7 +629,7 @@ class MossFormer2SE48KDenoiser(ClearVoiceWrapperDenoiser):
 class MossFormerGANSE16KDenoiser(ClearVoiceWrapperDenoiser):
     """MossFormerGAN 16kHz 语音增强"""
 
-    def __init__(self, sample_rate=16000, device="cuda", model_dir="./models/clearvoice"):
+    def __init__(self, sample_rate=16000, device="cuda", model_dir=_DEFAULT_MODEL_DIR):
         super().__init__(
             model_key="clearvoice_mossformer_gan_se_16k",
             sample_rate=sample_rate,
@@ -637,7 +641,7 @@ class MossFormerGANSE16KDenoiser(ClearVoiceWrapperDenoiser):
 class MossFormer2SS16KDenoiser(ClearVoiceWrapperDenoiser):
     """MossFormer2 16kHz 语音分离"""
 
-    def __init__(self, sample_rate=16000, device="cuda", model_dir="./models/clearvoice"):
+    def __init__(self, sample_rate=16000, device="cuda", model_dir=_DEFAULT_MODEL_DIR):
         super().__init__(
             model_key="clearvoice_mossformer2_ss_16k",
             sample_rate=sample_rate,
@@ -649,7 +653,7 @@ class MossFormer2SS16KDenoiser(ClearVoiceWrapperDenoiser):
 class MossFormer2SR48KDenoiser(ClearVoiceWrapperDenoiser):
     """MossFormer2 48kHz 语音超分辨率"""
 
-    def __init__(self, sample_rate=48000, device="cuda", model_dir="./models/clearvoice"):
+    def __init__(self, sample_rate=48000, device="cuda", model_dir=_DEFAULT_MODEL_DIR):
         super().__init__(
             model_key="clearvoice_mossformer2_sr_48k",
             sample_rate=sample_rate,

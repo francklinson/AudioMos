@@ -44,6 +44,9 @@ from .base import BaseDenoiser, DenoiseResult
 
 logger = logging.getLogger(__name__)
 
+# 项目根目录和自定义插件目录（绝对路径）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_CUSTOM_PLUGIN_DIR = os.path.join(_PROJECT_ROOT, "models", "custom_denoisers")
 
 # ===========================
 # 插件元数据
@@ -179,7 +182,7 @@ class PluginLoader:
 
     使用方式:
         loader = PluginLoader()
-        plugins = loader.discover_plugins("./models/custom_denoisers")
+        plugins = loader.discover_plugins(_CUSTOM_PLUGIN_DIR)
         for name, plugin_class in plugins.items():
             denoiser = plugin_class()
             denoiser.initialize()
@@ -187,7 +190,7 @@ class PluginLoader:
 
     # 默认插件搜索路径
     DEFAULT_PLUGIN_DIRS = [
-        "./models/custom_denoisers",
+        _CUSTOM_PLUGIN_DIR,
         "./app/algorithms/denoise/plugins",
     ]
 
