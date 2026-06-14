@@ -18,9 +18,17 @@ import librosa
 from typing import Optional
 import time
 import os
+import logging
+
+logger = logging.getLogger('audiomos')
+
 from scipy import signal
 
 from .base import BaseRestorer, RestorationResult, RestorationRegistry
+
+# 项目根目录（绝对路径）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_DEFAULT_MODEL_DIR = os.path.join(_PROJECT_ROOT, "models", "speechbrain")
 
 
 class SuperResolutionRestorer(BaseRestorer):
@@ -36,7 +44,7 @@ class SuperResolutionRestorer(BaseRestorer):
         self,
         sample_rate: int = 48000,
         device: str = "cuda",
-        model_dir: str = "./models/speechbrain",
+        model_dir: str = _DEFAULT_MODEL_DIR,
         input_sample_rate: int = 8000,
     ):
         """
@@ -73,7 +81,7 @@ class SuperResolutionRestorer(BaseRestorer):
             return True
 
         except Exception as e:
-            print(f"超分辨率模型初始化失败: {e}")
+            logger.error(f"超分辨率模型初始化失败: {e}")
             self._is_initialized = False
             return False
 
@@ -143,7 +151,7 @@ class SuperResolutionRestorer(BaseRestorer):
 
         except Exception as e:
             # 回退到简单升采样
-            print(f"超分辨率处理失败: {e}, 回退到传统升采样")
+            logger.warning(f"超分辨率处理失败: {e}, 回退到传统升采样")
             try:
                 enhanced_np = self._classical_upsample(audio, original_sr)
                 return RestorationResult(
@@ -221,7 +229,7 @@ class NUWaveSuperResolutionRestorer(BaseRestorer):
         self,
         sample_rate: int = 48000,
         device: str = "cuda",
-        model_dir: str = "./models/super_resolution",
+        model_dir: str = os.path.join(_PROJECT_ROOT, "models", "super_resolution"),
     ):
         super().__init__("super_resolution_nuwave", sample_rate, device)
         self.model_dir = model_dir
@@ -304,7 +312,7 @@ class NUWaveSuperResolutionRestorer(BaseRestorer):
             )
 
         except Exception as e:
-            print(f"NU-Wave超分处理失败: {e}")
+            logger.error(f"NU-Wave超分处理失败: {e}")
             return RestorationResult(
                 audio=audio,
                 sample_rate=original_sr,

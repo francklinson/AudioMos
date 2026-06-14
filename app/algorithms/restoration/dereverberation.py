@@ -18,8 +18,15 @@ import librosa
 from typing import Optional
 import time
 import os
+import logging
+
+logger = logging.getLogger('audiomos')
 
 from .base import BaseRestorer, RestorationResult, RestorationRegistry
+
+# 项目根目录（绝对路径）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_DEFAULT_MODEL_DIR = os.path.join(_PROJECT_ROOT, "models", "speechbrain")
 
 
 class DereverbRestorer(BaseRestorer):
@@ -34,7 +41,7 @@ class DereverbRestorer(BaseRestorer):
         self,
         sample_rate: int = 8000,
         device: str = "cuda",
-        model_dir: str = "./models/speechbrain",
+        model_dir: str = _DEFAULT_MODEL_DIR,
         model_source: str = "speechbrain/sepformer-whamr-enhancement",
     ):
         """
@@ -69,7 +76,7 @@ class DereverbRestorer(BaseRestorer):
             return True
 
         except Exception as e:
-            print(f"去混响模型初始化失败: {e}")
+            logger.error(f"去混响模型初始化失败: {e}")
             self._is_initialized = False
             return False
 
