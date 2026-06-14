@@ -30,7 +30,7 @@ logger = logging.getLogger("audiomos")
 
 # 项目根目录（绝对路径）
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-_DEFAULT_MODEL_DIR = os.path.join(_PROJECT_ROOT, "models", "clearvocie")
+_DEFAULT_MODEL_DIR = os.path.join(_PROJECT_ROOT, "models", "clearvoice")
 
 # ── 模型配置表 ──────────────────────────────────────────────────
 # 每个模型的任务类型、采样率、显示信息
