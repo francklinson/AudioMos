@@ -16,24 +16,42 @@ from .base import BaseRestorer, RestorationResult, RestorationRegistry
 try:
     from .dereverberation import DereverbRestorer
     DEREVERB_AVAILABLE = True
-except ImportError:
+    import logging
+    logging.getLogger('audiomos').info("[音频修复模块] DereverbRestorer 加载成功")
+except ImportError as e:
     DEREVERB_AVAILABLE = False
     DereverbRestorer = None
+    import logging
+    import traceback
+    logging.getLogger('audiomos').warning(f"[音频修复模块] DereverbRestorer 加载失败: {e}")
+    logging.getLogger('audiomos').debug(f"[音频修复模块] DereverbRestorer 错误详情: {traceback.format_exc()}")
 
 try:
     from .super_resolution import SuperResolutionRestorer
     SUPERRES_AVAILABLE = True
-except ImportError:
+    import logging
+    logging.getLogger('audiomos').info("[音频修复模块] SuperResolutionRestorer 加载成功")
+except ImportError as e:
     SUPERRES_AVAILABLE = False
     SuperResolutionRestorer = None
+    import logging
+    import traceback
+    logging.getLogger('audiomos').warning(f"[音频修复模块] SuperResolutionRestorer 加载失败: {e}")
+    logging.getLogger('audiomos').debug(f"[音频修复模块] SuperResolutionRestorer 错误详情: {traceback.format_exc()}")
 
 # ── 降噪算法适配器 ──
 try:
     from .denoise_adapter import DenoiseRestorerAdapter
     DENOISE_ADAPTER_AVAILABLE = True
-except ImportError:
+    import logging
+    logging.getLogger('audiomos').info("[音频修复模块] DenoiseRestorerAdapter 加载成功")
+except ImportError as e:
     DENOISE_ADAPTER_AVAILABLE = False
     DenoiseRestorerAdapter = None
+    import logging
+    import traceback
+    logging.getLogger('audiomos').error(f"[音频修复模块] DenoiseRestorerAdapter 加载失败: {e}")
+    logging.getLogger('audiomos').error(f"[音频修复模块] 错误详情: {traceback.format_exc()}")
 
 
 # ── 降噪算法 → 修复算法工厂 ──

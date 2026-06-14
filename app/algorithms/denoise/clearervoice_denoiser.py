@@ -19,6 +19,7 @@ import os
 import time
 import tempfile
 import soundfile as sf
+import threading
 from typing import Optional, Dict, Any
 
 from .base import BaseDenoiser, DenoiseResult
@@ -125,175 +126,183 @@ class ClearVoiceWrapperDenoiser(BaseDenoiser):
 
         self._cv_instance = None  # ClearVoice 实例（延迟初始化）
         self._model_loaded = False
+        self._init_lock = threading.Lock()  # 初始化锁，防止并发重复初始化
 
     # ── BaseDenoiser 接口 ──────────────────────────────────────
 
     def initialize(self) -> bool:
         """
         初始化并下载/加载 ClearVoice 模型
+        线程安全：使用锁防止并发重复初始化
 
         Returns:
             是否初始化成功
         """
+        # 双重检查锁定模式 (Double-Checked Locking)
         if self._is_initialized:
             return True
 
-        try:
-            from clearvoice import ClearVoice
-
-            # 确保模型目录存在
-            os.makedirs(self.model_dir, exist_ok=True)
-
-            # 保存当前工作目录
-            original_cwd = os.getcwd()
-            logger.info(f"[模型初始化] 当前工作目录: {original_cwd}")
-
-            # 查找项目根目录（包含 models/clearvoice 目录的父目录）
-            project_root = self._find_project_root()
-            logger.info(f"[模型初始化] 项目根目录: {project_root}")
-            
-            # 设置 checkpoint_dir 为本地模型路径（使用绝对路径）
-            # ClearVoice 默认使用 checkpoints/模型名，我们需要指向 models/clearvoice/模型名
-            checkpoint_dir = os.path.join(
-                project_root, self.model_dir, self._spec["model_name"]
-            )
-            logger.info(f"[模型初始化] 模型目录: {checkpoint_dir}")
-            
-            # 检查本地模型是否存在
-            last_best_file = os.path.join(checkpoint_dir, 'last_best_checkpoint')
-            logger.info(f"[模型初始化] 检查模型文件: {last_best_file}")
-            
-            if not os.path.isfile(last_best_file):
-                logger.error(
-                    f"[模型初始化] 本地模型文件不存在: {last_best_file}\n"
-                    f"[模型初始化] 请确保模型已下载到 {checkpoint_dir}"
-                )
-                # 列出模型目录内容以便调试
-                if os.path.isdir(checkpoint_dir):
-                    logger.info(f"[模型初始化] 目录 {checkpoint_dir} 存在，内容:")
-                    for item in os.listdir(checkpoint_dir):
-                        logger.info(f"  - {item}")
-                else:
-                    logger.error(f"[模型初始化] 目录 {checkpoint_dir} 不存在")
-                    # 检查父目录
-                    parent_dir = os.path.dirname(checkpoint_dir)
-                    if os.path.isdir(parent_dir):
-                        logger.info(f"[模型初始化] 父目录 {parent_dir} 存在，内容:")
-                        for item in os.listdir(parent_dir):
-                            logger.info(f"  - {item}")
-                return False
-            
-            logger.info(f"[模型初始化] 模型文件存在: {last_best_file}")
-            
-            # 读取 checkpoint 文件名
-            with open(last_best_file, 'r') as f:
-                checkpoint_name = f.readline().strip()
-            logger.info(f"[模型初始化] Checkpoint 文件名: {checkpoint_name}")
-            
-            # 切换到项目根目录
-            # (clearvoice 使用相对路径 checkpoint_dir，需要从项目根目录运行)
-            os.chdir(project_root)
-            logger.info(f"[模型初始化] 切换到项目根目录: {project_root}")
-
-            # 设置环境变量禁用 HuggingFace Hub 网络访问
-            os.environ['HF_HUB_OFFLINE'] = '1'
-            os.environ['TRANSFORMERS_OFFLINE'] = '1'
-            logger.info("[模型初始化] 已设置离线模式环境变量")
+        with self._init_lock:
+            # 再次检查，防止其他线程已初始化
+            if self._is_initialized:
+                return True
 
             try:
-                logger.info(
-                    f"[模型初始化] 开始加载 ClearVoice 模型: {self._spec['model_name']} "
-                    f"(task={self._spec['task']})"
+                from clearvoice import ClearVoice
+
+                # 确保模型目录存在
+                os.makedirs(self.model_dir, exist_ok=True)
+
+                # 保存当前工作目录
+                original_cwd = os.getcwd()
+                logger.info(f"[模型初始化] 当前工作目录: {original_cwd}")
+
+                # 查找项目根目录（包含 models/clearvoice 目录的父目录）
+                project_root = self._find_project_root()
+                logger.info(f"[模型初始化] 项目根目录: {project_root}")
+
+                # 设置 checkpoint_dir 为本地模型路径（使用绝对路径）
+                # ClearVoice 默认使用 checkpoints/模型名，我们需要指向 models/clearvoice/模型名
+                checkpoint_dir = os.path.join(
+                    project_root, self.model_dir, self._spec["model_name"]
                 )
-                
-                # 使用 monkey patch 修改 load_model 方法，强制使用本地模型
-                import clearvoice.networks as cv_networks
-                original_load_model = cv_networks.SpeechModel.load_model
-                logger.info("[模型初始化] 已保存原始 load_model 方法")
-                
-                def patched_load_model(self):
-                    """修改后的 load_model，使用本地模型路径"""
-                    import os
-                    import torch.nn as nn
-                    
-                    logger.info(f"[模型初始化] 进入 patched_load_model，模型名称: {self.name}")
-                    
-                    # 使用本地模型路径
-                    self.args.checkpoint_dir = checkpoint_dir
-                    logger.info(f"[模型初始化] 设置 checkpoint_dir: {checkpoint_dir}")
-                    
-                    # 检查本地模型是否存在
-                    best_name = os.path.join(self.args.checkpoint_dir, 'last_best_checkpoint')
-                    logger.info(f"[模型初始化] 检查 checkpoint 文件: {best_name}")
-                    
-                    if not os.path.isfile(best_name):
-                        logger.error(f"[模型初始化] 本地模型文件不存在: {best_name}")
-                        return
-                    
-                    logger.info(f"[模型初始化] 找到 checkpoint 文件，开始加载模型权重...")
-                    
-                    # 调用原始的 _load_model 逻辑（跳过 download_model）
-                    if isinstance(self.model, nn.ModuleList):
-                        logger.info("[模型初始化] 检测到 ModuleList 模型结构")
-                        with open(best_name, 'r') as f:
-                            model_name = f.readline().strip()
-                            checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
-                            logger.info(f"[模型初始化] 加载第一个模型: {checkpoint_path}")
-                            self._load_model(self.model[0], checkpoint_path, model_key='mossformer')
-                            
-                            model_name = f.readline().strip()
-                            checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
-                            logger.info(f"[模型初始化] 加载第二个模型: {checkpoint_path}")
-                            self._load_model(self.model[1], checkpoint_path, model_key='generator')
-                    else:
-                        with open(best_name, 'r') as f:
-                            model_name = f.readline().strip()
-                        checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
-                        logger.info(f"[模型初始化] 加载模型权重: {checkpoint_path}")
-                        self._load_model(self.model, checkpoint_path, model_key='model')
-                    
-                    logger.info("[模型初始化] 模型权重加载完成")
-                
-                # 应用 monkey patch
-                cv_networks.SpeechModel.load_model = patched_load_model
-                logger.info("[模型初始化] 已应用 patched_load_model")
-                
-                try:
-                    # 创建 ClearVoice 实例（会使用 patched_load_model）
-                    logger.info("[模型初始化] 创建 ClearVoice 实例...")
-                    self._cv_instance = ClearVoice(
-                        task=self._spec["task"],
-                        model_names=[self._spec["model_name"]],
+                logger.info(f"[模型初始化] 模型目录: {checkpoint_dir}")
+
+                # 检查本地模型是否存在
+                last_best_file = os.path.join(checkpoint_dir, 'last_best_checkpoint')
+                logger.info(f"[模型初始化] 检查模型文件: {last_best_file}")
+
+                if not os.path.isfile(last_best_file):
+                    logger.error(
+                        f"[模型初始化] 本地模型文件不存在: {last_best_file}\n"
+                        f"[模型初始化] 请确保模型已下载到 {checkpoint_dir}"
                     )
-                    logger.info("[模型初始化] ClearVoice 实例创建完成")
+                    # 列出模型目录内容以便调试
+                    if os.path.isdir(checkpoint_dir):
+                        logger.info(f"[模型初始化] 目录 {checkpoint_dir} 存在，内容:")
+                        for item in os.listdir(checkpoint_dir):
+                            logger.info(f"  - {item}")
+                    else:
+                        logger.error(f"[模型初始化] 目录 {checkpoint_dir} 不存在")
+                        # 检查父目录
+                        parent_dir = os.path.dirname(checkpoint_dir)
+                        if os.path.isdir(parent_dir):
+                            logger.info(f"[模型初始化] 父目录 {parent_dir} 存在，内容:")
+                            for item in os.listdir(parent_dir):
+                                logger.info(f"  - {item}")
+                    return False
+
+                logger.info(f"[模型初始化] 模型文件存在: {last_best_file}")
+
+                # 读取 checkpoint 文件名
+                with open(last_best_file, 'r') as f:
+                    checkpoint_name = f.readline().strip()
+                logger.info(f"[模型初始化] Checkpoint 文件名: {checkpoint_name}")
+
+                # 切换到项目根目录
+                # (clearvoice 使用相对路径 checkpoint_dir，需要从项目根目录运行)
+                os.chdir(project_root)
+                logger.info(f"[模型初始化] 切换到项目根目录: {project_root}")
+
+                # 设置环境变量禁用 HuggingFace Hub 网络访问
+                os.environ['HF_HUB_OFFLINE'] = '1'
+                os.environ['TRANSFORMERS_OFFLINE'] = '1'
+                logger.info("[模型初始化] 已设置离线模式环境变量")
+
+                try:
+                    logger.info(
+                        f"[模型初始化] 开始加载 ClearVoice 模型: {self._spec['model_name']} "
+                        f"(task={self._spec['task']})"
+                    )
+
+                    # 使用 monkey patch 修改 load_model 方法，强制使用本地模型
+                    import clearvoice.networks as cv_networks
+                    original_load_model = cv_networks.SpeechModel.load_model
+                    logger.info("[模型初始化] 已保存原始 load_model 方法")
+
+                    def patched_load_model(self):
+                        """修改后的 load_model，使用本地模型路径"""
+                        import os
+                        import torch.nn as nn
+
+                        logger.info(f"[模型初始化] 进入 patched_load_model，模型名称: {self.name}")
+
+                        # 使用本地模型路径
+                        self.args.checkpoint_dir = checkpoint_dir
+                        logger.info(f"[模型初始化] 设置 checkpoint_dir: {checkpoint_dir}")
+
+                        # 检查本地模型是否存在
+                        best_name = os.path.join(self.args.checkpoint_dir, 'last_best_checkpoint')
+                        logger.info(f"[模型初始化] 检查 checkpoint 文件: {best_name}")
+
+                        if not os.path.isfile(best_name):
+                            logger.error(f"[模型初始化] 本地模型文件不存在: {best_name}")
+                            return
+
+                        logger.info(f"[模型初始化] 找到 checkpoint 文件，开始加载模型权重...")
+
+                        # 调用原始的 _load_model 逻辑（跳过 download_model）
+                        if isinstance(self.model, nn.ModuleList):
+                            logger.info("[模型初始化] 检测到 ModuleList 模型结构")
+                            with open(best_name, 'r') as f:
+                                model_name = f.readline().strip()
+                                checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
+                                logger.info(f"[模型初始化] 加载第一个模型: {checkpoint_path}")
+                                self._load_model(self.model[0], checkpoint_path, model_key='mossformer')
+
+                                model_name = f.readline().strip()
+                                checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
+                                logger.info(f"[模型初始化] 加载第二个模型: {checkpoint_path}")
+                                self._load_model(self.model[1], checkpoint_path, model_key='generator')
+                        else:
+                            with open(best_name, 'r') as f:
+                                model_name = f.readline().strip()
+                            checkpoint_path = os.path.join(self.args.checkpoint_dir, model_name)
+                            logger.info(f"[模型初始化] 加载模型权重: {checkpoint_path}")
+                            self._load_model(self.model, checkpoint_path, model_key='model')
+
+                        logger.info("[模型初始化] 模型权重加载完成")
+
+                    # 应用 monkey patch
+                    cv_networks.SpeechModel.load_model = patched_load_model
+                    logger.info("[模型初始化] 已应用 patched_load_model")
+
+                    try:
+                        # 创建 ClearVoice 实例（会使用 patched_load_model）
+                        logger.info("[模型初始化] 创建 ClearVoice 实例...")
+                        self._cv_instance = ClearVoice(
+                            task=self._spec["task"],
+                            model_names=[self._spec["model_name"]],
+                        )
+                        logger.info("[模型初始化] ClearVoice 实例创建完成")
+                    finally:
+                        # 恢复原始方法
+                        cv_networks.SpeechModel.load_model = original_load_model
+                        logger.info("[模型初始化] 已恢复原始 load_model 方法")
+
                 finally:
-                    # 恢复原始方法
-                    cv_networks.SpeechModel.load_model = original_load_model
-                    logger.info("[模型初始化] 已恢复原始 load_model 方法")
-                    
-            finally:
-                os.chdir(original_cwd)
-                logger.info(f"[模型初始化] 恢复工作目录: {original_cwd}")
+                    os.chdir(original_cwd)
+                    logger.info(f"[模型初始化] 恢复工作目录: {original_cwd}")
 
-            self._is_initialized = True
-            self._model_loaded = True
-            logger.info(
-                f"[模型初始化] ✓ ClearVoice 模型加载成功: {self._spec['model_name']}"
-            )
-            return True
+                self._is_initialized = True
+                self._model_loaded = True
+                logger.info(
+                    f"[模型初始化] ✓ ClearVoice 模型加载成功: {self._spec['model_name']}"
+                )
+                return True
 
-        except ImportError:
-            logger.error(
-                "clearvoice 包未安装。请运行: pip install clearvoice"
-            )
-            self._is_initialized = False
-            return False
-        except Exception as e:
-            logger.error(
-                f"ClearVoice 模型初始化失败 ({self._spec['model_name']}): {e}"
-            )
-            self._is_initialized = False
-            return False
+            except ImportError:
+                logger.error(
+                    "clearvoice 包未安装。请运行: pip install clearvoice"
+                )
+                self._is_initialized = False
+                return False
+            except Exception as e:
+                logger.error(
+                    f"ClearVoice 模型初始化失败 ({self._spec['model_name']}): {e}"
+                )
+                self._is_initialized = False
+                return False
 
     def denoise(
         self, audio: np.ndarray, sample_rate: Optional[int] = None

@@ -63,17 +63,20 @@ _denoisers = {}
 def init_denoisers():
     """初始化所有降噪算法（按需延迟加载策略）"""
     global _denoisers
+    init_start = time.time()
 
     if not DENOISE_AVAILABLE:
-        logger.warning("降噪模块不可用，跳过初始化")
+        logger.warning("[降噪算法初始化] 降噪模块不可用，跳过初始化")
         return
 
     logger.info("=" * 60)
-    logger.info("[降噪算法初始化] 开始注册降噪算法...")
+    logger.info("[降噪算法初始化] 开始初始化降噪算法")
+    logger.info(f"[降噪算法初始化] 当前已加载实例: {[k for k, v in _denoisers.items() if v is not None]}")
     logger.info("=" * 60)
 
     available_denoisers = get_available_denoisers()
-    logger.info(f"可用降噪算法: {[d['name'] for d in available_denoisers]}")
+    logger.info(f"[降噪算法初始化] 发现 {len(available_denoisers)} 个可用降噪算法")
+    logger.info(f"[降噪算法初始化] 算法列表: {[d['name'] for d in available_denoisers]}")
 
     # 预注册的算法列表（按优先级排序）
     # 轻量模型（<200MB）可以在启动时预加载
@@ -87,33 +90,71 @@ def init_denoisers():
     # "clearvoice_mossformer2_ss_16k"  # 640MB, 语音分离
     # "clearvoice_mossformer2_sr_48k"  # 2.1GB, 超分辨率
 
+    device = "cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
+    logger.info(f"[降噪算法初始化] 使用设备: {device}")
+    logger.info(f"[降噪算法初始化] 预加载列表(轻量模型): {lightweight_models}")
+
+    init_stats = {'success': [], 'failed': [], 'skipped': []}
+
     # 只预加载轻量模型
-    for name in lightweight_models:
+    for idx, name in enumerate(lightweight_models, 1):
         try:
             if name not in _denoisers:
-                logger.info(f"  初始化 {name}...")
-                denoiser = DenoiserRegistry.get(
-                    name, device="cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
-                )
+                logger.info(f"[降噪算法初始化] [{idx}/{len(lightweight_models)}] 正在预加载 '{name}'...")
+                model_start = time.time()
+
+                denoiser = DenoiserRegistry.get(name, device=device)
+
                 if denoiser:
-                    denoiser.initialize()
-                    _denoisers[name] = denoiser
-                    logger.info(f"  ✓ {name} 初始化成功")
+                    logger.info(f"[降噪算法初始化]   从Registry获取实例成功，开始初始化...")
+                    init_success = denoiser.initialize()
+                    model_time = time.time() - model_start
+
+                    if init_success:
+                        _denoisers[name] = denoiser
+                        init_stats['success'].append((name, model_time))
+                        logger.info(f"[降噪算法初始化] ✓ '{name}' 预加载成功 (耗时: {model_time:.2f}s)")
+                    else:
+                        init_stats['failed'].append((name, 'initialize()返回False'))
+                        logger.warning(f"[降噪算法初始化] ✗ '{name}' 初始化失败 (耗时: {model_time:.2f}s)")
+                else:
+                    init_stats['failed'].append((name, 'Registry返回None'))
+                    logger.error(f"[降噪算法初始化] ✗ '{name}' 从Registry获取失败")
+            else:
+                init_stats['skipped'].append((name, '已存在'))
+                logger.info(f"[降噪算法初始化] ⚠ '{name}' 已存在，跳过")
         except Exception as e:
-            logger.warning(f"  ✗ {name} 初始化失败: {e}")
+            init_stats['failed'].append((name, str(e)))
+            logger.error(f"[降噪算法初始化] ✗ '{name}' 预加载异常: {e}")
+            import traceback
+            logger.error(f"[降噪算法初始化] 错误详情: {traceback.format_exc()}")
 
     # 为未加载的算法创建占位条目（延迟加载标记）
+    lazy_load_list = []
     for denoiser_info in available_denoisers:
         name = denoiser_info["name"]
         if name not in _denoisers:
             _denoisers[name] = None  # 延迟加载标记
+            lazy_load_list.append(name)
+
+    if lazy_load_list:
+        logger.info(f"[降噪算法初始化] 以下算法将延迟加载: {lazy_load_list}")
+
+    # 汇总统计
+    total_time = time.time() - init_start
+    loaded_count = len(init_stats['success'])
+    lazy_count = len(lazy_load_list)
 
     logger.info("=" * 60)
-    logger.info(
-        f"[降噪算法初始化] 完成! "
-        f"预加载: {sum(1 for v in _denoisers.values() if v is not None)}, "
-        f"延迟加载: {sum(1 for v in _denoisers.values() if v is None)}"
-    )
+    logger.info("[降噪算法初始化] 初始化完成统计")
+    logger.info(f"[降噪算法初始化] 总耗时: {total_time:.2f}s")
+    logger.info(f"[降噪算法初始化] 预加载成功: {loaded_count}个 - {[m[0] for m in init_stats['success']]}")
+    if init_stats['failed']:
+        logger.warning(f"[降噪算法初始化] 预加载失败: {len(init_stats['failed'])}个 - {[m[0] for m in init_stats['failed']]}")
+    if init_stats['skipped']:
+        logger.info(f"[降噪算法初始化] 跳过: {len(init_stats['skipped'])}个 - {[m[0] for m in init_stats['skipped']]}")
+    logger.info(f"[降噪算法初始化] 延迟加载: {lazy_count}个")
+    logger.info(f"[降噪算法初始化] 当前已加载实例: {[k for k, v in _denoisers.items() if v is not None]}")
     logger.info("=" * 60)
 
 

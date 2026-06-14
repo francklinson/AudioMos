@@ -1124,12 +1124,15 @@ class OptimizedToneColorFidelityScore:
                 sv_pipeline = self._get_pipeline(alg)
                 result = sv_pipeline(test_file_list, output_emb=True)
 
-                # 清理缓存，避免爆显存
-                if alg in self._pipeline_cache:
-                    del self._pipeline_cache[alg]
-                if cuda.is_available():
-                    cuda.empty_cache()
-                    cuda.synchronize()
+                # 生产环境(4090 24GB显存)足够容纳所有模型，保留pipeline缓存以提高性能
+                # 如需清理缓存（显存不足时），可设置环境变量 TCF_CLEAR_CACHE=1
+                if os.environ.get('TCF_CLEAR_CACHE', '0') == '1':
+                    if alg in self._pipeline_cache:
+                        del self._pipeline_cache[alg]
+                    if cuda.is_available():
+                        cuda.empty_cache()
+                        cuda.synchronize()
+                    logger.info(f"[TCF] [{alg}] pipeline缓存已清理 (TCF_CLEAR_CACHE=1)")
 
                 # 存储embedding
                 all_embs = result['embs']
@@ -1212,73 +1215,131 @@ class OptimizedToneColorFidelityScore:
 
 class ParallelMOSCompute:
     """并行MOS计算控制器"""
-    
+
     def __init__(self, max_workers: int = 4):
         self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.models = {}
-    
+        self._init_start_time = None
+        logger.info("[ParallelMOSCompute] 实例创建完成，等待模型初始化...")
+
     def init_models(self):
         """初始化所有模型"""
-        print(f"[init_models] 开始初始化模型，当前models: {list(self.models.keys())}")
-        
+        self._init_start_time = time.time()
+        logger.info("=" * 60)
+        logger.info("[MOS模型初始化] 开始初始化所有MOS计算模型")
+        logger.info(f"[MOS模型初始化] 当前已加载模型: {list(self.models.keys())}")
+        logger.info("=" * 60)
+
+        init_stats = {'success': [], 'failed': [], 'skipped': []}
+
         # 无参考模型
+        logger.info("[MOS模型初始化] === 无参考模型初始化 ===")
+
         try:
-            print("[init_models] 初始化DNSMOS...")
+            logger.info("[MOS模型初始化] [1/7] 正在加载 DNSMOS 模型...")
+            model_start = time.time()
             self.models['dnsmos'] = OptimizedDNSMOScore()
-            print("[init_models] DNSMOS初始化成功")
+            model_time = time.time() - model_start
+            init_stats['success'].append(('DNSMOS', model_time))
+            logger.info(f"[MOS模型初始化] ✓ DNSMOS 模型加载成功 (耗时: {model_time:.2f}s)")
         except Exception as e:
-            print(f"[init_models] DNSMOS初始化失败: {e}")
-        
+            init_stats['failed'].append(('DNSMOS', str(e)))
+            logger.error(f"[MOS模型初始化] ✗ DNSMOS 模型加载失败: {e}")
+
         try:
-            print("[init_models] 初始化NISQA...")
+            logger.info("[MOS模型初始化] [2/7] 正在加载 NISQA 模型...")
+            model_start = time.time()
             self.models['nisqa'] = OptimizedNisqaMosScore()
-            print("[init_models] NISQA初始化成功")
+            model_time = time.time() - model_start
+            init_stats['success'].append(('NISQA', model_time))
+            logger.info(f"[MOS模型初始化] ✓ NISQA 模型加载成功 (耗时: {model_time:.2f}s)")
         except Exception as e:
-            print(f"[init_models] NISQA初始化失败: {e}")
-        
+            init_stats['failed'].append(('NISQA', str(e)))
+            logger.error(f"[MOS模型初始化] ✗ NISQA 模型加载失败: {e}")
+
         try:
-            print("[init_models] 初始化Scoreq...")
+            logger.info("[MOS模型初始化] [3/7] 正在加载 Scoreq 模型...")
+            model_start = time.time()
             self.models['scoreq'] = OptimizedScoreqScore()
-            print("[init_models] Scoreq初始化成功")
+            model_time = time.time() - model_start
+            init_stats['success'].append(('Scoreq', model_time))
+            logger.info(f"[MOS模型初始化] ✓ Scoreq 模型加载成功 (耗时: {model_time:.2f}s)")
         except Exception as e:
-            print(f"[init_models] Scoreq初始化失败: {e}")
-        
+            init_stats['failed'].append(('Scoreq', str(e)))
+            logger.error(f"[MOS模型初始化] ✗ Scoreq 模型加载失败: {e}")
+
         # 有参考模型
+        logger.info("[MOS模型初始化] === 有参考模型初始化 ===")
+
         try:
-            print("[init_models] 初始化RefScore...")
+            logger.info("[MOS模型初始化] [4/7] 正在加载 RefScore 模型 (PESQ/STOI/SISDR)...")
+            model_start = time.time()
             self.models['ref_score'] = OptimizedRefScore()
-            print("[init_models] RefScore初始化成功")
+            model_time = time.time() - model_start
+            init_stats['success'].append(('RefScore', model_time))
+            logger.info(f"[MOS模型初始化] ✓ RefScore 模型加载成功 (耗时: {model_time:.2f}s)")
         except Exception as e:
-            print(f"[init_models] RefScore初始化失败: {e}")
-        
+            init_stats['failed'].append(('RefScore', str(e)))
+            logger.error(f"[MOS模型初始化] ✗ RefScore 模型加载失败: {e}")
+
         try:
-            print("[init_models] 初始化WER...")
+            logger.info("[MOS模型初始化] [5/7] 正在加载 WER 模型 (WeNet)...")
+            model_start = time.time()
             self.models['wer'] = OptimizedWerScore()
-            print("[init_models] WER初始化成功")
+            model_time = time.time() - model_start
+            init_stats['success'].append(('WER', model_time))
+            logger.info(f"[MOS模型初始化] ✓ WER 模型加载成功 (耗时: {model_time:.2f}s)")
         except Exception as e:
-            print(f"[init_models] WER初始化失败: {e}")
-        
+            init_stats['failed'].append(('WER', str(e)))
+            logger.error(f"[MOS模型初始化] ✗ WER 模型加载失败: {e}")
+
         try:
-            logger.info("[init_models] 初始化TCF...")
+            logger.info("[MOS模型初始化] [6/7] 正在加载 TCF 模型 (音色还原度，6个子模型)...")
+            model_start = time.time()
             self.models['tcf'] = OptimizedToneColorFidelityScore()
-            logger.info(f"[init_models] TCF初始化成功，当前models: {list(self.models.keys())}")
+            model_time = time.time() - model_start
+            init_stats['success'].append(('TCF', model_time))
+            logger.info(f"[MOS模型初始化] ✓ TCF 模型加载成功 (耗时: {model_time:.2f}s)")
         except Exception as e:
-            logger.error(f"[init_models] TCF初始化失败: {e}")
+            init_stats['failed'].append(('TCF', str(e)))
+            logger.error(f"[MOS模型初始化] ✗ TCF 模型加载失败: {e}")
             import traceback
-            logger.error(f"[init_models] TCF初始化错误详情: {traceback.format_exc()}")
+            logger.error(f"[MOS模型初始化] TCF错误详情: {traceback.format_exc()}")
 
         # UTMOS模型
+        logger.info("[MOS模型初始化] === UTMOS模型初始化 ===")
         try:
             if UTMOS_AVAILABLE:
+                logger.info("[MOS模型初始化] [7/7] 正在加载 UTMOS 模型...")
+                model_start = time.time()
                 self.models['utmos'] = UTMOSCore()
-                logger.info("✓ UTMOS模型初始化成功")
+                model_time = time.time() - model_start
+                init_stats['success'].append(('UTMOS', model_time))
+                logger.info(f"[MOS模型初始化] ✓ UTMOS 模型加载成功 (耗时: {model_time:.2f}s)")
             else:
-                logger.warning("UTMOS模块未安装(utmosv2导入失败)，UTMOS评分将不可用")
+                init_stats['skipped'].append(('UTMOS', '模块未安装'))
+                logger.warning("[MOS模型初始化] ⚠ UTMOS模块未安装，跳过加载")
         except Exception as e:
-            logger.error(f"UTMOS初始化失败: {e}")
+            init_stats['failed'].append(('UTMOS', str(e)))
+            logger.error(f"[MOS模型初始化] ✗ UTMOS 模型加载失败: {e}")
             import traceback
-            logger.error(f"UTMOS初始化错误详情: {traceback.format_exc()}")
+            logger.error(f"[MOS模型初始化] UTMOS错误详情: {traceback.format_exc()}")
+
+        # 汇总统计
+        total_time = time.time() - self._init_start_time
+        logger.info("=" * 60)
+        logger.info("[MOS模型初始化] 初始化完成统计")
+        logger.info(f"[MOS模型初始化] 总耗时: {total_time:.2f}s")
+        logger.info(f"[MOS模型初始化] 成功: {len(init_stats['success'])}个 - {[m[0] for m in init_stats['success']]}")
+        if init_stats['failed']:
+            logger.warning(f"[MOS模型初始化] 失败: {len(init_stats['failed'])}个 - {[m[0] for m in init_stats['failed']]}")
+        if init_stats['skipped']:
+            logger.info(f"[MOS模型初始化] 跳过: {len(init_stats['skipped'])}个 - {[m[0] for m in init_stats['skipped']]}")
+        logger.info(f"[MOS模型初始化] 当前已加载模型: {list(self.models.keys())}")
+        logger.info("=" * 60)
+
+        return init_stats
     
     def compute_all_no_ref(self, audio_files: List[str], selected_metrics: Optional[List[str]] = None) -> Dict:
         """

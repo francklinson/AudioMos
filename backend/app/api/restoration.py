@@ -49,6 +49,209 @@ Path(settings.paths.result_dir).mkdir(parents=True, exist_ok=True)
 # 任务存储
 restoration_tasks: Dict[str, Dict[str, Any]] = {}
 
+# 修复算法实例缓存（预加载）
+_restorer_instances: Dict[str, Any] = {}
+
+
+def init_restoration():
+    """
+    初始化音频修复算法（预加载常用算法）
+    生产环境(4090 24GB显存)足够容纳所有模型
+    """
+    global _restorer_instances
+    import time
+
+    init_start = time.time()
+
+    if not RESTORATION_AVAILABLE:
+        logger.warning("[音频修复初始化] 音频修复模块不可用，跳过初始化")
+        return
+
+    logger.info("=" * 60)
+    logger.info("[音频修复初始化] 开始预加载音频修复算法")
+    logger.info(f"[音频修复初始化] 当前已加载实例: {list(_restorer_instances.keys())}")
+    logger.info("=" * 60)
+
+    # 获取可用算法
+    restorers = get_available_restorers()
+    logger.info(f"[音频修复初始化] 发现 {len(restorers)} 个可用算法: {list(restorers.keys())}")
+
+    # 检查模块可用性状态
+    try:
+        from restoration import DEREVERB_AVAILABLE, SUPERRES_AVAILABLE, DENOISE_ADAPTER_AVAILABLE
+        logger.info(f"[音频修复初始化] 模块可用性状态:")
+        logger.info(f"[音频修复初始化]   - DEREVERB_AVAILABLE: {DEREVERB_AVAILABLE}")
+        logger.info(f"[音频修复初始化]   - SUPERRES_AVAILABLE: {SUPERRES_AVAILABLE}")
+        logger.info(f"[音频修复初始化]   - DENOISE_ADAPTER_AVAILABLE: {DENOISE_ADAPTER_AVAILABLE}")
+
+        # 如果模块标记为可用但实际没有算法，给出警告
+        if not restorers:
+            logger.warning("[音频修复初始化] 警告: 所有修复算法模块都标记为不可用或导入失败!")
+            logger.warning(f"[音频修复初始化]   DEREVERB_AVAILABLE={DEREVERB_AVAILABLE}, SUPERRES_AVAILABLE={SUPERRES_AVAILABLE}, DENOISE_ADAPTER_AVAILABLE={DENOISE_ADAPTER_AVAILABLE}")
+    except Exception as e:
+        logger.warning(f"[音频修复初始化] 无法获取模块可用性状态: {e}")
+        import traceback
+        logger.warning(f"[音频修复初始化] 错误详情: {traceback.format_exc()}")
+
+    # 预加载配置：轻量级算法在启动时预加载
+    # 生产环境4090显存充足，可根据需要调整
+    preload_list = [
+        "dereverberation",              # 去混响 - 常用
+        "clearvoice_frcrn_se_16k",      # FRCRN降噪 - 轻量快速
+        "clearvoice_mossformer_gan_se_16k",  # MossFormerGAN - 轻量
+        "spectral_subtraction",         # 谱减法 - 无模型
+        "wiener_filtering",             # 维纳滤波 - 无模型
+    ]
+
+    device = "cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
+    logger.info(f"[音频修复初始化] 使用设备: {device}")
+    logger.info(f"[音频修复初始化] 预加载列表: {preload_list}")
+
+    init_stats = {'success': [], 'failed': [], 'skipped': []}
+
+    # 预加载配置的算法
+    for idx, name in enumerate(preload_list, 1):
+        if name not in restorers:
+            logger.warning(f"[音频修复初始化] [{idx}/{len(preload_list)}] 算法 '{name}' 不在可用列表中，跳过")
+            init_stats['skipped'].append((name, '不在可用列表'))
+            continue
+
+        try:
+            logger.info(f"[音频修复初始化] [{idx}/{len(preload_list)}] 正在预加载 '{name}'...")
+            model_start = time.time()
+
+            restorer_cls = restorers[name]["class"]
+            logger.info(f"[音频修复初始化]   使用类: {restorer_cls.__name__}")
+
+            restorer = restorer_cls(device=device)
+            logger.info(f"[音频修复初始化]   实例创建完成，开始初始化...")
+
+            success = restorer.initialize()
+            model_time = time.time() - model_start
+
+            if success:
+                _restorer_instances[name] = restorer
+                init_stats['success'].append((name, model_time))
+                logger.info(f"[音频修复初始化] ✓ '{name}' 预加载成功 (耗时: {model_time:.2f}s)")
+            else:
+                init_stats['failed'].append((name, '初始化返回False'))
+                logger.warning(f"[音频修复初始化] ✗ '{name}' 初始化失败 (耗时: {model_time:.2f}s)")
+        except Exception as e:
+            init_stats['failed'].append((name, str(e)))
+            logger.error(f"[音频修复初始化] ✗ '{name}' 预加载异常: {e}")
+            import traceback
+            logger.error(f"[音频修复初始化] 错误详情: {traceback.format_exc()}")
+
+    # 为未加载的算法创建占位条目（延迟加载标记）
+    lazy_load_list = []
+    for name in restorers.keys():
+        if name not in _restorer_instances:
+            _restorer_instances[name] = None  # 延迟加载标记
+            lazy_load_list.append(name)
+
+    if lazy_load_list:
+        logger.info(f"[音频修复初始化] 以下算法将延迟加载: {lazy_load_list}")
+
+    # 汇总统计
+    total_time = time.time() - init_start
+    loaded_count = len(init_stats['success'])
+    lazy_count = len(lazy_load_list)
+
+    logger.info("=" * 60)
+    logger.info("[音频修复初始化] 初始化完成统计")
+    logger.info(f"[音频修复初始化] 总耗时: {total_time:.2f}s")
+    logger.info(f"[音频修复初始化] 预加载成功: {loaded_count}个 - {[m[0] for m in init_stats['success']]}")
+    if init_stats['failed']:
+        logger.warning(f"[音频修复初始化] 预加载失败: {len(init_stats['failed'])}个 - {[m[0] for m in init_stats['failed']]}")
+    if init_stats['skipped']:
+        logger.info(f"[音频修复初始化] 跳过: {len(init_stats['skipped'])}个 - {[m[0] for m in init_stats['skipped']]}")
+    logger.info(f"[音频修复初始化] 延迟加载: {lazy_count}个")
+    logger.info(f"[音频修复初始化] 当前已加载实例: {[k for k, v in _restorer_instances.items() if v is not None]}")
+    logger.info("=" * 60)
+
+
+def _get_restorer(name: str):
+    """
+    获取修复算法实例（带缓存）
+    如果实例已预加载，直接返回；否则延迟加载并缓存
+    """
+    global _restorer_instances
+    import time
+
+    # 如果 _restorer_instances 为空，尝试重新初始化
+    if not _restorer_instances:
+        logger.warning(f"[音频修复] _restorer_instances 为空，尝试重新初始化...")
+        try:
+            # 重新获取可用算法并填充 _restorer_instances
+            restorers = get_available_restorers()
+            for key in restorers.keys():
+                if key not in _restorer_instances:
+                    _restorer_instances[key] = None  # 标记为延迟加载
+            logger.info(f"[音频修复] 重新初始化完成，可用算法: {list(_restorer_instances.keys())}")
+        except Exception as e:
+            logger.error(f"[音频修复] 重新初始化失败: {e}")
+
+    if name not in _restorer_instances:
+        logger.error(f"[音频修复] 获取实例失败: 未知的修复算法 '{name}'")
+        logger.error(f"[音频修复] 当前可用算法列表: {list(_restorer_instances.keys())}")
+        logger.error(f"[音频修复] RESTORATION_AVAILABLE: {RESTORATION_AVAILABLE}")
+        raise ValueError(f"未知的修复算法: {name}")
+
+    # 如果已预加载，直接返回
+    if _restorer_instances[name] is not None:
+        logger.debug(f"[音频修复] 使用预加载实例: '{name}'")
+        return _restorer_instances[name]
+
+    # 延迟加载
+    logger.info("=" * 60)
+    logger.info(f"[音频修复延迟加载] 开始延迟加载算法: '{name}'")
+    lazy_start = time.time()
+
+    restorers = get_available_restorers()
+
+    if name not in restorers:
+        logger.error(f"[音频修复延迟加载] 算法不可用: '{name}'")
+        raise ValueError(f"算法不可用: {name}")
+
+    restorer_info = restorers[name]
+    restorer_cls = restorer_info["class"]
+    device = "cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
+
+    logger.info(f"[音频修复延迟加载] 使用类: {restorer_cls.__name__}")
+    logger.info(f"[音频修复延迟加载] 使用设备: {device}")
+
+    try:
+        logger.info(f"[音频修复延迟加载] 创建实例...")
+        instance_start = time.time()
+        restorer = restorer_cls(device=device)
+        instance_time = time.time() - instance_start
+        logger.info(f"[音频修复延迟加载] 实例创建完成 (耗时: {instance_time:.2f}s)")
+
+        logger.info(f"[音频修复延迟加载] 开始初始化...")
+        init_start = time.time()
+        success = restorer.initialize()
+        init_time = time.time() - init_start
+
+        if not success:
+            logger.error(f"[音频修复延迟加载] ✗ 算法初始化失败: '{name}' (初始化耗时: {init_time:.2f}s)")
+            raise RuntimeError(f"算法初始化失败: {name}")
+
+        # 缓存实例
+        _restorer_instances[name] = restorer
+        total_time = time.time() - lazy_start
+        logger.info(f"[音频修复延迟加载] ✓ '{name}' 延迟加载成功")
+        logger.info(f"[音频修复延迟加载]   - 实例创建: {instance_time:.2f}s")
+        logger.info(f"[音频修复延迟加载]   - 模型初始化: {init_time:.2f}s")
+        logger.info(f"[音频修复延迟加载]   - 总耗时: {total_time:.2f}s")
+        logger.info("=" * 60)
+
+        return restorer
+    except Exception as e:
+        logger.error(f"[音频修复延迟加载] ✗ '{name}' 延迟加载异常: {e}")
+        import traceback
+        logger.error(f"[音频修复延迟加载] 错误详情: {traceback.format_exc()}")
+        raise
+
 
 # ===========================
 # 数据模型
@@ -280,27 +483,10 @@ async def process_restoration(
 
             task_info["progress"] = 0.1
 
-            # 获取算法实例
-            restorers = get_available_restorers()
-            logger.info(f"[音频修复] 可用算法: {list(restorers.keys())}")
-
-            if algorithm not in restorers:
-                raise ValueError(f"算法不可用: {algorithm}")
-
-            restorer_cls = restorers[algorithm]["class"]
-            logger.info(f"[音频修复] 使用算法类: {restorer_cls.__name__}")
-
-            device = "cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
-            logger.info(f"[音频修复] 使用设备: {device}")
-
-            restorer = restorer_cls(device=device)
-            logger.info(f"[音频修复] 开始初始化算法...")
-
-            success = restorer.initialize()
-            logger.info(f"[音频修复] 算法初始化结果: {success}")
-
-            if not success:
-                raise RuntimeError("算法初始化失败")
+            # 获取算法实例（使用预加载或延迟加载）
+            logger.info(f"[音频修复] 获取算法实例: {algorithm}")
+            restorer = _get_restorer(algorithm)
+            logger.info(f"[音频修复] ✓ 算法实例已获取 (预加载或延迟加载)")
 
             task_info["progress"] = 0.3
 

@@ -462,17 +462,22 @@ class BatchEvaluator:
     批量测评器
     支持多算法、多文件的批量测评
     """
-    
+
     def __init__(self, output_dir: str = "./data/denoise_results"):
         """
         初始化批量测评器
-        
+
         Args:
             output_dir: 结果输出目录
         """
+        import logging
+        self.logger = logging.getLogger("audiomos")
+
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.evaluator = DenoiseEvaluator()
+
+        self.logger.info(f"[BatchEvaluator] 批量测评器初始化完成，输出目录: {output_dir}")
     
     def evaluate_algorithm(
         self,
@@ -483,23 +488,45 @@ class BatchEvaluator:
     ) -> List[DenoiseEvaluation]:
         """
         评估单个算法
-        
+
         Args:
             algorithm_name: 算法名称
             noisy_files: 带噪音频文件列表
             reference_files: 参考音频文件列表(可选)
             output_subdir: 输出子目录
-            
+
         Returns:
             测评结果列表
         """
+        self.logger.info("=" * 60)
+        self.logger.info(f"[BatchEvaluator] 开始评估算法: {algorithm_name}")
+        self.logger.info(f"[BatchEvaluator] 文件数量: {len(noisy_files)}")
+
         # 获取降噪器
+        self.logger.info(f"[BatchEvaluator] 从Registry获取降噪器: {algorithm_name}")
+        model_start = time.time()
         denoiser = DenoiserRegistry.get(algorithm_name)
+
         if denoiser is None:
+            self.logger.error(f"[BatchEvaluator] 未找到算法: {algorithm_name}")
             raise ValueError(f"未找到算法: {algorithm_name}")
-        
+
+        self.logger.info(f"[BatchEvaluator] 获取降噪器成功 (耗时: {time.time() - model_start:.2f}s)")
+
+        # 检查并初始化
         if not denoiser.is_initialized():
-            denoiser.initialize()
+            self.logger.info(f"[BatchEvaluator] 降噪器未初始化，开始初始化...")
+            init_start = time.time()
+            init_success = denoiser.initialize()
+            init_time = time.time() - init_start
+
+            if init_success:
+                self.logger.info(f"[BatchEvaluator] ✓ 降噪器初始化成功 (耗时: {init_time:.2f}s)")
+            else:
+                self.logger.error(f"[BatchEvaluator] ✗ 降噪器初始化失败 (耗时: {init_time:.2f}s)")
+                raise RuntimeError(f"降噪器初始化失败: {algorithm_name}")
+        else:
+            self.logger.info(f"[BatchEvaluator] 降噪器已初始化，跳过初始化")
         
         # 创建输出目录
         if output_subdir:
@@ -509,23 +536,32 @@ class BatchEvaluator:
         result_dir.mkdir(parents=True, exist_ok=True)
         
         results = []
-        
+        total_files = len(noisy_files)
+
         for i, noisy_file in enumerate(noisy_files):
             file_name = Path(noisy_file).name
-            print(f"处理文件 {i+1}/{len(noisy_files)}: {file_name}")
+            self.logger.info(f"[BatchEvaluator] 处理文件 {i+1}/{total_files}: {file_name}")
             
             # 执行降噪
             output_path = str(result_dir / f"denoised_{file_name}")
+            self.logger.info(f"[BatchEvaluator]   执行降噪: {file_name}")
+            denoise_start = time.time()
             denoise_result = denoiser.denoise_file(noisy_file, output_path)
-            
+            denoise_time = time.time() - denoise_start
+            self.logger.info(f"[BatchEvaluator]   降噪完成: {file_name} (耗时: {denoise_time:.2f}s, RTF: {denoise_result.rtf:.3f})")
+
             # 评估
             ref_path = reference_files[i] if reference_files and i < len(reference_files) else None
+            self.logger.info(f"[BatchEvaluator]   开始评估: {file_name}")
+            eval_start = time.time()
             metrics = self.evaluator.evaluate_file(
                 output_path,
                 ref_path,
                 denoise_result.processing_time
             )
-            
+            eval_time = time.time() - eval_start
+            self.logger.info(f"[BatchEvaluator]   评估完成: {file_name} (耗时: {eval_time:.2f}s)")
+
             # 创建评估结果
             evaluation = DenoiseEvaluation(
                 file_name=file_name,
@@ -535,9 +571,12 @@ class BatchEvaluator:
                 reference_audio_path=ref_path,
                 metrics=metrics
             )
-            
+
             results.append(evaluation)
-        
+
+        self.logger.info(f"[BatchEvaluator] 算法评估完成: {algorithm_name}, 共处理 {len(results)} 个文件")
+        self.logger.info("=" * 60)
+
         return results
     
     def evaluate_multiple_algorithms(
