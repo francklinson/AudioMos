@@ -21,20 +21,18 @@ def setup_logging() -> logging.Logger:
     logger = logging.getLogger("audiomos")
     logger.setLevel(getattr(logging, settings.logging.level.upper()))
 
-    # 清除现有处理器
-    logger.handlers.clear()
+    # 如果已经配置过，直接返回（防止重复初始化）
+    if logger.handlers:
+        return logger
+
+    # 阻止日志向父logger传播（防止Uvicorn等重复输出）
+    logger.propagate = False
 
     # 创建格式化器
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
-
-    # 控制台处理器 - 输出到stdout
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
 
     # 文件处理器 - unified.log（前后端一体架构唯一日志文件）
     log_dir = Path(settings.logging.file).parent
@@ -50,6 +48,13 @@ def setup_logging() -> logging.Logger:
     file_handler.setLevel(getattr(logging, settings.logging.level.upper()))
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+
+    # 控制台处理器 - 仅开发环境输出到stdout
+    if settings.logging.level.upper() == "DEBUG":
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
 
     logger.info(f"[日志配置] 日志系统初始化完成，输出到: {unified_log_path}")
 

@@ -1718,13 +1718,10 @@ def compute_mos_scores_optimized(
         ref_metrics = [m for m in selected_metrics if m in ['pesq', 'stoi', 'sisdr', 'wer', 'tcf']]
         print(f"[compute_mos_scores_optimized] ref_metrics={ref_metrics}")
         if ref_metrics:
-            print(f"[compute_mos_scores_optimized] 调用compute_all_with_ref...")
+            logger.info(f"[MOS计算] 开始计算有参考指标: {ref_metrics}")
             ref_results = parallel_compute.compute_all_with_ref(audio_files, ref_dir, ref_metrics)
-            print(f"[compute_mos_scores_optimized] ref_results类型={type(ref_results)}, id={id(ref_results)}")
-            print(f"[compute_mos_scores_optimized] ref_results={ref_results}")
-            print(f"[compute_mos_scores_optimized] 更新前的results={results}")
+            logger.info(f"[MOS计算] 有参考指标计算完成，共 {len(ref_results)} 个指标")
             results.update(ref_results)
-            print(f"[compute_mos_scores_optimized] 更新后的results={results}")
         else:
             print(f"[compute_mos_scores_optimized] 无参考指标需要计算，填充0值")
             # 填充0值

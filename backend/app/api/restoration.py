@@ -533,6 +533,11 @@ async def process_restoration(
 
             logger.info(f"[音频修复] 任务完成: {task_id}")
 
+            # 清理显存，防止OOM
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info(f"[音频修复] 显存已清理")
+
         except Exception as e:
             task_info["status"] = "failed"
             task_info["message"] = str(e)

@@ -61,8 +61,8 @@ class FingerprintConfig:
     min_time_delta: int = 0      # 最小时间间隔(frames)
     max_time_delta: int = 200    # 最大时间间隔(frames)
     # 匹配
-    min_hash_match: int = 5      # 最少匹配hash数（低于此值视为不匹配）
-    min_confidence: float = 0.3  # 最低置信度
+    min_hash_match: int = 10     # 最少匹配hash数（从3提高到10，确保匹配质量）
+    min_confidence: float = 0.05  # 最低置信度（从0.10降低到0.05，主要依赖hash数量）
 
 
 # 全局默认配置
@@ -534,39 +534,74 @@ class ReferenceMatcher:
             key = (ref_id, offset_diff)
             alignment_counts[key] = alignment_counts.get(key, 0) + 1
 
-        # 按ref_id分组，取每个参考音频的最佳对齐
-        ref_best_match: Dict[str, Tuple[int, int]] = {}  # ref_id -> (offset_diff, hash_count)
-        for (ref_id, offset_diff), count in alignment_counts.items():
-            if ref_id not in ref_best_match or count > ref_best_match[ref_id][1]:
-                ref_best_match[ref_id] = (offset_diff, count)
+        logger.info(f"[参考匹配器] 对齐分析: 共 {len(alignment_counts)} 个(ref_id, offset_diff)组合")
 
-        # 生成匹配结果
-        results = []
-        for ref_id, (offset_diff, hash_count) in ref_best_match.items():
+        # 按ref_id分组，找出每个参考音频的**所有**可能匹配位置（支持混合音频）
+        ref_all_matches: Dict[str, List[Tuple[int, int]]] = {}  # ref_id -> [(offset_diff, hash_count), ...]
+        for (ref_id, offset_diff), count in alignment_counts.items():
+            if ref_id not in ref_all_matches:
+                ref_all_matches[ref_id] = []
+            ref_all_matches[ref_id].append((offset_diff, count))
+
+        # 对每个参考音频的匹配位置按hash_count降序排序
+        for ref_id in ref_all_matches:
+            ref_all_matches[ref_id].sort(key=lambda x: x[1], reverse=True)
+
+        # 生成匹配结果：从所有参考音频的所有位置中找出前N个最佳匹配
+        all_candidates = []
+        for ref_id, matches in ref_all_matches.items():
             entry = self.database.get_entry(ref_id)
             if entry is None:
                 continue
 
-            if hash_count < self.config.min_hash_match:
-                logger.debug(f"[参考匹配器] {ref_id}: Hash匹配数 {hash_count} < "
-                             f"阈值 {self.config.min_hash_match}，跳过")
+            for offset_diff, hash_count in matches:
+                # 计算置信度
+                confidence = min(1.0, hash_count / max(1, entry.hash_count * 0.15))
+
+                # 记录所有候选（包括低于阈值的，用于调试）
+                # 只使用 hash_count 判断，不使用 confidence
+                all_candidates.append({
+                    'ref_id': ref_id,
+                    'ref_entry': entry,
+                    'offset_diff': offset_diff,
+                    'hash_count': hash_count,
+                    'confidence': confidence,
+                    'passed': hash_count >= self.config.min_hash_match
+                })
+
+        # 按置信度降序排序
+        all_candidates.sort(key=lambda x: x['confidence'], reverse=True)
+
+        logger.info(f"[参考匹配器] 候选匹配分析（前10个）:")
+        for i, cand in enumerate(all_candidates[:10]):
+            status = "✓" if cand['passed'] else "✗"
+            logger.info(f"[参考匹配器]   {status} {cand['ref_id']} @ {self.fingerprinter.frame_to_time(max(0, cand['offset_diff'])):.2f}s: "
+                       f"hash={cand['hash_count']}, conf={cand['confidence']:.3f}")
+
+        # 筛选通过阈值的候选
+        # 策略：支持混合音频，只要候选通过阈值就保留
+        # 但同一参考音频只保留最佳匹配（避免时间重叠的重复匹配）
+        results = []
+        used_ref_ids = set()
+        for cand in all_candidates:
+            if not cand['passed']:
                 continue
+
+            ref_id = cand['ref_id']
+            # 如果同一参考音频已经匹配过，跳过（避免重复）
+            # 注意：如果需要支持同一参考音频在测试音频中出现多次，需要更复杂的去重逻辑
+            if ref_id in used_ref_ids:
+                logger.debug(f"[参考匹配器] {ref_id}: 已存在匹配，跳过次要匹配位置")
+                continue
+
+            entry = cand['ref_entry']
+            offset_diff = cand['offset_diff']
+            hash_count = cand['hash_count']
+            confidence = cand['confidence']
 
             # 计算在测试音频中的时间偏移
-            # offset_diff = offset_in_ref - offset_in_query
-            # 当 offset_diff > 0 时, offset_in_query = offset_in_ref - offset_diff
-            # 参考音频的起始位置在测试音频中的时间偏移约为 offset_diff frames
             offset_in_test_frames = offset_diff
             offset_in_test = self.fingerprinter.frame_to_time(max(0, offset_in_test_frames))
-
-            # 计算置信度
-            # 置信度 = min(1.0, 匹配hash数 / (参考音频总hash数 * 0.1))
-            confidence = min(1.0, hash_count / max(1, entry.hash_count * 0.15))
-
-            if confidence < min_confidence:
-                logger.debug(f"[参考匹配器] {ref_id}: 置信度 {confidence:.3f} < "
-                             f"阈值 {min_confidence}，跳过")
-                continue
 
             result = MatchResult(
                 ref_id=ref_id,
@@ -581,6 +616,7 @@ class ReferenceMatcher:
                 description=entry.description
             )
             results.append(result)
+            used_ref_ids.add(ref_id)
 
         # 按置信度降序排列
         results.sort(key=lambda x: x.confidence, reverse=True)

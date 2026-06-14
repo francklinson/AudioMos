@@ -14,6 +14,7 @@ from .mos_calculator import (
     OptimizedToneColorFidelityScore,
     AudioCache,
     PerformanceTimer,
+    compute_mos_scores_optimized,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     'OptimizedToneColorFidelityScore',
     'AudioCache',
     'PerformanceTimer',
+    'compute_mos_scores_optimized',
 ]
