@@ -127,3 +127,22 @@ reference_matching:
     n_mfcc: 13
     hop_length: 512
     n_fft: 2048
+
+  # 低SNR匹配优化配置
+  optimization:
+    # 是否启用优化匹配（低SNR时自动启用预增强+自适应指纹+嵌入向量匹配）
+    enabled: true
+    # SNR阈值: 低于此值时启用预增强
+    pre_enhance_snr_threshold: 10.0
+    # SNR阈值: 低于此值时启用嵌入向量匹配（回退方案）
+    embedding_snr_threshold: 5.0
+    # 嵌入向量匹配: 滑动窗口时长（秒）
+    embedding_window_duration: 12.0
+    # 嵌入向量匹配: 滑动步长（秒）
+    embedding_step_duration: 4.0
+    # 预增强方法: wiener 或 spectral
+    pre_enhance_method: "wiener"
+    # HPSS谐波分离: 是否启用
+    harmonic_separation: true
+    # DTW增强: CMVN归一化+Delta特征+余弦距离
+    robust_dtw: true

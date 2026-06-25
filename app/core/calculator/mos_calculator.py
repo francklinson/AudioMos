@@ -20,7 +20,8 @@ from pathlib import Path
 # 添加本地包路径 - 从 algorithms 目录导入
 # 当前文件位置: app/core/calculator/mos_calculator.py
 # 需要到达: app/algorithms/
-_ALGORITHMS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'algorithms')
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_ALGORITHMS_DIR = os.path.join(_PROJECT_ROOT, 'app', 'algorithms')
 sys.path.insert(0, _ALGORITHMS_DIR)
 sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'speechmetrics'))
 # nisqa的predict.py在algorithms/nisqa/目录下，需要添加algorithms目录到路径
@@ -291,25 +292,67 @@ def get_ref_file_by_content(input_wav_file, ref_dir):
 
         if match_results:
             best_match = match_results[0]
-            ref_file = best_match.ref_file
-            ref_name = best_match.ref_name
-            logger.info(f"[参考匹配-内容] ✓ 指纹匹配成功: {input_basename} -> {ref_name} "
-                         f"(confidence={best_match.confidence:.3f}, "
-                         f"offset={best_match.offset_in_test:.2f}s)")
-            return ref_file, {
-                "method": "content_fingerprint",
-                "ref_id": best_match.ref_id,
-                "ref_name": ref_name,
-                "confidence": best_match.confidence,
-                "offset": best_match.offset_in_test,
-                "hash_matches": best_match.hash_matches
-            }
-        else:
-            logger.warning(f"[参考匹配-内容] ✗ 未找到匹配的参考音频: {input_basename}")
+            # 置信度足够高才接受指纹结果（避免offset=0的虚假匹配）
+            # 阈值: hash > 5 且 confidence > 0.2
+            if best_match.confidence >= 0.2 and best_match.hash_matches >= 10:
+                ref_file = best_match.ref_file
+                ref_name = best_match.ref_name
+                logger.info(f"[参考匹配-内容] ✓ 指纹匹配成功: {input_basename} -> {ref_name} "
+                            f"(confidence={best_match.confidence:.3f}, "
+                            f"offset={best_match.offset_in_test:.2f}s, "
+                            f"hash={best_match.hash_matches})")
+                return ref_file, {
+                    "method": "content_fingerprint",
+                    "ref_id": best_match.ref_id,
+                    "ref_name": ref_name,
+                    "confidence": best_match.confidence,
+                    "offset": best_match.offset_in_test,
+                    "hash_matches": best_match.hash_matches
+                }
+            else:
+                logger.warning(f"[参考匹配-内容] 指纹匹配置信度不足: "
+                               f"conf={best_match.confidence:.3f}, "
+                               f"hash={best_match.hash_matches}, "
+                               f"offset={best_match.offset_in_test:.2f}s, "
+                               f"跳过，尝试优化匹配")
     except ImportError as e:
         logger.warning(f"[参考匹配-内容] 指纹匹配模块不可用: {e}")
     except Exception as e:
         logger.error(f"[参考匹配-内容] 匹配失败: {e}")
+
+    # 策略3: 优化版多级回退匹配（低SNR场景）
+    logger.info(f"[参考匹配-优化] 标准匹配失败，尝试优化版多级回退匹配: {input_basename}")
+    try:
+        from matching_optimizer import OptimizedMatcher
+
+        opt_matcher = OptimizedMatcher(ref_dir=ref_dir)
+        match_result = opt_matcher.match_with_fallback(input_wav_file)
+
+        if match_result["matched"] and match_result["ref_file"]:
+            ref_file = match_result["ref_file"]
+            ref_name = match_result.get("ref_name", os.path.basename(ref_file))
+            method = match_result["method"]
+            confidence = match_result["confidence"]
+            offset = match_result["offset"]
+            snr = match_result.get("snr", 0)
+
+            logger.info(f"[参考匹配-优化] ✓ 优化匹配成功: {input_basename} -> {ref_name} "
+                        f"(method={method}, confidence={confidence:.3f}, "
+                        f"offset={offset:.2f}s, snr={snr:.1f}dB)")
+            return ref_file, {
+                "method": f"optimized_{method}",
+                "ref_name": ref_name,
+                "confidence": confidence,
+                "offset": offset,
+                "snr": snr,
+                "detail": match_result.get("detail", {})
+            }
+        else:
+            logger.warning(f"[参考匹配-优化] ✗ 优化匹配也失败: {input_basename}")
+    except ImportError as e:
+        logger.debug(f"[参考匹配-优化] 优化匹配模块不可用: {e}")
+    except Exception as e:
+        logger.error(f"[参考匹配-优化] 优化匹配异常: {e}")
 
     return None, None
 

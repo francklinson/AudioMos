@@ -56,6 +56,7 @@ class DTWLocator:
         self.hop_length = hop_length
         self.n_fft = n_fft
         self.n_mfcc = n_mfcc
+        self._pre_enhancer = None  # 延迟初始化
 
         # 延迟导入dtw
         try:
@@ -67,20 +68,58 @@ class DTWLocator:
             self._dtw = None
             self._dtw_available = False
 
-    def extract_mfcc(self, audio_path: str) -> Tuple[np.ndarray, np.ndarray]:
-        """提取MFCC特征"""
+    def _get_pre_enhancer(self):
+        if self._pre_enhancer is None:
+            try:
+                from matching_optimizer import LightweightPreEnhancer
+                self._pre_enhancer = LightweightPreEnhancer(method='wiener', sr=self.sr)
+            except Exception:
+                self._pre_enhancer = None
+        return self._pre_enhancer
+
+    def extract_mfcc(self, audio_path: str, pre_enhance: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+        """提取MFCC特征，可选预增强"""
         y, sr = librosa.load(audio_path, sr=self.sr, mono=True)
+
+        # 可选预增强
+        if pre_enhance:
+            enhancer = self._get_pre_enhancer()
+            if enhancer:
+                y = enhancer.enhance(y, sr)
+
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=self.n_mfcc,
                                      n_fft=self.n_fft, hop_length=self.hop_length)
-        return mfcc.T, y  # (时间帧, 特征维度)
 
-    def extract_mfcc_from_array(self, audio: np.ndarray, sr: int) -> Tuple[np.ndarray, np.ndarray]:
-        """从numpy数组提取MFCC特征"""
+        # 尝试CMVN归一化
+        try:
+            from matching_optimizer import apply_cmvn, add_delta_features
+            mfcc = apply_cmvn(mfcc.T)
+            mfcc = add_delta_features(mfcc)
+            return mfcc, y
+        except Exception:
+            return mfcc.T, y
+
+    def extract_mfcc_from_array(self, audio: np.ndarray, sr: int,
+                                 pre_enhance: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+        """从numpy数组提取MFCC特征，可选预增强"""
         if sr != self.sr:
             audio = librosa.resample(audio, orig_sr=sr, target_sr=self.sr)
+
+        if pre_enhance:
+            enhancer = self._get_pre_enhancer()
+            if enhancer:
+                audio = enhancer.enhance(audio, sr)
+
         mfcc = librosa.feature.mfcc(y=audio, sr=self.sr, n_mfcc=self.n_mfcc,
                                      n_fft=self.n_fft, hop_length=self.hop_length)
-        return mfcc.T, audio
+
+        try:
+            from matching_optimizer import apply_cmvn, add_delta_features
+            mfcc = apply_cmvn(mfcc.T)
+            mfcc = add_delta_features(mfcc)
+            return mfcc, audio
+        except Exception:
+            return mfcc.T, audio
 
     def index2time(self, index: int) -> float:
         """帧索引转时间（秒）"""
@@ -112,13 +151,27 @@ class DTWLocator:
                      f"ref={os.path.basename(ref_audio_path)}, "
                      f"search_range=[{search_start:.1f}, {search_end or 'end'}]")
 
-        # 提取参考音频MFCC
-        ref_mfcc, ref_y = self.extract_mfcc(ref_audio_path)
+        # 先检测SNR，决定是否启用预增强
+        use_pre_enhance = False
+        _snr = 30.0
+        try:
+            from matching_optimizer import LightweightPreEnhancer
+            _pre_check = LightweightPreEnhancer(method='wiener', sr=self.sr)
+            _y_check, _sr_check = librosa.load(test_audio_path, sr=self.sr, mono=True)
+            _snr = _pre_check.estimate_snr(_y_check)
+            use_pre_enhance = _snr < 10
+            if use_pre_enhance:
+                logger.info(f"[DTW定位器] SNR={_snr:.1f}dB < 10dB，启用预增强+CMVN+Delta")
+        except Exception:
+            pass
+
+        # 提取参考音频MFCC（参考音频是干净的，不做预增强）
+        ref_mfcc, ref_y = self.extract_mfcc(ref_audio_path, pre_enhance=False)
         ref_duration = len(ref_y) / self.sr
         ref_frames = ref_mfcc.shape[0]
 
-        # 提取测试音频MFCC
-        test_mfcc, test_y = self.extract_mfcc(test_audio_path)
+        # 提取测试音频MFCC（根据SNR决定是否预增强）
+        test_mfcc, test_y = self.extract_mfcc(test_audio_path, pre_enhance=use_pre_enhance)
         test_duration = len(test_y) / self.sr
 
         # 确定搜索范围
@@ -139,7 +192,7 @@ class DTWLocator:
                 "start_frame": start_frame
             }
 
-        # 滑动窗口DTW搜索
+        # 滑动窗口DTW搜索（使用余弦距离，对幅度变化更鲁棒）
         best_distance = float('inf')
         best_frame = -1
 
@@ -149,7 +202,7 @@ class DTWLocator:
             if window.shape[0] < ref_frames:
                 break
             try:
-                alignment = self._dtw(window, ref_mfcc, dist_method='euclidean')
+                alignment = self._dtw(window, ref_mfcc, dist_method='cosine')
                 if alignment.distance < best_distance:
                     best_distance = alignment.distance
                     best_frame = i
@@ -163,14 +216,31 @@ class DTWLocator:
 
         start_time = self.index2time(best_frame)
         logger.info(f"[DTW定位器] 找到匹配: start_time={start_time:.3f}s, "
-                     f"duration={ref_duration:.3f}s, distance={best_distance:.1f}")
+                     f"duration={ref_duration:.3f}s, distance={best_distance:.1f}, "
+                     f"snr={_snr:.1f}dB, pre_enhanced={use_pre_enhance}")
 
         return {
             "start_time": start_time,
             "duration": ref_duration,
             "distance": best_distance,
-            "start_frame": best_frame
+            "start_frame": best_frame,
+            "snr": _snr,
+            "pre_enhanced": use_pre_enhance
         }
+
+    def extract_mfcc_with_cmvn(self, audio_path: str) -> Tuple[np.ndarray, np.ndarray]:
+        """提取CMVN归一化的MFCC（噪声鲁棒版本）"""
+        try:
+            from matching_optimizer import apply_cmvn, add_delta_features, librosa_load, librosa_mfcc
+            y, sr = librosa_load(audio_path, sr=self.sr)
+            mfcc = librosa_mfcc(y=y, sr=sr, n_mfcc=self.n_mfcc,
+                                 n_fft=self.n_fft, hop_length=self.hop_length)
+            mfcc = apply_cmvn(mfcc.T)
+            mfcc = add_delta_features(mfcc)
+            return mfcc, y
+        except Exception:
+            # 回退到原始MFCC
+            return self.extract_mfcc(audio_path)
 
 
 # ============================================================================
@@ -399,7 +469,7 @@ class ReferencePipeline:
                     lag_seconds = lag / proc_sr
 
                     # 验证对齐质量：互相关峰值是否足够高
-                    # 用自相关峰值作为参考，互相关应达到其30%以上才算有效对齐
+                    # 用自相关峰值作为参考
                     auto_corr = scipy_signal.correlate(
                         ref_audio[:min_len], ref_audio[:min_len], mode='same'
                     )
@@ -407,12 +477,24 @@ class ReferencePipeline:
                     cross_peak = np.max(np.abs(correlation))
                     quality = cross_peak / auto_peak if auto_peak > 0 else 0
 
-                    # 限制 lag 在合理范围内（±1秒），防止随机匹配
-                    max_lag = int(1.0 * proc_sr)
+                    # 自适应阈值：低SNR时放宽条件
+                    # 检查DTW结果中是否有SNR信息
+                    dtw_snr = match.get('snr', 30) if isinstance(match.get('dtw_distance'), dict) else 30
+                    if dtw_snr < 5:
+                        quality_threshold = 0.10  # 极低SNR：大幅放宽
+                        max_lag = int(2.0 * proc_sr)  # ±2秒
+                    elif dtw_snr < 10:
+                        quality_threshold = 0.15  # 低SNR：放宽
+                        max_lag = int(1.5 * proc_sr)  # ±1.5秒
+                    else:
+                        quality_threshold = 0.25  # 正常SNR
+                        max_lag = int(1.0 * proc_sr)  # ±1秒
 
-                    if quality >= 0.3 and abs(lag) <= max_lag:
+                    # 限制 lag 在合理范围内，防止随机匹配
+                    if quality >= quality_threshold and abs(lag) <= max_lag:
                         logger.info(f"[匹配管道]   对齐 {match['ref_name']}: "
-                                     f"lag={lag} samples ({lag_seconds:.3f}s), quality={quality:.3f}")
+                                     f"lag={lag} samples ({lag_seconds:.3f}s), quality={quality:.3f}, "
+                                     f"threshold={quality_threshold}")
                         # 应用对齐
                         aligned = np.zeros_like(segment)
                         if lag > 0:
@@ -424,6 +506,7 @@ class ReferencePipeline:
                     else:
                         logger.warning(f"[匹配管道]   对齐质量不足 {match['ref_name']}: "
                                        f"lag={lag}, quality={quality:.3f}, "
+                                       f"threshold={quality_threshold}, "
                                        f"跳过精细对齐，使用DTW切分结果")
                         aligned = segment
                 else:

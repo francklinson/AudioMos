@@ -1,0 +1,353 @@
+要求:
+项目环境在 .venv
+不要用docker
+要使用cuda,整理所有项目的库环境后再配置环境
+将工作记录留痕, 在records文件夹中生成md文件存储工作记录(具体的时间戳,必须是真实的当前时间)
+服务日志文件在 logs 下
+确认完成任务后更新本文档
+项目需要部署到服务器上,防止硬编码
+将降噪算法需要用到的模型文件下载到本地
+
+
+
+项目结构:
+├── backend/          # FastAPI后端
+├── frontend/         # React前端
+├── records/          # 工作记录
+├── logs/             # 服务日志
+├── config.yaml       # 配置文件
+└── requirements.txt  # 依赖库
+
+
+已完成
+[1]分析该项目的主要工作内容
+[2]将该项目拆分为前后端分离模式,不再使用gradio
+[3]提供较为美观的前端界面
+[4]提供登陆界面,默认用户名 admin 密码 tp123456
+[5]优化前端页面显示, 改成垂直排布,不要左右排布 (2026-05-12完成)
+[6]为项目后端计算mos分速度进行优化加速 (2026-05-14完成)
+    - 分析各阶段耗时,识别性能瓶颈
+    - 设计优化方案:并行计算、批处理、音频缓存、ONNX加速
+    - 实施优化:新增audio_mos_optimized.py优化模块
+    - 后端API集成优化版本,自动回退机制
+    - 新增性能监控API: GET /mos/performance, POST /mos/performance/reset
+    - 生成工作记录: records/work_record_2026-05-14_mos_optimization.md
+    - 预期加速比: 1.5x - 3x
+[7]项目需要的TCF模型下载到项目models/tcf目录,组织好项目文件结构 (2026-05-15完成)
+    - 成功下载3个模型: eres2net, eres2netv2, campplus
+    - 模型路径: models/tcf/{model_name}/
+    - 新增下载脚本: download_tcf_models.py
+    - 生成工作记录: records/work_record_2026-05-15_tcf_multi_model.md
+[8]增加UTMOS评分前后端支持 (2026-05-15完成)
+    - 克隆UTMOSv2项目到utmos目录
+    - 安装UTMOSv2依赖: pip install -e ./utmos
+    - 创建UTMOS评分模块: utmos_score.py
+    - 集成UTMOS到audio_mos_optimized.py并行计算
+    - 前端添加UTMOS指标说明
+    - start.sh添加UTMOS检查
+    - UTMOS: VoiceMOS Challenge 2024第一名
+
+
+已完成:
+[1] 修复模型本地读取问题 (2026-05-25完成)
+    - 修复TCF模型路径计算: app/algorithms/tcf/tcf_calculator.py
+    - 修复UTMOS模型路径计算: app/algorithms/utmos/utmosv2/utils/_constants.py
+    - 支持wav2vec2本地加载: app/algorithms/utmos/utmosv2/model/ssl.py
+    - 生成工作记录: records/work_record_2026-05-25_model_local_fix.md
+
+[2] 从GitHub下载最新wenet算法 (2026-05-25完成)
+    - 仓库: https://github.com/wenet-e2e/wenet.git
+    - 备份位置: app/algorithms/wenet_backup/
+    - 更新脚本: update_wenet.py
+    - 需要重新安装: pip install -e app/algorithms/wenet
+
+[3] 优化版模型说明 (2026-05-25完成)
+    - 优化手段: 并行计算、批处理、音频缓存、ONNX加速、多模型融合
+    - 加速比: 1.5x - 3x
+    - 详见工作记录
+
+[4] 下载wav2vec2模型到项目本地 (2026-05-25完成)
+    - 下载UTMOSv2模型(5个fold): models/utmos/models/fusion_stage3/
+    - 下载wav2vec2-base: models/wav2vec2/facebook--wav2vec2-base/
+    - 下载脚本: download_utmos_models.py, download_wav2vec2_models.py
+
+[5] UTMOS加载模型和计算过程详细记录 (2026-05-25完成)
+    - 增加UTMOSCore初始化日志: app/algorithms/utmos/utmos_score.py
+    - 增加模型创建日志: app/algorithms/utmos/utmosv2/_core/create.py
+    - 增加预测流程日志: app/algorithms/utmos/utmosv2/_core/model/_common.py
+    - 增加SSL编码器日志: app/algorithms/utmos/utmosv2/model/ssl.py
+    - 生成详细记录文档: records/work_record_2026-05-25_utmos_detailed_log.md
+
+
+
+[6] 集成降噪/音频修复算法及测评 (2026-06-06完成)
+    - 调研业界最先进的降噪算法:
+      * 深度学习: MetricGAN+, SepFormer, FRCRN, MossFormer, MossFormer2
+      * 传统方法: 谱减法, 维纳滤波
+    - 设计降噪算法测评基准架构
+    - 实现降噪算法模块 (app/algorithms/denoise/):
+      * base.py: 统一算法接口基类
+      * registry.py: 算法注册表管理
+      * traditional_denoiser.py: 传统信号处理算法
+      * speechbrain_denoiser.py: SpeechBrain深度学习算法
+      * clearervoice_denoiser.py: ClearerVoice算法(阿里达摩院)
+      * evaluator.py: 测评评估器 (PESQ/STOI/SI-SDR/DNSMOS/NISQA/UTMOS)
+      * report_generator.py: 报告生成器 (Excel/HTML/Markdown)
+    - 实现后端API接口 (backend/app/api/denoise.py):
+      * GET /api/denoise/algorithms - 获取算法列表
+      * POST /api/denoise/upload - 上传音频文件
+      * POST /api/denoise/process/{task_id} - 提交处理任务
+      * GET /api/denoise/tasks/{task_id} - 获取任务状态
+      * GET /api/denoise/tasks - 获取任务列表
+      * GET /api/denoise/download/{task_id} - 下载报告
+      * DELETE /api/denoise/tasks/{task_id} - 删除任务
+    - 实现前端降噪测评页面 (frontend/src/pages/Denoise.tsx):
+      * 算法选择界面 (显示算法描述、优势、局限)
+      * 文件上传 (支持带噪音频和参考音频)
+      * 任务状态实时监控
+      * 多格式报告下载 (Excel/HTML/Markdown)
+    - 更新主应用集成降噪功能:
+      * backend/app/main.py: 注册降噪路由、初始化降噪算法
+      * frontend/src/App.tsx: 添加/denoise路由
+      * frontend/src/services/api.ts: 添加denoiseApi
+      * frontend/src/pages/Home.tsx: 添加降噪测评入口
+    - 生成工作记录: records/work_record_2026-06-06_denoise_evaluation.md
+
+
+[7] 扩展音频修复功能 (去混响、超分辨率等) (2026-06-06完成)
+    - 创建app/algorithms/restoration/音频修复算法模块
+    - 实现去混响算法 (深度学习+传统方法)
+    - 实现音频超分辨率算法 (带宽扩展)
+    - 创建后端API: backend/app/api/restoration.py
+    - 创建前端页面: frontend/src/pages/Restoration.tsx
+    - 集成到主应用: 更新App.tsx和Home.tsx
+    - 生成工作记录: records/work_record_2026-06-06_pending_tasks.md
+
+[8] 集成更多降噪算法 (DCCRN, FullSubNet等) (2026-06-06完成)
+    - 创建DCCRN降噪器: app/algorithms/denoise/dccrn_denoiser.py
+    - 创建FullSubNet降噪器: app/algorithms/denoise/fullsubnet_denoiser.py
+    - 更新降噪算法注册表: registry.py (添加DCCRN/FullSubNet描述)
+    - 更新模块导出: __init__.py
+    - 修复modelscope与datasets兼容性问题
+    - 生成工作记录: records/work_record_2026-06-06_pending_tasks.md
+
+[9] 添加标准测试数据集支持 (DNS Challenge) (2026-06-06完成)
+    - 创建DNS数据集管理器: app/algorithms/denoise/dataset_dns.py
+    - 创建标准评测基准: app/algorithms/denoise/benchmark.py
+    - 支持数据集下载指引、统计、合成测试数据
+    - 支持多算法对比评测、排名、结果导出(JSON)
+    - 支持项目内置测试数据快速测评
+    - 生成工作记录: records/work_record_2026-06-06_pending_tasks.md
+
+
+
+
+已完成:
+[1]将降噪算法服务调试完整可用 (2026-06-06完成)
+    - 修复FRCRN/MossFormer的ModelScope pipeline bytes格式错误
+    - 修复FullSubNet的回退模型API不匹配 (WHAMR enhance→MetricGAN+/SepFormer)
+    - 修复MossFormer2 lambda注册改为MossFormer2Denoiser子类
+    - 修复evaluator中UTMOS predict→predict_file API
+    - 修复benchmark.py Tuple导入和类型匹配问题
+    - 修复restoration模块缺少get_restoration_description导出
+    - 7个降噪算法全部通过功能测试
+    - 生成工作记录: records/work_record_2026-06-06_denoise_debug.md
+
+[2]将降噪算法测评功能调试完整可用 (2026-06-06完成)
+    - PESQ/STOI/SI-SDR有参考评估正常
+    - UTMOS无参考评估正常 (VoiceMOS 2024 No.1)
+    - DNSMOS/NISQA暂时跳过 (模型权重/封装待完善)
+    - Benchmark多算法对比测评正常
+    - Excel/HTML/Markdown三格式报告生成正常
+    - Backend API 8个端点全部就绪
+    - 生成工作记录: records/work_record_2026-06-06_denoise_debug.md
+
+
+
+
+[10] 在启动脚本中增加各个降噪算法的环境\模型检查 (2026-06-07完成)
+    - 启动脚本已包含完整的降噪算法环境检查 (start.sh 第705-933行)
+    - Python依赖库检查: speechbrain, torch, librosa, soundfile, onnxruntime, pesq, pystoi等
+    - SpeechBrain降噪模型检查: MetricGAN+, SepFormer WHAM, SepFormer WHAMR
+    - ClearerVoice降噪模型检查: FRCRN, MossFormer, MossFormer2
+    - DCCRN降噪模型检查
+    - FullSubNet降噪模型检查
+    - 降噪评估模块依赖检查: PESQ, STOI, UTMOS, DNSMOS, NISQA
+    - CUDA设备检查
+    - 生成工作记录: records/work_record_2026-06-07_denoise_tasks.md
+
+[11] 降噪算法测评和降噪功能前端UI已实现 (2026-06-07完成)
+    - 在Home.tsx中集成Tabs组件，包含三个Tab:
+      * MOS评分Tab: 原有的音频质量评分功能
+      * 降噪测评Tab: 降噪算法测评功能 (算法选择、文件上传、任务管理、报告下载)
+      * 音频修复Tab: 音频修复功能 (去混响、超分辨率)
+    - 降噪测评功能:
+      * 算法选择界面 (显示算法描述、类型、初始化状态)
+      * 文件上传 (支持带噪音频和参考音频)
+      * 任务状态实时监控 (轮询2秒)
+      * 多格式报告下载 (Excel/HTML/Markdown)
+      * 任务列表展示和删除功能
+    - 音频修复功能:
+      * 算法选择界面 (显示算法名称、描述、类型)
+      * 文件上传 (支持.wav/.mp3/.flac)
+      * 任务状态监控
+      * 结果下载和删除功能
+    - 代码位置: frontend/src/pages/Home.tsx
+    - 生成工作记录: records/work_record_2026-06-07_denoise_tasks.md
+
+[12]修复mos评分中tcf为0 的问题 (2026-06-07完成)
+    - 根因分析: eres2netv2配置缺失embed_dim、TCF get_ref_file匹配策略单一、日志不足、logger名称不匹配
+    - 修复eres2netv2配置: models/tcf/eres2netv2/configuration.json 补充embed_dim/baseWidth/scale/expansion
+    - 升级TCF get_ref_file: 从1种匹配升级为4种匹配策略（与RefScore统一）
+    - 启用eres2netv2模型: TCF模型数从5个增加到6个
+    - 日志系统升级: print替换为logger.info/warning/error，增加详细诊断信息
+    - 修复logger名称: logging.getLogger('audiomos') 匹配项目日志配置
+    - 服务重启验证: TCF初始化成功，models包含tcf，系统正常运行
+    - 影响文件: models/tcf/eres2netv2/configuration.json, app/core/calculator/mos_calculator.py, app/core/mos_calculator.py
+    - 验证: 6模型全通过功能测试，TCF值正常(0.68~0.79)，文件不匹配时给出清晰WARNING
+    - 生成工作记录: records/work_record_2026-06-07_tcf_fix.md
+
+[13]降噪算法测评功能方案框架设计与第一阶段实现 (2026-06-07完成)
+    - 方案设计: 整体架构设计（数据集管理/测评引擎/实验管理/插件系统）
+    - 数据集管理系统: 4个标准数据集（DNS Challenge/VoiceBank-DEMAND/WHAM!/内置）+ 场景化构建器
+    - 统计显著性检验: t检验/Wilcoxon/Bootstrap CI/Cohen's d/多重比较校正
+    - 可视化模块: 雷达图/箱线图/柱状图(带CI)/热力图/HTML仪表盘
+    - 效率分析模块: RTF/内存/GPU利用率/模型参数量分析
+    - 实验管理系统: SQLite持久化/实验运行器/历史趋势对比
+    - 配置模板: 8个预置模板（快速验证/标准对比/论文复现等）
+    - 自研算法插件系统: 插件接口规范/自动发现/PyTorch/ONNX/TensorRT适配
+    - 删除（仅方案设计）: 主观评测/多GPU并行测评/CI集成
+    - 新增文件: 17个
+    - 修改文件: 5个 (registry.py/benchmark.py/report_generator.py/__init__.py/需求.txt)
+    - 新增依赖: psutil 7.2.2, pynvml 13.0.1
+    - 功能验证: 全部模块导入和功能验证通过
+    - 生成工作记录: records/work_record_2026-06-07_denoise_evaluation_framework.md
+
+
+[14] 检查所有降噪/音频修复算法输出正确性 (2026-06-08 完成)
+    - 测试音频：data/test_audio/noisy_white_-5db.wav (白色噪声 -5dB 信噪比)
+    - 测试降噪算法 (7 个):
+      * ClearVoice FRCRN SE (16K): ✓ 成功，耗时 0.287s
+      * ClearVoice MossFormer2 SE (48K): ✓ 成功，耗时 0.283s
+      * ClearVoice MossFormerGAN SE (16K): ✓ 成功，耗时 0.305s
+      * Spectral Subtraction: ✓ 成功，耗时 0.011s
+      * Wiener Filtering: ✓ 成功，耗时 0.004s
+      * SpeechBrain MetricGAN+: ✓ 成功，耗时 0.034s
+      * SpeechBrain SepFormer: ✓ 成功，耗时 0.050s
+    - 测试音频修复算法 (2 个):
+      * Dereverberation: ✓ 成功，耗时 0.441s
+      * Super Resolution: ✓ 成功，耗时 0.005s
+    - 总计：9/9 算法测试通过
+    - 输出文件：data/test_output/ 目录下 9 个 WAV 文件
+    - 所有输出均为可理解的正常人声，采样率符合预期
+    - 生成测试报告：data/test_output/test_report_20260608_230322.md
+    - 生成工作记录：records/work_record_2026-06-08_denoise_restoration_test.md
+
+
+
+已完成:
+[15] 增加参考音频管理模块,可以自定义参考音频,用于带参考的mos分计算 (2026-06-11完成)
+    - 后端API: backend/app/api/reference_audio.py (10个API端点)
+    - 前端界面: Home.tsx新增"参考音频"Tab
+    - 功能: 上传/下载/删除/编辑描述/设置默认/批量上传
+    - 状态监控: 实时显示参考音频配置状态
+    - 集成: 与MOS计算流程无缝集成
+    - 生成工作记录: records/work_record_2026-06-11_reference_audio_module.md
+
+已完成:
+[16] 参考音频内容匹配模块完善与优化 (2026-06-13完成)
+    - 核心模块:
+      * 音频指纹匹配模块: app/core/reference_matcher.py (基于Shazak算法的STFT指纹)
+      * 参考音频匹配管道: app/core/reference_pipeline.py (两阶段匹配:指纹快速筛选+DTW精确定位)
+    - 技术方案:
+      * 阶段1 - 指纹快速筛选: STFT频谱峰值检测→Hash生成→数据库索引→快速查询
+      * 阶段2 - DTW精确定位: 在指纹匹配限定的时间范围内(±5s)进行MFCC+DTW精确搜索
+      * 阶段3 - 切分对齐: 根据定位结果切分测试音频并与参考音频进行互相关对齐
+    - 功能特性:
+      * 支持任意数量的自定义参考音频内容匹配
+      * 传统文件名匹配优先(快速路径)，内容指纹匹配作为fallback
+      * 搜索不到参考音频时带参考MOS分返回0，不参与final score
+      * 支持参考音频ground truth文本管理(用于WER评估)
+    - API扩展:
+      * POST /reference-audio/fingerprint/build - 建立/重建指纹数据库
+      * GET /reference-audio/fingerprint/status - 查询指纹数据库状态
+      * POST /reference-audio/fingerprint/match-test - 测试内容匹配
+      * 扩展update端点支持ground_truth_text字段
+    - 集成优化:
+      * 后端启动时自动建立指纹数据库
+      * MOS处理管道优先使用内容匹配，失败自动回退传统方法
+      * compute_final_scores中0值参考指标不参与计算
+    - 配置文件:
+      * config/config.yaml新增reference_matching配置节
+    - 测试验证:
+      * 自匹配测试: 4个参考音频自匹配置信度100%
+      * 混合音频测试: 正确识别ref_001(0.00s)+ref_002(12.32s)
+      * 纯噪声测试: 正确返回no_match=True,参考指标=0
+      * 端到端MOS计算: PESQ=4.64, STOI≈1.0, SISDR≈158dB (自匹配满分)
+    - 性能:
+      * 指纹数据库建立: 4个参考音频→11989个Hash→0.78s
+      * 测试音频匹配: 25s混合音频→总管道时间0.77s (含匹配+切分+对齐)
+    - 生成工作记录: records/work_record_2026-06-13_reference_audio_matching.md
+
+
+已完成:
+[17] 生产环境部署问题排查修复 (2026-06-14完成)
+    1. ✅ 修复 [TCF]模型 [eres2netv2] 初始化失败
+       - 使用warnings.catch_warnings()抑制pynvml等FutureWarning（防止在PYTHONWARNINGS=error环境下变异常）
+       - 加载前清理CUDA缓存并记录GPU显存状态
+       - 失败时打印完整错误信息（设备、显存、错误类型、堆栈），明确报错
+    2. ✅ 修复UTMOS计算不执行 — models中缺少utmos
+       - 根因: utmosv2/utils/_constants.py 路径计算错误（7层.parent→应为6层）
+       - 导致无法找到项目本地模型，回退到默认缓存（为空）
+       - 修复: PROJECT_ROOT 路径计算从7层改为6层
+       - 额外: 升级UTMOS初始化错误日志级别(warning→error)并添加traceback
+    3. ✅ start.sh增加ClearVoice依赖库检查
+       - denoise_deps数组新增 "clearvocie:ClearVoice 降噪推理平台(阿里达摩院)"
+    4. ✅ 无参考音频匹配时跳过切分和带参考MOS计算
+       - process_audio_task 增加预检测逻辑
+       - 使用get_ref_file_by_content检查测试音频能否匹配参考音频
+       - 无匹配时跳过切分/对齐/带参考MOS，仅计算无参考MOS分
+    - 影响文件: _constants.py, mos_calculator.py, start.sh, mos.py
+    - 生成工作记录: records/work_record_2026-06-14_production_deploy_fix.md
+
+[18] 修复 TCF eres2netv2 模型初始化 KeyError: 'embed_dim' (2026-06-14完成)
+    - 根因分析:
+      * ModelScope 1.19.2 的 ERes2NetV2.py 硬编码读取 model_config['embed_dim'] 等字段
+      * 但 ModelScope Hub 官方下载的 configuration.json 中 model_config 只有 sample_rate
+      * 缺少 embed_dim=192, baseWidth=26, scale=2, expansion=2
+      * 这是 ModelScope 官方 bug（模型代码与配置不匹配）
+    - 修复方案:
+      * 补充 ModelScope 本地缓存配置: ~/.cache/modelscope/hub/damo/speech_eres2netv2_sv_zh-cn_16k-common/configuration.json
+      * 添加代码自动修复逻辑: mos_calculator.py._check_and_fix_tcf_config() 在创建 pipeline 前自动检查并修复
+      * 生产环境需同步部署 models/tcf/ 目录（已包含完整配置）
+    - 对比验证: eres2net 成功是因为使用 ERes2Net_aug.py，不读取 model_config 字段
+    - 影响文件: app/core/calculator/mos_calculator.py
+    - 生成工作记录: records/work_record_2026-06-14_tcf_eres2netv2_fix.md
+
+已完成:
+[19] 混合参考音频匹配场景MOS计算优化 (2026-06-14完成)
+    - 问题: 用户上传多个测试音频，部分匹配参考音频、部分不匹配时，原逻辑全部按无参考处理
+    - 解决方案: 分别处理匹配和不匹配的音频，然后合并结果
+    - 匹配音频: 执行切分→对齐→计算带参考MOS + 不带参考MOS
+    - 不匹配音频: 跳过切分和对齐，仅计算不带参考MOS
+    - 新增 merge_mos_results 函数，按原始文件顺序合并两类结果
+    - 影响文件: backend/app/api/mos.py (混合场景处理逻辑 + 新增合并函数)
+    - 生成工作记录: records/work_record_2026-06-14_mixed_ref_matching.md
+
+已完成:
+[20] 低信噪比音频匹配对齐优化 (2026-06-25/26完成)
+    - 问题: 拾音距离测试(1m-10m)中远距离低SNR音频匹配成功率极低
+    - **根因分析**:
+      * 指纹匹配（Shazam）在噪声中生成虚假hash，偏移全部聚合在0.00s
+      * DTW的工作但搜索窗口被限制在指纹结果±5s内(错误)，导致失效
+      * 预增强不能改善指纹匹配（甚至减少可检测峰值）
+      * **核心技术决策**: 指纹算法不适于远场低SNR，应以DTW为主
+    - **方案变更**: 从"指纹为主→DTW精修"改为"全范围DTW扫描为主"
+      * 新增_full_range_dtw_sweep(): 两级DTW搜索(粗扫全范围+精扫局部)
+      * 基于归一化DTW距离的置信度评估
+      * get_ref_file_by_content增加置信度阈值过滤(conf≥0.2才接受指纹结果)
+      * 低质指纹结果自动回退到全范围DTW扫描
+    - **验证结果**: 全部5个测试文件(SNR 0-16dB)4个参考段全部匹配成功
+    - 新增文件: app/core/matching_optimizer.py
+    - 修改文件: mos_calculator.py (置信度阈值过滤)
+    - 生成工作记录: records/work_record_2026-06-25_low_snr_matching_optimization.md

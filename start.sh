@@ -1096,6 +1096,9 @@ start_unified() {
     cat > "$SCRIPT_DIR/.start_server.py" << 'PYEOF'
 import sys
 import os
+
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(os.path.join(_script_dir, 'backend'))
 sys.path.insert(0, '.')
 
 import uvicorn

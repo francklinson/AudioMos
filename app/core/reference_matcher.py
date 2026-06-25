@@ -64,6 +64,42 @@ class FingerprintConfig:
     min_hash_match: int = 10     # 最少匹配hash数（从3提高到10，确保匹配质量）
     min_confidence: float = 0.05  # 最低置信度（从0.10降低到0.05，主要依赖hash数量）
 
+    def create_adaptive(self, snr_db: float = 10.0) -> 'FingerprintConfig':
+        """
+        根据SNR创建自适应配置
+        Args:
+            snr_db: 信噪比(dB)，越低表示噪声越大
+        Returns:
+            自适应调整后的FingerprintConfig
+        """
+        if snr_db < 0:
+            # 极低SNR: 大幅放宽
+            return FingerprintConfig(
+                sr=self.sr, n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length,
+                amp_min=2.0, neighborhood=10, near_num=12,
+                min_time_delta=self.min_time_delta, max_time_delta=self.max_time_delta,
+                min_hash_match=3, min_confidence=0.02
+            )
+        elif snr_db < 8:
+            # 低SNR: 适度放宽
+            return FingerprintConfig(
+                sr=self.sr, n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length,
+                amp_min=3.0, neighborhood=12, near_num=15,
+                min_time_delta=self.min_time_delta, max_time_delta=self.max_time_delta,
+                min_hash_match=4, min_confidence=0.03
+            )
+        elif snr_db < 15:
+            # 中低SNR: 轻微放宽
+            return FingerprintConfig(
+                sr=self.sr, n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length,
+                amp_min=4.0, neighborhood=14, near_num=18,
+                min_time_delta=self.min_time_delta, max_time_delta=self.max_time_delta,
+                min_hash_match=5, min_confidence=0.04
+            )
+        else:
+            # 正常SNR: 使用默认值
+            return self
+
 
 # 全局默认配置
 DEFAULT_CONFIG = FingerprintConfig()
