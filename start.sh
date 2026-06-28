@@ -1012,7 +1012,12 @@ start_unified() {
     
     # 检查并自动构建前端
     local needs_build=false
-    if [ ! -f "$SCRIPT_DIR/backend/static/index.html" ]; then
+
+    # 检测简化前端（HTML+JS+CSS，无需Node.js构建）
+    if [ -f "$SCRIPT_DIR/backend/static/js/app.js" ] && [ -f "$SCRIPT_DIR/backend/static/css/app.css" ]; then
+        echo "   ✅ 检测到简化前端（HTML+JS+CSS），跳过Node.js构建"
+        needs_build=false
+    elif [ ! -f "$SCRIPT_DIR/backend/static/index.html" ]; then
         echo ""
         echo "📦 未检测到前端构建文件，需要自动构建..."
         needs_build=true
@@ -1020,7 +1025,7 @@ start_unified() {
         echo ""
         echo "📦 已设置 AUDIOMOS_REBUILD_FRONTEND，强制重新构建前端..."
         needs_build=true
-    elif [ "$SCRIPT_DIR/frontend/src" -nt "$SCRIPT_DIR/backend/static/index.html" ]; then
+    elif [ "$SCRIPT_DIR/frontend/src" -nt "$SCRIPT_DIR/backend/static/index.html" ] && [ ! -f "$SCRIPT_DIR/backend/static/js/app.js" ]; then
         echo ""
         echo "📦 检测到前端源码有更新，自动重新构建..."
         needs_build=true

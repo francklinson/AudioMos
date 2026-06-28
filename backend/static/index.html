@@ -1,14 +1,461 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AudioMOS - 音频质量评分系统</title>
-    <script type="module" crossorigin src="/assets/index-DGQ2fIYi.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BmSyKMt1.css">
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AudioMOS - 音频质量评分系统</title>
+  <link href="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.bootcdn.net/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link href="css/app.css" rel="stylesheet">
+</head>
+<body>
+
+<!-- ===================== 登录页面 ===================== -->
+<div id="login-section">
+  <div class="login-decoration">
+    <div class="shape shape-1"></div><div class="shape shape-2"></div>
+    <div class="shape shape-3"></div><div class="shape shape-4"></div>
+    <div class="shape shape-5"></div>
+    <div class="float-icon fi-1"><i class="bi bi-music-note-beamed"></i></div>
+    <div class="float-icon fi-2"><i class="bi bi-headphones"></i></div>
+    <div class="float-icon fi-3"><i class="bi bi-soundwave"></i></div>
+    <div class="float-icon fi-4"><i class="bi bi-play-circle"></i></div>
+  </div>
+  <div class="login-container">
+    <div class="login-brand">
+      <div class="brand-icon pulse"><i class="bi bi-soundwave"></i></div>
+      <h1>AudioMOS</h1>
+      <p class="text-muted">专业音频质量评分系统</p>
+      <div class="feature-list">
+        <div><i class="bi bi-check-circle-fill"></i> 多维度MOS评分</div>
+        <div><i class="bi bi-check-circle-fill"></i> 智能音频分析</div>
+        <div><i class="bi bi-check-circle-fill"></i> 批量处理支持</div>
+      </div>
+    </div>
+    <div class="login-card">
+      <div class="login-card-header">
+        <i class="bi bi-lock-fill"></i>
+        <h3>欢迎登录</h3>
+        <p class="text-muted">请输入您的账号信息</p>
+      </div>
+      <form id="login-form" autocomplete="off">
+        <div class="mb-3">
+          <div class="input-group">
+            <span class="input-group-text"><i class="bi bi-person-fill"></i></span>
+            <input type="text" class="form-control" id="username-input" placeholder="用户名" value="admin" required>
+          </div>
+        </div>
+        <div class="mb-4">
+          <div class="input-group">
+            <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
+            <input type="password" class="form-control" id="password-input" placeholder="密码" required>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg w-100" id="login-btn">
+          <span id="login-btn-text">登录</span>
+          <div class="spinner-border spinner-border-sm d-none" id="login-spinner" role="status"></div>
+        </button>
+      </form>
+      <div class="login-footer">
+        <small class="text-muted">首次登录请联系管理员获取账号</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 主应用 ===================== -->
+<div id="app-section" class="d-none">
+
+  <!-- 导航栏 -->
+  <nav class="app-navbar">
+    <div class="nav-brand">
+      <i class="bi bi-soundwave"></i>
+      <span>AudioMOS 音频质量评分系统</span>
+    </div>
+    <div class="nav-right">
+      <span class="user-greeting">欢迎, <span id="user-display"></span></span>
+      <button class="btn btn-outline-light btn-sm" id="logout-btn">
+        <i class="bi bi-box-arrow-right"></i> 退出
+      </button>
+    </div>
+  </nav>
+
+  <!-- 页面背景装饰 -->
+  <div class="app-bg">
+    <div class="bg-circle c1"></div><div class="bg-circle c2"></div>
+    <div class="bg-circle c3"></div><div class="bg-circle c4"></div><div class="bg-circle c5"></div>
+    <div class="bg-grid"></div>
+  </div>
+
+  <!-- 主内容 -->
+  <div class="app-content">
+    <!-- Tab 导航 -->
+    <ul class="app-tabs nav nav-tabs nav-fill" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="tab-mos" data-bs-toggle="tab" data-bs-target="#pane-mos" type="button" role="tab">
+          <i class="bi bi-bar-chart-fill"></i> MOS评分
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tab-denoise" data-bs-toggle="tab" data-bs-target="#pane-denoise" type="button" role="tab">
+          <i class="bi bi-shield-fill-check"></i> 降噪测评
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tab-restoration" data-bs-toggle="tab" data-bs-target="#pane-restoration" type="button" role="tab">
+          <i class="bi bi-tools"></i> 音频修复
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tab-reference" data-bs-toggle="tab" data-bs-target="#pane-reference" type="button" role="tab">
+          <i class="bi bi-database-fill"></i> 参考音频
+        </button>
+      </li>
+    </ul>
+
+    <div class="tab-content">
+
+      <!-- ==================== MOS评分 Tab ==================== -->
+      <div class="tab-pane fade show active" id="pane-mos" role="tabpanel">
+        <div class="container-fluid py-3">
+          <!-- 上传区域 -->
+          <div class="card mb-3">
+            <div class="card-body">
+              <h5 class="card-title"><i class="bi bi-upload"></i> 上传音频</h5>
+              <div class="upload-zone" id="mos-upload-zone">
+                <i class="bi bi-cloud-arrow-up-fill upload-icon"></i>
+                <p class="mb-1">点击或拖拽文件到此区域上传</p>
+                <small class="text-muted">支持 .wav / .mp3 格式，自动切分对齐并计算多种 MOS 评分指标</small>
+                <input type="file" class="upload-input" id="mos-file-input" multiple accept=".wav,.mp3">
+              </div>
+            </div>
+          </div>
+
+          <!-- 指标选择 -->
+          <div class="card mb-3">
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <h5 class="card-title mb-0"><i class="bi bi-sliders"></i> 计算指标</h5>
+                <button class="btn btn-sm btn-outline-secondary" id="mos-toggle-config">
+                  <i class="bi bi-gear"></i> 展开
+                </button>
+              </div>
+              <div id="mos-metrics-config" class="d-none">
+                <div class="mb-2">
+                  <button class="btn btn-sm btn-outline-primary me-1" id="mos-select-all">全选</button>
+                  <button class="btn btn-sm btn-outline-secondary me-1" id="mos-deselect-all">全不选</button>
+                  <button class="btn btn-sm btn-outline-info" id="mos-reset-default">恢复默认</button>
+                </div>
+                <div class="row g-2">
+                  <div class="col-md-6">
+                    <div class="metric-group">
+                      <h6><i class="bi bi-bookmark-check"></i> 有参考指标 <i class="bi bi-info-circle text-info" title="需要提供参考音频的评分指标"></i></h6>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="pesq" checked> PESQ</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="stoi" checked> STOI</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="sisdr" checked> SISDR</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="wer" checked> WER</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="tcf" checked> TCF</label>
+                    </div>
+                  </div>
+                  <div class="col-md-6">
+                    <div class="metric-group">
+                      <h6><i class="bi bi-bookmark"></i> 无参考指标</h6>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="dnsmos_ovrl" checked> DNSMOS</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="nisqa_mos" checked> NISQA</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="scoreq" checked> Scoreq</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="utmos" checked> UTMOS</label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div id="mos-metrics-summary" class="mt-2">
+                <span class="badge bg-primary me-1" data-metric="pesq">PESQ</span>
+                <span class="badge bg-primary me-1" data-metric="stoi">STOI</span>
+                <span class="badge bg-primary me-1" data-metric="sisdr">SISDR</span>
+                <span class="badge bg-primary me-1" data-metric="wer">WER</span>
+                <span class="badge bg-primary me-1" data-metric="tcf">TCF</span>
+                <span class="badge bg-primary me-1" data-metric="dnsmos_ovrl">DNSMOS</span>
+                <span class="badge bg-primary me-1" data-metric="nisqa_mos">NISQA</span>
+                <span class="badge bg-primary me-1" data-metric="scoreq">Scoreq</span>
+                <span class="badge bg-primary me-1" data-metric="utmos">UTMOS</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 提交按钮 -->
+          <button class="btn btn-submit mb-3" id="mos-submit-btn" disabled>
+            <i class="bi bi-cloud-arrow-up"></i> <span id="mos-submit-text">请选择音频文件</span>
+          </button>
+
+          <!-- 统计卡片 -->
+          <div class="row g-2 mb-3" id="mos-stat-cards">
+            <div class="col-4"><div class="stat-card"><div class="stat-value" id="mos-stat-total">0</div><div class="stat-label">总任务</div></div></div>
+            <div class="col-4"><div class="stat-card"><div class="stat-value text-success" id="mos-stat-completed">0</div><div class="stat-label">已完成</div></div></div>
+            <div class="col-4"><div class="stat-card"><div class="stat-value text-primary" id="mos-stat-processing">0</div><div class="stat-label">处理中</div></div></div>
+          </div>
+
+          <!-- 任务列表 -->
+          <div class="card">
+            <div class="card-body">
+              <h5 class="card-title"><i class="bi bi-list-task"></i> 任务列表</h5>
+              <div id="mos-task-list">
+                <div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无任务</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 降噪测评 Tab ==================== -->
+      <div class="tab-pane fade" id="pane-denoise" role="tabpanel">
+        <div class="container-fluid py-3">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4 class="mb-0"><i class="bi bi-shield-fill-check"></i> 降噪算法测评</h4>
+            <small class="text-muted">多维度评估降噪算法性能</small>
+          </div>
+          <div id="denoise-error" class="alert alert-danger d-none"><i class="bi bi-exclamation-triangle-fill"></i> <span></span></div>
+
+          <ul class="nav nav-pills mb-3" id="denoise-tabs" role="tablist">
+            <li class="nav-item"><button class="nav-link active" id="denoise-tab-upload" data-bs-toggle="pill" data-bs-target="#denoise-pane-upload">新建测评</button></li>
+            <li class="nav-item"><button class="nav-link" id="denoise-tab-tasks" data-bs-toggle="pill" data-bs-target="#denoise-pane-tasks">任务列表 <span class="badge bg-secondary" id="denoise-task-count">0</span></button></li>
+          </ul>
+
+          <div class="tab-content">
+            <!-- 新建测评 -->
+            <div class="tab-pane fade show active" id="denoise-pane-upload">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-grid-3x3-gap-fill"></i> 选择降噪算法</h5>
+                  <div class="row g-2" id="denoise-algorithms"></div>
+                </div>
+              </div>
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-file-earmark-music"></i> 上传音频</h5>
+                  <div class="upload-zone" id="denoise-upload-zone">
+                    <i class="bi bi-cloud-arrow-up-fill upload-icon"></i>
+                    <p class="mb-1">点击选择带噪音频文件</p>
+                    <small class="text-muted">支持 .wav / .mp3 格式，可多选</small>
+                    <input type="file" class="upload-input" id="denoise-file-input" multiple accept=".wav,.mp3">
+                  </div>
+                  <div id="denoise-file-info" class="mt-2 d-none"><span class="badge bg-info" id="denoise-file-count"></span></div>
+                  <div class="form-check mt-2">
+                    <input type="checkbox" class="form-check-input" id="denoise-has-ref">
+                    <label class="form-check-label" for="denoise-has-ref">我有参考音频（干净语音）</label>
+                  </div>
+                  <div id="denoise-ref-upload" class="d-none mt-2">
+                    <div class="upload-zone upload-zone-sm">
+                      <i class="bi bi-cloud-arrow-up-fill"></i> 选择参考音频文件（与带噪文件一一对应）
+                      <input type="file" class="upload-input" id="denoise-ref-input" multiple accept=".wav,.mp3">
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <button class="btn btn-submit" id="denoise-submit-btn" disabled>
+                <i class="bi bi-play-fill"></i> <span>开始测评</span>
+              </button>
+            </div>
+
+            <!-- 任务列表 -->
+            <div class="tab-pane fade" id="denoise-pane-tasks">
+              <div id="denoise-current-task" class="d-none mb-3"></div>
+              <div id="denoise-task-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 音频修复 Tab ==================== -->
+      <div class="tab-pane fade" id="pane-restoration" role="tabpanel">
+        <div class="container-fluid py-3">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4 class="mb-0"><i class="bi bi-tools"></i> 音频修复</h4>
+            <small class="text-muted">去混响、超分辨率、语音降噪</small>
+          </div>
+          <div id="restoration-error" class="alert alert-danger d-none"></div>
+          <div id="restoration-success" class="alert alert-success d-none"></div>
+
+          <ul class="nav nav-pills mb-3" id="restoration-tabs" role="tablist">
+            <li class="nav-item"><button class="nav-link active" id="restoration-tab-upload" data-bs-toggle="pill" data-bs-target="#restoration-pane-upload">新建修复</button></li>
+            <li class="nav-item"><button class="nav-link" id="restoration-tab-tasks" data-bs-toggle="pill" data-bs-target="#restoration-pane-tasks">任务列表 <span class="badge bg-secondary" id="restoration-task-count">0</span></button></li>
+          </ul>
+
+          <div class="tab-content">
+            <div class="tab-pane fade show active" id="restoration-pane-upload">
+              <div class="alert alert-info">
+                <i class="bi bi-info-circle-fill"></i> 上传带噪音频，选择修复算法，即可试听对比处理前后的效果
+              </div>
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-grid-3x3-gap-fill"></i> 选择算法</h5>
+                  <div class="row g-2" id="restoration-algorithms"></div>
+                </div>
+              </div>
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-file-earmark-music"></i> 上传音频</h5>
+                  <div class="upload-zone" id="restoration-upload-zone">
+                    <i class="bi bi-cloud-arrow-up-fill upload-icon"></i>
+                    <p class="mb-1">点击选择音频文件</p>
+                    <small class="text-muted">支持 .wav / .mp3 / .flac 格式</small>
+                    <input type="file" class="upload-input" id="restoration-file-input" accept=".wav,.mp3,.flac">
+                  </div>
+                  <div id="restoration-file-info" class="mt-2 d-none">
+                    <span class="badge bg-info" id="restoration-file-name"></span>
+                    <span class="badge bg-secondary" id="restoration-file-size"></span>
+                  </div>
+                </div>
+              </div>
+              <button class="btn btn-submit" id="restoration-submit-btn" disabled>
+                <i class="bi bi-play-fill"></i> <span>开始修复</span>
+              </button>
+            </div>
+
+            <div class="tab-pane fade" id="restoration-pane-tasks">
+              <div id="restoration-task-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 参考音频 Tab ==================== -->
+      <div class="tab-pane fade" id="pane-reference" role="tabpanel">
+        <div class="container-fluid py-3">
+          <!-- 状态概览 -->
+          <div class="row g-2 mb-3" id="ref-status-cards">
+            <div class="col-4"><div class="stat-card"><div class="stat-value" id="ref-stat-count">0</div><div class="stat-label">参考音频</div></div></div>
+            <div class="col-4"><div class="stat-card"><div class="stat-value" id="ref-stat-fingerprint"><span class="text-secondary">未建立</span></div><div class="stat-label">指纹数据库</div></div></div>
+            <div class="col-4"><div class="stat-card"><div class="stat-value" id="ref-stat-size">0 B</div><div class="stat-label">总占用</div></div></div>
+          </div>
+
+          <!-- 上传 -->
+          <div class="card mb-3">
+            <div class="card-body">
+              <h5 class="card-title"><i class="bi bi-upload"></i> 上传参考音频</h5>
+              <div class="upload-zone" id="ref-upload-zone">
+                <i class="bi bi-cloud-arrow-up-fill upload-icon"></i>
+                <p class="mb-1">点击选择参考音频文件</p>
+                <small class="text-muted">支持 .wav / .mp3 格式，可多选</small>
+                <input type="file" class="upload-input" id="ref-file-input" multiple accept=".wav,.mp3">
+              </div>
+              <div id="ref-upload-info" class="mt-2 d-none">
+                <span class="badge bg-info" id="ref-upload-count"></span>
+                <button class="btn btn-sm btn-primary ms-2" id="ref-upload-btn">
+                  <i class="bi bi-cloud-upload"></i> 开始上传
+                </button>
+                <div class="spinner-border spinner-border-sm d-none ms-2" id="ref-upload-spinner"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 参考音频列表 -->
+          <div class="card mb-3">
+            <div class="card-body">
+              <h5 class="card-title"><i class="bi bi-list-ul"></i> 参考音频列表</h5>
+              <div id="ref-audio-list">
+                <div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无参考音频</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 指纹数据库管理 -->
+          <div class="card">
+            <div class="card-body">
+              <h5 class="card-title"><i class="bi bi-fingerprint"></i> 指纹数据库管理</h5>
+              <div id="ref-fingerprint-status">
+                <div class="text-center text-muted py-3">加载中...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /tab-content -->
+  </div><!-- /app-content -->
+</div>
+
+<!-- ===================== Modal: MOS 结果 ===================== -->
+<div class="modal fade" id="mos-result-modal" tabindex="-1">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-eye-fill"></i> 任务结果</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="mos-result-body">
+        <div class="text-center py-4"><div class="spinner-border" role="status"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Modal: 参考音频编辑 ===================== -->
+<div class="modal fade" id="ref-edit-modal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-pencil-fill"></i> 编辑参考音频</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3"><label class="form-label">文件名</label><input type="text" class="form-control" id="ref-edit-filename" readonly></div>
+        <div class="row mb-3">
+          <div class="col-6"><label class="form-label">时长</label><input type="text" class="form-control" id="ref-edit-duration" readonly></div>
+          <div class="col-6"><label class="form-label">采样率</label><input type="text" class="form-control" id="ref-edit-samplerate" readonly></div>
+        </div>
+        <div class="mb-3"><label class="form-label">描述</label><textarea class="form-control" id="ref-edit-description" rows="2"></textarea></div>
+        <div class="mb-3"><label class="form-label">Ground Truth 文本（用于 WER 评估）</label><textarea class="form-control" id="ref-edit-groundtruth" rows="3"></textarea></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-primary" id="ref-edit-save-btn">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Modal: 内容匹配测试 ===================== -->
+<div class="modal fade" id="ref-match-modal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-search"></i> 测试内容匹配</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">任务ID</label>
+          <input type="text" class="form-control" id="ref-match-taskid" placeholder="输入已处理的任务ID">
+        </div>
+        <button class="btn btn-primary mb-3" id="ref-match-test-btn">
+          <i class="bi bi-search"></i> 测试匹配
+        </button>
+        <div id="ref-match-result"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Modal: 确认对话框 ===================== -->
+<div class="modal fade" id="confirm-modal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content">
+      <div class="modal-header"><h6 class="modal-title">确认操作</h6><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body" id="confirm-modal-body">确定要执行此操作吗？</div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-danger" id="confirm-modal-ok">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Audio 元素（隐藏） ===================== -->
+<audio id="audio-player" style="display:none"></audio>
+
+<!-- ===================== Scripts ===================== -->
+<script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="js/app.js"></script>
+</body>
 </html>
