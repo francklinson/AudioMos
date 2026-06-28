@@ -775,6 +775,34 @@ class OptimizedMatcher:
         self.embedding_matcher = EmbeddingMatcher(ref_dir=ref_dir)
         self._embedding_initialized = False
 
+        # 参考MFCC缓存（避免跨文件重复计算）
+        self._ref_mfcc_cache = {}  # ref_name -> (mfcc, frames, y)
+        # 最近一次测试音频缓存（避免双加载）
+        self._last_test_path = None
+        self._last_test_y = None
+        self._last_test_sr = None
+
+    def _load_and_cache_ref(self, ref_name: str, ref_path: str):
+        """加载并缓存单个参考音频的MFCC"""
+        if ref_name not in self._ref_mfcc_cache:
+            y, _ = librosa_load(ref_path, sr=16000)
+            mfcc, _ = self.robust_dtw.extract_robust_mfcc_from_array(
+                y, 16000, pre_enhance=False
+            )
+            self._ref_mfcc_cache[ref_name] = (mfcc, mfcc.shape[0], y)
+        return self._ref_mfcc_cache[ref_name]
+
+    def build_ref_cache(self, ref_dir: str = None):
+        """预加载所有参考音频到MFCC缓存"""
+        target = ref_dir or self.ref_dir
+        if not target or not os.path.isdir(target):
+            return
+        for fname in sorted(os.listdir(target)):
+            if fname.endswith(('.wav', '.mp3', '.flac')):
+                fpath = os.path.join(target, fname)
+                self._load_and_cache_ref(fname, fpath)
+        logger.info(f"[MFCC缓存] 已缓存{len(self._ref_mfcc_cache)}个参考音频")
+
     def _estimate_snr_and_noise_floor(self, audio_path: str) -> Tuple[float, float]:
         """估计SNR和噪声底噪"""
         y, sr = librosa_load(audio_path, sr=16000)
@@ -819,6 +847,11 @@ class OptimizedMatcher:
         y_test, sr_test = librosa.load(test_audio_path, sr=16000)
         dur_test = len(y_test) / sr_test
 
+        # 缓存测试音频供_cut_all复用（避免_process_single_file重复加载）
+        self._last_test_path = test_audio_path
+        self._last_test_y = y_test
+        self._last_test_sr = sr_test
+
         logger.info(f"[全范围DTW] 测试音频={os.path.basename(test_audio_path)}, "
                     f"dur={dur_test:.0f}s, 参考数={len(ref_entries)}, "
                     f"pre_enhance={use_pre_enhance}")
@@ -834,18 +867,16 @@ class OptimizedMatcher:
         def _process_single_ref(ref_name: str, ref_path: str) -> Optional[Dict]:
             """对单个参考音频执行两级DTW搜索（线程安全，独立上下文）"""
             try:
-                # 提取参考MFCC
-                ref_y, _ = librosa.load(ref_path, sr=16000)
-                ref_mfcc, _ = dtw.extract_robust_mfcc_from_array(
-                    ref_y, 16000, pre_enhance=False
-                )
-                ref_frames_actual = ref_mfcc.shape[0]
+                # 使用缓存的参考MFCC（避免跨文件重复提取）
+                ref_cache = self._load_and_cache_ref(ref_name, ref_path)
+                ref_mfcc = ref_cache[0]
+                ref_frames_actual = ref_cache[1]
                 # 测试比参考短时无法滑动窗口，跳过；等长时可做一个完整对齐
                 if total_frames < ref_frames_actual:
                     return None
 
                 # --- 粗扫描（大步长，快速定位） ---
-                coarse_step = max(20, int((total_frames - ref_frames_actual) / 15))
+                coarse_step = max(30, int((total_frames - ref_frames_actual) / 10))
                 best_dist = float('inf')
                 best_frame = -1
 
@@ -1203,6 +1234,10 @@ def cut_all_audio_files_with_optimized_matcher(
 
     opt_matcher = OptimizedMatcher(ref_dir=ref_dir)
 
+    # ─── 预计算并缓存所有参考音频的MFCC + HPSS谐波分量 ───
+    opt_matcher.build_ref_cache(ref_dir)
+    logger.info(f"[优化切分] 参考MFCC缓存完成 ({len(opt_matcher._ref_mfcc_cache)}个)")
+
     # ─── 预计算并缓存所有参考音频的HPSS谐波分量 ───
     ref_harm_cache = {}
     ref_samples_cache = {}
@@ -1217,7 +1252,7 @@ def cut_all_audio_files_with_optimized_matcher(
         """处理单个测试音频：DTW扫描→HPSS精对齐→切分"""
         test_name = os.path.splitext(os.path.basename(test_file))[0]
 
-        # 全范围DTW扫描获取所有参考段位置
+        # 全范围DTW扫描获取所有参考段位置（内部已缓存测试音频）
         snr, _ = opt_matcher._estimate_snr_and_noise_floor(test_file)
         dtw_results = opt_matcher._full_range_dtw_sweep(test_file, snr)
 
@@ -1225,8 +1260,12 @@ def cut_all_audio_files_with_optimized_matcher(
             logger.warning(f"[优化切分] {test_name}: 未找到任何匹配，跳过")
             return []
 
-        # 加载测试音频
-        y_test, sr_test = librosa.load(test_file, sr=16000)
+        # 使用DTW阶段缓存的测试音频（消除双加载）
+        if opt_matcher._last_test_path == test_file and opt_matcher._last_test_y is not None:
+            y_test = opt_matcher._last_test_y
+            sr_test = opt_matcher._last_test_sr
+        else:
+            y_test, sr_test = librosa.load(test_file, sr=16000)
 
         # 按 ref_name 排序输出
         dtw_results.sort(key=lambda x: x.get('ref_name', ''))
