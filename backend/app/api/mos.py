@@ -461,19 +461,20 @@ async def process_audio_task(queue_task):
                     logger.error(f"音频切分失败: {e}")
                     split_files = input_files
 
-                await update_task_progress(task_id, 30, "正在进行音频对齐...")
-                align_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_aligned"
-                align_output_dir.mkdir(parents=True, exist_ok=True)
-
-                try:
-                    aligned_files = align_splited_wav_from_list(
-                        split_files,
-                        ref_dir=str(ref_dir),
-                        output_dir=str(align_output_dir)
-                    )
-                except Exception as e:
-                    logger.error(f"音频对齐失败: {e}")
-                    aligned_files = split_files
+                # 优化版切分已在内部做了HPSS精对齐，无需二次对齐
+                if not _HAS_OPTIMIZED_CUT:
+                    await update_task_progress(task_id, 30, "正在进行音频对齐...")
+                    align_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_aligned"
+                    align_output_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        aligned_files = align_splited_wav_from_list(
+                            split_files,
+                            ref_dir=str(ref_dir),
+                            output_dir=str(align_output_dir)
+                        )
+                    except Exception as e:
+                        logger.error(f"音频对齐失败: {e}")
+                        aligned_files = split_files
 
                 await update_task_progress(task_id, 50, "正在计算MOS得分...")
                 loop = asyncio.get_event_loop()
