@@ -188,25 +188,34 @@ def librosa_mfcc(y, sr=16000, n_mfcc=13, n_fft=2048, hop_length=512):
 # HPSS谐波分量提取
 # ============================================================================
 
-def extract_harmonic_component(audio: np.ndarray, sr: int = 16000) -> np.ndarray:
+def extract_harmonic_component(audio: np.ndarray, sr: int = 16000,
+                                 kernel_size: int = 51) -> np.ndarray:
     """
-    提取音频的谐波分量（用于更鲁棒的峰值检测）
+    提取音频的谐波分量（用于更鲁棒的峰值检测和对齐）
     将音频分解为谐波部分（语音）和打击乐部分（噪声/瞬态）
+
+    Args:
+        audio: 输入音频数组
+        sr: 采样率(仅用于日志)
+        kernel_size: HPSS核大小，越大谐波越纯净；建议值31-81，默认51
+
+    原理：
+    - 对STFT时频谱沿频率轴做中值滤波 → 打击乐分量（垂直条纹）
+    - 沿时间轴做中值滤波 → 谐波分量（水平条纹）
+    - 语音的元音表现为稳定的水平能量带，通过时间轴中值滤波保留
+    - 环境噪声宽频分布，在时频谱上无稳定结构，被中值滤波衰减
     """
     import librosa
     try:
-        # HPSS分解
         harmonic, percussive = librosa.effects.hpss(
             audio,
-            kernel_size=31,  # 谐波分量核大小（较大保留更纯净的谐波）
+            kernel_size=kernel_size,
             power=2.0
         )
-        # 同时保留部分原始信号，避免过度滤波导致细节丢失
-        # 混合比例: 0.85 * 谐波 + 0.15 * 原始
-        enhanced = harmonic
         logger.debug(f"[HPSS] 谐波分量提取完成: len={len(audio)}, "
+                     f"kernel={kernel_size}, "
                      f"harmonic_rms={np.sqrt(np.mean(harmonic**2)):.4f}")
-        return enhanced
+        return harmonic
     except Exception as e:
         logger.debug(f"[HPSS] HPSS分解失败: {e}，返回原始音频")
         return audio
@@ -1022,6 +1031,114 @@ class OptimizedMatcher:
         results.sort(key=lambda x: x['confidence'], reverse=True)
         return results
 
+    def _hpss_fine_align(self, ref_audio: np.ndarray, test_audio: np.ndarray,
+                          dtw_offset: float, sr: int = 16000,
+                          kernel_size: int = 51,
+                          max_correction_s: float = 2.0,
+                          min_quality: float = 0.02) -> Tuple[float, float, float]:
+        """
+        HPSS谐波互相关精对齐
+        对DTW帧级定位结果进行样本级精对齐修正
+
+        原理：
+        1. 按DTW offset切出测试段
+        2. 对参考和测试段分别提取HPSS谐波分量（抑制非谐波噪声）
+        3. 谐波分量互相关，检测残留的时间偏移（lag）
+        4. 修正offset = DTW_offset - lag
+
+        Args:
+            ref_audio: 参考音频数组
+            test_audio: 测试音频数组
+            dtw_offset: DTW给出的偏移量(秒)
+            sr: 采样率
+            kernel_size: HPSS谐波核大小，建议51（值越大谐波越纯净）
+            max_correction_s: 最大允许修正量(秒)，超过此值视为DTW失效、跳过修正
+            min_quality: 最低互相关质量，低于此值跳过修正
+
+        Returns:
+            (corrected_offset, residual_lag, quality)
+            - corrected_offset: 精对齐后的偏移量(秒)
+            - residual_lag: 修正后的残留lag(秒)，接近0表示修正成功
+            - quality: 互相关峰值质量(0~1)，越高表示匹配越可靠
+            当质量低于阈值或lag超范围时，返回原始offset
+        """
+        from scipy import signal as scipy_signal
+
+        ref_dur = len(ref_audio) / sr
+        ref_samples = len(ref_audio)
+
+        # 按DTW offset切出段
+        cut_start = int(dtw_offset * sr)
+        cut_end = min(len(test_audio), cut_start + ref_samples)
+        segment = test_audio[cut_start:cut_end]
+
+        # 补齐到ref长度
+        if len(segment) < ref_samples:
+            segment = np.pad(segment, (0, ref_samples - len(segment)))
+        elif len(segment) > ref_samples:
+            segment = segment[:ref_samples]
+
+        # HPSS谐波提取
+        ref_harm = extract_harmonic_component(ref_audio, kernel_size=kernel_size)
+        seg_harm = extract_harmonic_component(segment, kernel_size=kernel_size)
+
+        # 互相关找lag
+        min_len = min(len(ref_harm), len(seg_harm))
+        correlation = scipy_signal.correlate(
+            ref_harm[:min_len], seg_harm[:min_len], mode='full', method='auto'
+        )
+        mid = min_len - 1
+
+        max_lag = int(max_correction_s * sr)
+        s = max(0, mid - max_lag)
+        e = min(len(correlation), mid + max_lag)
+        search = correlation[s:e]
+
+        pk = np.argmax(np.abs(search))
+        lag = (s + pk) - mid
+        lag_s = lag / sr
+
+        # 质量 = 互相关峰值 / 参考自相关峰值
+        auto_corr = scipy_signal.correlate(
+            ref_harm[:min_len], ref_harm[:min_len], mode='same'
+        )
+        quality = float(np.max(np.abs(correlation)) / (np.max(np.abs(auto_corr)) + 1e-10))
+
+        # 安全校验：质量太低或lag不合理时跳过修正
+        if quality < min_quality:
+            logger.debug(f"[HPSS对齐] 质量不足: {quality:.4f} < {min_quality}, 跳过修正")
+            return dtw_offset, 0.0, quality
+
+        if abs(lag_s) > max_correction_s:
+            logger.debug(f"[HPSS对齐] lag超范围: {lag_s:.2f}s > {max_correction_s}s, 跳过修正")
+            return dtw_offset, 0.0, quality
+
+        # 修正offset = DTW offset - lag
+        corrected_offset = dtw_offset - lag_s
+
+        # 验证：用修正后offset重新切分，检测残留lag
+        ncs = int(corrected_offset * sr)
+        nce = min(len(test_audio), ncs + ref_samples)
+        new_seg = test_audio[ncs:nce]
+        if len(new_seg) < ref_samples:
+            new_seg = np.pad(new_seg, (0, ref_samples - len(new_seg)))
+        elif len(new_seg) > ref_samples:
+            new_seg = new_seg[:ref_samples]
+
+        new_harm = extract_harmonic_component(new_seg, kernel_size=kernel_size)
+        new_corr = scipy_signal.correlate(
+            ref_harm[:min_len], new_harm[:min_len], mode='full', method='auto'
+        )
+        new_search = new_corr[s:e]
+        new_pk = np.argmax(np.abs(new_search))
+        residual_lag = ((s + new_pk) - mid) / sr
+
+        logger.info(f"[HPSS对齐] offset: {dtw_offset:.3f}s → {corrected_offset:.3f}s, "
+                    f"lag={lag_s:+.4f}s, residual={residual_lag:+.4f}s, "
+                    f"quality={quality:.4f}, kernel={kernel_size}")
+
+        return corrected_offset, residual_lag, quality
+
     def match_with_fallback(self, test_audio_path: str) -> Dict:
         """
         优化匹配 - 全范围DTW为主，嵌入向量为回退
@@ -1187,14 +1304,33 @@ def cut_all_audio_files_with_optimized_matcher(
             # 加载参考音频确定时长
             ref_y, _ = librosa.load(ref_file, sr=16000)
             ref_dur = len(ref_y) / sr_test
+            ref_samples = len(ref_y)
 
-            # 精确切分：从 offset 到 offset+ref_dur（与参考音频等长对齐）
-            cut_start_samp = int(offset * sr_test)
-            cut_end_samp = min(len(y_test), int((offset + ref_dur) * sr_test))
+            # --- HPSS精对齐修正 ---
+            # 对DTW定位结果进行样本级精对齐
+            corrected_offset, residual_lag, hpss_quality = \
+                opt_matcher._hpss_fine_align(
+                    ref_y, y_test, offset,
+                    sr=sr_test, kernel_size=51,
+                    max_correction_s=2.0, min_quality=0.02
+                )
+
+            # 取修正后的offset用于最终切分
+            final_offset = corrected_offset
+            lag_info = f"lag={offset - corrected_offset:+.3f}s" if abs(offset - corrected_offset) > 0.001 else "lag=0.000s"
+
+            if abs(offset - corrected_offset) > 0.001:
+                logger.info(f"[优化切分]   HPSS精对齐: {ref_name} "
+                            f"offset: {offset:.3f}s → {corrected_offset:.3f}s "
+                            f"({lag_info}, q={hpss_quality:.3f})")
+            # --- HPSS精对齐修正结束 ---
+
+            # 精确切分：从 final_offset 到 final_offset + ref_dur
+            cut_start_samp = int(final_offset * sr_test)
+            cut_end_samp = min(len(y_test), int((final_offset + ref_dur) * sr_test))
             segment = y_test[cut_start_samp:cut_end_samp]
 
-            # 补齐/截断到参考长度（应对音频末尾边界情况）
-            ref_samples = len(ref_y)
+            # 补齐/截断到参考长度
             if len(segment) < ref_samples:
                 segment = np.pad(segment, (0, ref_samples - len(segment)))
             elif len(segment) > ref_samples:
