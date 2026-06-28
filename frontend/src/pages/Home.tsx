@@ -1557,19 +1557,51 @@ const Home: React.FC = () => {
             </Card>
 
             <Table
-              dataSource={selectedTaskResult.results}
+              dataSource={(() => {
+                // 按文件名数字排序（1,2,3...10）
+                const sorted = [...selectedTaskResult.results];
+                sorted.sort((a, b) => {
+                  const nameA = String(a['文件名'] || a['file'] || '');
+                  const nameB = String(b['文件名'] || b['file'] || '');
+                  const numA = parseInt(nameA.match(/\d+/)?.[0] || '0', 10);
+                  const numB = parseInt(nameB.match(/\d+/)?.[0] || '0', 10);
+                  if (numA !== numB) return numA - numB;
+                  return nameA.localeCompare(nameB);
+                });
+                return sorted;
+              })()}
               rowKey={(record) => `${record['文件名'] || record['file'] || 'file'}_${record['任务ID'] || Math.random().toString(36).substr(2, 9)}`}
-              columns={selectedTaskResult.columns.map((col, idx) => ({
-                title: col,
-                dataIndex: col,
-                key: `${col}_${idx}`,
-                render: (value: any) => {
-                  if (typeof value === 'number') {
-                    return value.toFixed(4);
-                  }
-                  return value;
+              columns={[
+                ...selectedTaskResult.columns.map((col, idx) => ({
+                  title: col,
+                  dataIndex: col,
+                  key: `${col}_${idx}`,
+                  render: (value: any) => {
+                    if (typeof value === 'number') {
+                      return value.toFixed(4);
+                    }
+                    return value;
+                  },
+                })),
+                {
+                  title: '操作',
+                  key: 'action',
+                  width: 200,
+                  render: (_: any, record: any) => {
+                    const filename = record['文件名'] || record['file'] || '';
+                    const audioUrl = mosApi.getAudioUrl(selectedTaskResult.task_id, filename);
+                    return (
+                      <audio
+                        controls
+                        style={{ height: 32, width: 180 }}
+                        preload="none"
+                      >
+                        <source src={audioUrl} />
+                      </audio>
+                    );
+                  },
                 },
-              }))}
+              ]}
               scroll={{ x: 'max-content' }}
               pagination={{
                 current: resultPagination.current,

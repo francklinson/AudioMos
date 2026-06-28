@@ -250,12 +250,7 @@ def timed_execution(stage_name: str):
 
 def get_ref_file_by_content(input_wav_file, ref_dir):
     """
-    使用音频内容匹配（指纹+DTW）查找对应的参考文件。
-    这是增强版的 get_ref_file，支持任意自定义参考音频。
-
-    匹配策略（按优先级）：
-    1. 基于文件名的传统匹配（快速，兼容旧模式）
-    2. 基于音频指纹的内容匹配（支持任意参考音频）
+    使用DTW+嵌入匹配查找对应的参考文件。
 
     Args:
         input_wav_file: 测试音频文件路径
@@ -265,98 +260,22 @@ def get_ref_file_by_content(input_wav_file, ref_dir):
         (ref_file_path, match_info) 或 (None, None)
         match_info: {"ref_id": str, "confidence": float, "offset": float, ...}
     """
-    import json
-
-    # 策略1: 传统文件名匹配（快速路径）
     input_basename = os.path.basename(input_wav_file)
-    input_name = input_basename.removesuffix('.wav')
+    input_stem = os.path.splitext(input_basename)[0]
 
-    # 加载参考音频元数据
-    metadata_file = os.path.join(ref_dir, ".metadata.json")
-    metadata = {}
-    if os.path.exists(metadata_file):
-        try:
-            with open(metadata_file, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-        except Exception:
-            pass
+    # 从切分文件名中提取 ref_tag（如 dut_ref_001_001.wav → ref_001.wav）
+    # 这是 DTW 匹配结果的持久化映射，非文件名匹配
+    import re
+    ref_matches = re.findall(r'ref_\d+', input_stem)
+    if ref_matches:
+        # 取最后一个 ref_tag（文件名格式 {test}_{ref_tag}_{idx}.wav）
+        ref_tag = ref_matches[-1]
+        ref_candidate = os.path.join(ref_dir, ref_tag + '.wav')
+        if os.path.exists(ref_candidate):
+            logger.info(f"[参考匹配-切分映射] {input_basename} -> {ref_tag}.wav")
+            return ref_candidate, {"method": "split_mapping", "ref_name": ref_tag}
 
-    audios = metadata.get("audios", {})
-
-    # 方式1: 直接匹配相同文件名
-    ref_file = os.path.join(ref_dir, input_basename)
-    if os.path.exists(ref_file):
-        logger.info(f"[参考匹配-文件名] 直接匹配: {input_basename} -> {input_basename}")
-        return ref_file, {"method": "filename_exact", "ref_name": input_basename}
-
-    # 方式2: 匹配 ref_前缀 + 完整文件名
-    ref_file_name = "ref_" + input_basename
-    ref_file = os.path.join(ref_dir, ref_file_name)
-    if os.path.exists(ref_file):
-        logger.info(f"[参考匹配-文件名] ref_前缀匹配: {input_basename} -> {ref_file_name}")
-        return ref_file, {"method": "filename_ref_prefix", "ref_name": ref_file_name}
-
-    # 方式3: 从文件名提取ID匹配 (如 test_001.wav -> ref_001.wav)
-    parts = input_name.split('_')
-    if len(parts) >= 2:
-        file_id = parts[-1]
-        ref_file_name = f"ref_{file_id}.wav"
-        ref_file = os.path.join(ref_dir, ref_file_name)
-        if os.path.exists(ref_file):
-            logger.info(f"[参考匹配-文件名] ID匹配: {input_basename} -> {ref_file_name}")
-            return ref_file, {"method": "filename_id", "ref_name": ref_file_name}
-
-    # 方式4: 尝试匹配不带后缀的文件名 (如 test.wav -> ref_test.wav)
-    ref_file_name = f"ref_{input_name}.wav"
-    ref_file = os.path.join(ref_dir, ref_file_name)
-    if os.path.exists(ref_file):
-        logger.info(f"[参考匹配-文件名] 全名匹配: {input_basename} -> {ref_file_name}")
-        return ref_file, {"method": "filename_full", "ref_name": ref_file_name}
-
-    # 策略2: 音频内容指纹匹配（较慢但支持任意参考音频）
-    logger.info(f"[参考匹配-内容] 文件名匹配均失败，尝试内容指纹匹配: {input_basename}")
-    try:
-        from reference_matcher import get_reference_matcher
-
-        matcher = get_reference_matcher(ref_dir=ref_dir)
-        # 确保数据库已建立
-        if not matcher.database.entries:
-            matcher.build_database(ref_dir)
-
-        match_results = matcher.match_test_audio(input_wav_file, min_confidence=0.2)
-
-        if match_results:
-            best_match = match_results[0]
-            # 置信度足够高才接受指纹结果（避免offset=0的虚假匹配）
-            # 阈值: hash > 5 且 confidence > 0.2
-            if best_match.confidence >= 0.2 and best_match.hash_matches >= 10:
-                ref_file = best_match.ref_file
-                ref_name = best_match.ref_name
-                logger.info(f"[参考匹配-内容] ✓ 指纹匹配成功: {input_basename} -> {ref_name} "
-                            f"(confidence={best_match.confidence:.3f}, "
-                            f"offset={best_match.offset_in_test:.2f}s, "
-                            f"hash={best_match.hash_matches})")
-                return ref_file, {
-                    "method": "content_fingerprint",
-                    "ref_id": best_match.ref_id,
-                    "ref_name": ref_name,
-                    "confidence": best_match.confidence,
-                    "offset": best_match.offset_in_test,
-                    "hash_matches": best_match.hash_matches
-                }
-            else:
-                logger.warning(f"[参考匹配-内容] 指纹匹配置信度不足: "
-                               f"conf={best_match.confidence:.3f}, "
-                               f"hash={best_match.hash_matches}, "
-                               f"offset={best_match.offset_in_test:.2f}s, "
-                               f"跳过，尝试优化匹配")
-    except ImportError as e:
-        logger.warning(f"[参考匹配-内容] 指纹匹配模块不可用: {e}")
-    except Exception as e:
-        logger.error(f"[参考匹配-内容] 匹配失败: {e}")
-
-    # 策略3: 优化版多级回退匹配（低SNR场景）
-    logger.info(f"[参考匹配-优化] 标准匹配失败，尝试优化版多级回退匹配: {input_basename}")
+    # 优化版多级回退匹配
     try:
         from matching_optimizer import OptimizedMatcher
 

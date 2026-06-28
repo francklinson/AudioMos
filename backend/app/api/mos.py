@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status,
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.api.auth import get_current_active_user
+from app.api.auth import get_current_active_user, get_current_user_optional
 from app.core.security import User
 from app.core.config import settings
 from app.core.logging_config import logger
@@ -448,6 +448,11 @@ async def process_audio_task(queue_task):
                     logger.error(f"音频切分失败: {e}")
                     split_files = input_files
 
+                # 切分为空时说明DTW未找到有效匹配，回退到原始文件
+                if not split_files:
+                    logger.warning(f"[MOS] 切分结果为空，回退到原始文件")
+                    split_files = input_files
+
                 # 优化版输出已是样本级对齐的12s段，无需二次对齐
                 aligned_files = split_files
 
@@ -636,6 +641,10 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
         评分结果字典
     """
     file_num = len(audio_files)
+    if file_num == 0:
+        logger.error("[MOS计算] ❌ 文件列表为空，无法计算")
+        return {}
+
     total_start_time = time.time()
 
     logger.info("=" * 60)
@@ -1111,6 +1120,75 @@ async def get_task_results(
     except Exception as e:
         logger.error(f"读取结果文件失败: {e}")
         raise HTTPException(status_code=500, detail=f"读取结果文件失败: {str(e)}")
+
+
+@router.get("/audio/{task_id}/{filename:path}")
+async def get_source_audio(
+    task_id: str,
+    filename: str,
+    current_user: User = Depends(get_current_user_optional),
+):
+    """
+    获取上传的原始音频文件（用于结果详情页试听，支持 ?token= 查询参数）
+
+    Args:
+        task_id: 任务ID
+        filename: 音频文件名
+        current_user: 当前登录用户（可选，支持token参数）
+
+    Returns:
+        音频文件流
+    """
+    logger.info(f"[MOS试听] 获取原始音频 - task_id: {task_id}, filename: {filename}")
+
+    if task_id not in tasks:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+
+    # 优先查找上传目录（无参考/未对齐的文件）
+    # 如果未找到，再尝试切分对齐后的临时目录（有参考且已对齐的文件）
+    upload_path = Path(settings.paths.upload_dir) / task_id / filename
+    split_path = Path(settings.paths.temp_dir) / f"{task_id}_split" / filename
+
+    if upload_path.exists():
+        file_path = upload_path
+        logger.info(f"[MOS试听] 使用上传目录文件: {file_path}")
+    elif split_path.exists():
+        file_path = split_path
+        logger.info(f"[MOS试听] 使用切分对齐目录文件: {file_path}")
+    else:
+        logger.error(f"[MOS试听] 文件不存在 - 上传目录: {upload_path}")
+        logger.error(f"[MOS试听] 文件不存在 - 切分目录: {split_path}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="音频文件不存在")
+
+    # 验证音频文件
+    try:
+        import soundfile as sf
+        audio, sr = sf.read(str(file_path))
+        logger.info(f"[MOS试听] 音频验证 - 形状: {audio.shape}, 采样率: {sr}")
+    except Exception as e:
+        logger.warning(f"[MOS试听] 无法验证音频: {e}")
+
+    # 推断媒体类型
+    ext = file_path.suffix.lower()
+    media_type_map = {
+        '.wav': 'audio/wav',
+        '.mp3': 'audio/mpeg',
+        '.flac': 'audio/flac',
+        '.ogg': 'audio/ogg',
+        '.m4a': 'audio/mp4',
+    }
+    media_type = media_type_map.get(ext, 'audio/wav')
+
+    logger.info(f"[MOS试听] 返回音频文件: {file_path}, media_type: {media_type}")
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=filename,
+        headers={
+            "X-Task-Id": task_id,
+            "Accept-Ranges": "bytes",
+        },
+    )
 
 
 @router.delete("/tasks/{task_id}")

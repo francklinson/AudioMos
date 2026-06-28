@@ -131,6 +131,12 @@ export const mosApi = {
     const response = await api.get(`/api/mos/results/${taskId}`);
     return response.data;
   },
+
+  /** 获取结果详情中音频文件的试听URL */
+  getAudioUrl: (taskId: string, filename: string) => {
+    const token = localStorage.getItem('token');
+    return `${api.defaults.baseURL}/api/mos/audio/${taskId}/${encodeURIComponent(filename)}?token=${encodeURIComponent(token || '')}`;
+  },
 };
 
 // 降噪测评相关API

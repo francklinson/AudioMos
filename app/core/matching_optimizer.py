@@ -775,18 +775,6 @@ class OptimizedMatcher:
         self.embedding_matcher = EmbeddingMatcher(ref_dir=ref_dir)
         self._embedding_initialized = False
 
-        # 指纹匹配器（复用原有逻辑，但配置自适应）
-        from reference_matcher import ReferenceMatcher, FingerprintConfig, DEFAULT_CONFIG
-        self._default_config = DEFAULT_CONFIG
-        self._fingerprint_matcher = None
-
-    def _get_fingerprint_matcher(self):
-        """获取指纹匹配器实例"""
-        if self._fingerprint_matcher is None and self.ref_dir:
-            from reference_matcher import get_reference_matcher
-            self._fingerprint_matcher = get_reference_matcher(ref_dir=self.ref_dir)
-        return self._fingerprint_matcher
-
     def _estimate_snr_and_noise_floor(self, audio_path: str) -> Tuple[float, float]:
         """估计SNR和噪声底噪"""
         y, sr = librosa_load(audio_path, sr=16000)
@@ -794,131 +782,8 @@ class OptimizedMatcher:
         noise_floor = self.pre_enhancer.estimate_noise_floor(y)
         return snr, noise_floor
 
-    def _adaptive_fingerprint_matching(self, test_audio_path: str,
-                                        snr: float) -> List:
-        """
-        自适应指纹匹配
-        根据SNR调整指纹参数
-        """
-        from reference_matcher import FingerprintConfig
-
-        # 根据SNR自适应调整参数
-        if snr < 0:
-            # 极低SNR: 大幅放宽条件
-            amp_min = 2.0
-            min_hash = 3
-            neighborhood = 10
-            near_num = 15
-        elif snr < 10:
-            # 低SNR: 适度放宽
-            amp_min = 3.0
-            min_hash = 4
-            neighborhood = 12
-            near_num = 18
-        else:
-            # 正常SNR: 使用默认参数
-            amp_min = 5.0
-            min_hash = 5
-            neighborhood = 15
-            near_num = 20
-
-        # 对测试音频进行预增强
-        if snr < 15:
-            logger.info(f"[优化匹配] SNR={snr:.1f}dB < 15dB，预增强后提取指纹")
-            try:
-                y, sr = librosa_load(test_audio_path, sr=16000)
-                y_enhanced = self.pre_enhancer.enhance(y, sr)
-
-                # 保存增强后的音频到临时文件（用于指纹提取）
-                import tempfile
-                import soundfile as sf
-                tmp_fd, tmp_path = tempfile.mkstemp(suffix='.wav')
-                os.close(tmp_fd)
-                sf.write(tmp_path, y_enhanced, 16000)
-
-                # 使用增强音频提取指纹
-                from reference_matcher import FingerprintConfig, AudioFingerprinter
-                config = FingerprintConfig(
-                    amp_min=amp_min,
-                    min_hash_match=min_hash,
-                    neighborhood=neighborhood,
-                    near_num=near_num
-                )
-                fingerprinter = AudioFingerprinter(config)
-                test_hashes = fingerprinter.extract_hashes(tmp_path)
-
-                # 清理临时文件
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-
-                # 在数据库中查询
-                matcher = self._get_fingerprint_matcher()
-                if matcher is None:
-                    return []
-
-                match_hash_list = matcher.database.query(test_hashes)
-                logger.info(f"[优化匹配] 自适应指纹匹配: snr={snr:.1f}dB, "
-                            f"amp_min={amp_min}, min_hash={min_hash}, "
-                            f"hashes={len(test_hashes)}, matches={len(match_hash_list)}")
-
-                if not match_hash_list:
-                    return []
-
-                # 对齐分析
-                alignment_counts = {}
-                for ref_id, offset_ref, offset_query in match_hash_list:
-                    offset_diff = int(offset_ref) - int(offset_query)
-                    key = (ref_id, offset_diff)
-                    alignment_counts[key] = alignment_counts.get(key, 0) + 1
-
-                # 生成结果
-                results = []
-                for (ref_id, offset_diff), count in alignment_counts.items():
-                    if count >= min_hash:
-                        entry = matcher.database.get_entry(ref_id)
-                        if entry:
-                            offset_sec = offset_diff * config.hop_length / config.sr
-                            confidence = min(1.0, count / max(1, entry.hash_count * 0.15))
-                            results.append({
-                                "ref_id": ref_id,
-                                "ref_file": entry.ref_file,
-                                "ref_name": entry.ref_name,
-                                "offset_in_test": max(0, offset_sec),
-                                "confidence": confidence,
-                                "hash_matches": count,
-                                "method": "adaptive_fingerprint",
-                                "snr": snr
-                            })
-
-                results.sort(key=lambda x: x['confidence'], reverse=True)
-                return results
-            except Exception as e:
-                logger.warning(f"[优化匹配] 自适应指纹匹配异常: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
-                return []
-
-        # 高SNR: 使用原始匹配器，转换为统一dict格式
-        matcher = self._get_fingerprint_matcher()
-        if matcher is None:
-            return []
-
-        raw_results = matcher.match_test_audio(test_audio_path)
-        dict_results = []
-        for r in raw_results:
-            dict_results.append({
-                "ref_id": r.ref_id,
-                "ref_file": r.ref_file,
-                "ref_name": r.ref_name,
-                "offset_in_test": r.offset_in_test,
-                "confidence": r.confidence,
-                "hash_matches": r.hash_matches,
-                "method": "standard_fingerprint",
-                "snr": snr
-            })
-        return dict_results
+    # _adaptive_fingerprint_matching 已移除（原Shazam指纹算法，不再使用）
+    # 匹配策略请参考 match_with_fallback()
 
     def _full_range_dtw_sweep(self, test_audio_path: str,
                                 snr: float) -> List[Dict]:
@@ -934,8 +799,17 @@ class OptimizedMatcher:
             [{"ref_id", "ref_file", "ref_name", "offset_in_test",
               "confidence", "dtw_distance", ...}]
         """
-        matcher = self._get_fingerprint_matcher()
-        if matcher is None or not matcher.database.entries:
+        if not self.ref_dir or not os.path.isdir(self.ref_dir):
+            return []
+
+        # 扫描参考音频目录
+        ref_entries = []
+        for fname in sorted(os.listdir(self.ref_dir)):
+            if fname.endswith(('.wav', '.mp3', '.flac')):
+                fpath = os.path.join(self.ref_dir, fname)
+                ref_entries.append((fname, fpath))
+
+        if not ref_entries:
             return []
 
         use_pre_enhance = snr < 10
@@ -946,7 +820,7 @@ class OptimizedMatcher:
         dur_test = len(y_test) / sr_test
 
         logger.info(f"[全范围DTW] 测试音频={os.path.basename(test_audio_path)}, "
-                    f"dur={dur_test:.0f}s, 参考数={len(matcher.database.entries)}, "
+                    f"dur={dur_test:.0f}s, 参考数={len(ref_entries)}, "
                     f"pre_enhance={use_pre_enhance}")
 
         # 提取测试MFCC一次（所有参考复用）
@@ -957,20 +831,18 @@ class OptimizedMatcher:
         total_frames = test_mfcc.shape[0]
         hop_time = 512.0 / sr_test  # 每帧对应时间(秒)
 
-        def _process_single_ref(ref_id: str, entry) -> Optional[Dict]:
+        def _process_single_ref(ref_name: str, ref_path: str) -> Optional[Dict]:
             """对单个参考音频执行两级DTW搜索（线程安全，独立上下文）"""
             try:
-                ref_dur = entry.duration
-                ref_frames = int(ref_dur * sr_test / 512)
-                if total_frames <= ref_frames:
-                    return None
-
                 # 提取参考MFCC
-                ref_y, _ = librosa.load(entry.ref_file, sr=16000)
+                ref_y, _ = librosa.load(ref_path, sr=16000)
                 ref_mfcc, _ = dtw.extract_robust_mfcc_from_array(
                     ref_y, 16000, pre_enhance=False
                 )
                 ref_frames_actual = ref_mfcc.shape[0]
+                # 测试比参考短时无法滑动窗口，跳过；等长时可做一个完整对齐
+                if total_frames < ref_frames_actual:
+                    return None
 
                 # --- 粗扫描（大步长，快速定位） ---
                 coarse_step = max(20, int((total_frames - ref_frames_actual) / 15))
@@ -993,14 +865,14 @@ class OptimizedMatcher:
                     return None
 
                 coarse_offset = best_frame * hop_time
-                logger.debug(f"[全范围DTW] {entry.ref_name}: 粗扫offset={coarse_offset:.1f}s, "
+                logger.debug(f"[全范围DTW] {ref_name}: 粗扫offset={coarse_offset:.1f}s, "
                             f"dist={best_dist:.1f}")
 
                 # --- 精细搜索（小步长精确定位） ---
                 fine_range_sec = 3.0
                 fine_start_frame = max(0, int((coarse_offset - fine_range_sec) / hop_time))
                 fine_end_frame = min(total_frames - ref_frames_actual,
-                                     int((coarse_offset + ref_dur + fine_range_sec) / hop_time))
+                                     int((coarse_offset + ref_frames_actual * hop_time + fine_range_sec) / hop_time))
 
                 fine_best_dist = best_dist
                 fine_best_frame = best_frame
@@ -1033,14 +905,14 @@ class OptimizedMatcher:
                 else:
                     confidence = 0.05
 
-                logger.info(f"[全范围DTW] {entry.ref_name}: offset={fine_offset:.2f}s, "
+                logger.info(f"[全范围DTW] {ref_name}: offset={fine_offset:.2f}s, "
                             f"dist={fine_best_dist:.1f}, norm={norm_dist:.2f}, "
                             f"conf={confidence:.2f}, enhanced={use_pre_enhance}")
 
                 return {
-                    "ref_id": ref_id,
-                    "ref_file": entry.ref_file,
-                    "ref_name": entry.ref_name,
+                    "ref_id": ref_name,
+                    "ref_file": ref_path,
+                    "ref_name": ref_name,
                     "offset_in_test": fine_offset,
                     "confidence": confidence,
                     "dtw_distance": float(fine_best_dist),
@@ -1050,17 +922,16 @@ class OptimizedMatcher:
                     "pre_enhanced": use_pre_enhance
                 }
             except Exception as e:
-                logger.debug(f"[全范围DTW] 参考{entry.ref_name}处理异常: {e}")
+                logger.debug(f"[全范围DTW] 参考{ref_name}处理异常: {e}")
                 return None
 
         # 并行处理所有参考（每个参考独立DTW，互不依赖）
-        entries = list(matcher.database.entries.items())
-        if len(entries) > 1:
-            logger.info(f"[全范围DTW] 并行处理{len(entries)}个参考音频")
+        if len(ref_entries) > 1:
+            logger.info(f"[全范围DTW] 并行处理{len(ref_entries)}个参考音频")
             dtw_executor = get_shared_executor()
             all_futures = {
-                dtw_executor.submit(_process_single_ref, ref_id, entry): ref_id
-                for ref_id, entry in entries
+                dtw_executor.submit(_process_single_ref, ref_name, ref_path): ref_name
+                for ref_name, ref_path in ref_entries
             }
             for future in as_completed(all_futures):
                 try:
@@ -1071,8 +942,8 @@ class OptimizedMatcher:
                     logger.debug(f"[全范围DTW] 线程异常: {e}")
         else:
             # 只有一个参考时，直接执行（避免线程开销）
-            for ref_id, entry in entries:
-                r = _process_single_ref(ref_id, entry)
+            for ref_name, ref_path in ref_entries:
+                r = _process_single_ref(ref_name, ref_path)
                 if r is not None:
                     results.append(r)
 
@@ -1317,28 +1188,29 @@ def cut_all_audio_files_with_optimized_matcher(
     import soundfile as sf
     from pathlib import Path
 
-    # 确保参考库已加载
-    from reference_matcher import get_reference_matcher
-    matcher = get_reference_matcher(ref_dir=ref_dir)
-    if not matcher.database.entries:
-        matcher.build_database(ref_dir)
-
     os.makedirs(output_dir, exist_ok=True)
     output_file_list = []
 
+    # 扫描参考音频目录
+    ref_files = []
+    if ref_dir and os.path.isdir(ref_dir):
+        for fname in sorted(os.listdir(ref_dir)):
+            if fname.endswith(('.wav', '.mp3', '.flac')):
+                ref_files.append((fname, os.path.join(ref_dir, fname)))
+
     logger.info(f"[优化切分] 共{len(input_file_list)}个测试文件，"
-                f"{len(matcher.database.entries)}个参考音频")
+                f"{len(ref_files)}个参考音频")
 
     opt_matcher = OptimizedMatcher(ref_dir=ref_dir)
 
     # ─── 预计算并缓存所有参考音频的HPSS谐波分量 ───
     ref_harm_cache = {}
     ref_samples_cache = {}
-    for ref_id, entry in matcher.database.entries.items():
-        ref_audio, _ = librosa.load(entry.ref_file, sr=16000)
-        ref_harm_cache[ref_id] = extract_harmonic_component(ref_audio, kernel_size=51)
-        ref_samples_cache[ref_id] = len(ref_audio)
-        logger.debug(f"[优化切分] 缓存HPSS: {entry.ref_name} ({ref_samples_cache[ref_id]} samples)")
+    for ref_name, ref_path in ref_files:
+        ref_audio, _ = librosa.load(ref_path, sr=16000)
+        ref_harm_cache[ref_name] = extract_harmonic_component(ref_audio, kernel_size=51)
+        ref_samples_cache[ref_name] = len(ref_audio)
+        logger.debug(f"[优化切分] 缓存HPSS: {ref_name} ({ref_samples_cache[ref_name]} samples)")
 
     # ─── 文件间并行处理：每个文件的DTW+HPSS+切分独立 ───
     def _process_single_file(test_file: str) -> list:
@@ -1383,7 +1255,8 @@ def cut_all_audio_files_with_optimized_matcher(
                 seg = np.pad(seg, (0, ref_nsamples - len(seg)))
             elif len(seg) > ref_nsamples:
                 seg = seg[:ref_nsamples]
-            suffix = f"_{i + 1:03d}.wav"
+            ref_tag = os.path.splitext(ref_name)[0] if ref_name else f"ref_{i + 1:03d}"
+            suffix = f"_{ref_tag}_{i + 1:03d}.wav"
             op = os.path.join(output_dir, test_name + suffix)
             sf.write(op, seg, sr_test)
             logger.info(f"[优化切分] {test_name}{suffix}: ref={ref_name:15s} offset={final_offset:.2f}s")

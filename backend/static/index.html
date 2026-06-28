@@ -38,24 +38,27 @@
         <h3>欢迎登录</h3>
         <p class="text-muted">请输入您的账号信息</p>
       </div>
-      <form id="login-form" autocomplete="off">
+      <div id="login-form">
+        <!-- 迷惑浏览器自动填充：隐藏的假字段 -->
+        <input type="text" style="position:absolute;left:-9999px;width:1px;height:1px" tabindex="-1" aria-hidden="true">
+        <input type="password" style="position:absolute;left:-9999px;width:1px;height:1px" tabindex="-1" aria-hidden="true">
         <div class="mb-3">
           <div class="input-group">
             <span class="input-group-text"><i class="bi bi-person-fill"></i></span>
-            <input type="text" class="form-control" id="username-input" placeholder="用户名" value="admin" required>
+            <input type="text" class="form-control" id="username-input" placeholder="用户名" autocomplete="off">
           </div>
         </div>
         <div class="mb-4">
           <div class="input-group">
             <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
-            <input type="password" class="form-control" id="password-input" placeholder="密码" required>
+            <input type="text" class="form-control" id="password-input" placeholder="密码" autocomplete="off" style="-webkit-text-security:disc">
           </div>
         </div>
-        <button type="submit" class="btn btn-primary btn-lg w-100" id="login-btn">
+        <button type="button" class="btn btn-primary btn-lg w-100" id="login-btn">
           <span id="login-btn-text">登录</span>
           <div class="spinner-border spinner-border-sm d-none" id="login-spinner" role="status"></div>
         </button>
-      </form>
+      </div>
       <div class="login-footer">
         <small class="text-muted">首次登录请联系管理员获取账号</small>
       </div>
@@ -96,11 +99,13 @@
           <i class="bi bi-bar-chart-fill"></i> MOS评分
         </button>
       </li>
+      <!-- 降噪测评 Tab 已隐藏
       <li class="nav-item" role="presentation">
         <button class="nav-link" id="tab-denoise" data-bs-toggle="tab" data-bs-target="#pane-denoise" type="button" role="tab">
           <i class="bi bi-shield-fill-check"></i> 降噪测评
         </button>
       </li>
+      -->
       <li class="nav-item" role="presentation">
         <button class="nav-link" id="tab-restoration" data-bs-toggle="tab" data-bs-target="#pane-restoration" type="button" role="tab">
           <i class="bi bi-tools"></i> 音频修复
@@ -160,8 +165,8 @@
                   <div class="col-md-6">
                     <div class="metric-group">
                       <h6><i class="bi bi-bookmark"></i> 无参考指标</h6>
-                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="dnsmos_ovrl" checked> DNSMOS</label>
-                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="nisqa_mos" checked> NISQA</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="dnsmos" checked> DNSMOS</label>
+                      <label class="metric-item"><input type="checkbox" class="mos-metric" value="nisqa" checked> NISQA</label>
                       <label class="metric-item"><input type="checkbox" class="mos-metric" value="scoreq" checked> Scoreq</label>
                       <label class="metric-item"><input type="checkbox" class="mos-metric" value="utmos" checked> UTMOS</label>
                     </div>
@@ -174,8 +179,8 @@
                 <span class="badge bg-primary me-1" data-metric="sisdr">SISDR</span>
                 <span class="badge bg-primary me-1" data-metric="wer">WER</span>
                 <span class="badge bg-primary me-1" data-metric="tcf">TCF</span>
-                <span class="badge bg-primary me-1" data-metric="dnsmos_ovrl">DNSMOS</span>
-                <span class="badge bg-primary me-1" data-metric="nisqa_mos">NISQA</span>
+                <span class="badge bg-primary me-1" data-metric="dnsmos">DNSMOS</span>
+                <span class="badge bg-primary me-1" data-metric="nisqa">NISQA</span>
                 <span class="badge bg-primary me-1" data-metric="scoreq">Scoreq</span>
                 <span class="badge bg-primary me-1" data-metric="utmos">UTMOS</span>
               </div>
@@ -206,64 +211,11 @@
         </div>
       </div>
 
-      <!-- ==================== 降噪测评 Tab ==================== -->
+      <!-- ==================== 降噪测评 Tab (已隐藏) ====================
       <div class="tab-pane fade" id="pane-denoise" role="tabpanel">
-        <div class="container-fluid py-3">
-          <div class="d-flex justify-content-between align-items-center mb-3">
-            <h4 class="mb-0"><i class="bi bi-shield-fill-check"></i> 降噪算法测评</h4>
-            <small class="text-muted">多维度评估降噪算法性能</small>
-          </div>
-          <div id="denoise-error" class="alert alert-danger d-none"><i class="bi bi-exclamation-triangle-fill"></i> <span></span></div>
-
-          <ul class="nav nav-pills mb-3" id="denoise-tabs" role="tablist">
-            <li class="nav-item"><button class="nav-link active" id="denoise-tab-upload" data-bs-toggle="pill" data-bs-target="#denoise-pane-upload">新建测评</button></li>
-            <li class="nav-item"><button class="nav-link" id="denoise-tab-tasks" data-bs-toggle="pill" data-bs-target="#denoise-pane-tasks">任务列表 <span class="badge bg-secondary" id="denoise-task-count">0</span></button></li>
-          </ul>
-
-          <div class="tab-content">
-            <!-- 新建测评 -->
-            <div class="tab-pane fade show active" id="denoise-pane-upload">
-              <div class="card mb-3">
-                <div class="card-body">
-                  <h5 class="card-title"><i class="bi bi-grid-3x3-gap-fill"></i> 选择降噪算法</h5>
-                  <div class="row g-2" id="denoise-algorithms"></div>
-                </div>
-              </div>
-              <div class="card mb-3">
-                <div class="card-body">
-                  <h5 class="card-title"><i class="bi bi-file-earmark-music"></i> 上传音频</h5>
-                  <div class="upload-zone" id="denoise-upload-zone">
-                    <i class="bi bi-cloud-arrow-up-fill upload-icon"></i>
-                    <p class="mb-1">点击选择带噪音频文件</p>
-                    <small class="text-muted">支持 .wav / .mp3 格式，可多选</small>
-                    <input type="file" class="upload-input" id="denoise-file-input" multiple accept=".wav,.mp3">
-                  </div>
-                  <div id="denoise-file-info" class="mt-2 d-none"><span class="badge bg-info" id="denoise-file-count"></span></div>
-                  <div class="form-check mt-2">
-                    <input type="checkbox" class="form-check-input" id="denoise-has-ref">
-                    <label class="form-check-label" for="denoise-has-ref">我有参考音频（干净语音）</label>
-                  </div>
-                  <div id="denoise-ref-upload" class="d-none mt-2">
-                    <div class="upload-zone upload-zone-sm">
-                      <i class="bi bi-cloud-arrow-up-fill"></i> 选择参考音频文件（与带噪文件一一对应）
-                      <input type="file" class="upload-input" id="denoise-ref-input" multiple accept=".wav,.mp3">
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <button class="btn btn-submit" id="denoise-submit-btn" disabled>
-                <i class="bi bi-play-fill"></i> <span>开始测评</span>
-              </button>
-            </div>
-
-            <!-- 任务列表 -->
-            <div class="tab-pane fade" id="denoise-pane-tasks">
-              <div id="denoise-current-task" class="d-none mb-3"></div>
-              <div id="denoise-task-list"></div>
-            </div>
-          </div>
-        </div>
+        ...
       </div>
+      -->
 
       <!-- ==================== 音频修复 Tab ==================== -->
       <div class="tab-pane fade" id="pane-restoration" role="tabpanel">
@@ -376,7 +328,7 @@
 
 <!-- ===================== Modal: MOS 结果 ===================== -->
 <div class="modal fade" id="mos-result-modal" tabindex="-1">
-  <div class="modal-dialog modal-xl">
+  <div class="modal-dialog modal-xl modal-mos-result">
     <div class="modal-content">
       <div class="modal-header">
         <h5 class="modal-title"><i class="bi bi-eye-fill"></i> 任务结果</h5>

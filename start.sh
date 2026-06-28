@@ -297,8 +297,18 @@ show_help() {
 # 检查服务是否正在运行
 check_status() {
     local backend_running=false
+    local unified_pid=""
 
-    if [ -f "$BACKEND_PID_FILE" ]; then
+    # 检查一体服务 PID（优先）
+    if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
+        unified_pid=$(cat "$SCRIPT_DIR/.unified.pid")
+        if ps -p "$unified_pid" > /dev/null 2>&1; then
+            backend_running=true
+        fi
+    fi
+
+    # 回退检查传统后端 PID
+    if ! $backend_running && [ -f "$BACKEND_PID_FILE" ]; then
         local backend_pid=$(cat "$BACKEND_PID_FILE")
         if ps -p "$backend_pid" > /dev/null 2>&1; then
             backend_running=true
@@ -322,13 +332,15 @@ show_status() {
     local status=$(check_status)
 
     if [ "$status" = "running" ]; then
-        echo "✅ AudioMOS 服务: 运行中 (PID: $(cat $BACKEND_PID_FILE))"
+        local _pid="$(cat "$SCRIPT_DIR/.unified.pid" 2>/dev/null || cat "$BACKEND_PID_FILE" 2>/dev/null || echo "?")"
+        echo "✅ AudioMOS 服务: 运行中 (PID: $_pid)"
         echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
         echo ""
         echo "📡 前端页面: http://$BACKEND_HOST:$BACKEND_PORT"
         echo "📚 API文档:  http://$BACKEND_HOST:$BACKEND_PORT/docs"
     elif [ "$status" = "backend_only" ]; then
-        echo "✅ 后端服务: 运行中 (PID: $(cat $BACKEND_PID_FILE))"
+        local _pid="$(cat "$BACKEND_PID_FILE" 2>/dev/null || echo "?")"
+        echo "✅ 后端服务: 运行中 (PID: $_pid)"
         echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
         echo ""
         echo "❌ 后端服务: 未运行"
@@ -931,12 +943,30 @@ stop_services() {
     if ! $backend_stopped; then
         echo "没有运行中的服务"
     fi
-    
+
     # 清理临时启动文件
     if [ -f "$SCRIPT_DIR/.start_server.py" ]; then
         rm -f "$SCRIPT_DIR/.start_server.py"
     fi
-    
+
+    # 按端口兜底清理（仅清理 LISTEN 状态的进程，避免误杀浏览器等连接方）
+    local port="${AUDIOMOS_PORT:-$(read_yaml_value "$CONFIG_FILE" "port" "8002")}"
+    local port_pids=$(lsof -ti :"$port" -sTCP:LISTEN 2>/dev/null)
+    if [ -n "$port_pids" ]; then
+        echo "清理端口 $port 残留进程..."
+        for pid in $port_pids; do
+            local pname=$(ps -p "$pid" -o comm= 2>/dev/null)
+            echo "  清理 (PID: $pid, $pname)"
+            kill -9 "$pid" 2>/dev/null || true
+        done
+        sleep 1
+        if lsof -ti :"$port" -sTCP:LISTEN > /dev/null 2>&1; then
+            echo "⚠️  警告: 端口 $port 仍有进程残留"
+        else
+            echo "✅ 端口 $port 已释放"
+        fi
+    fi
+
     echo "================================"
     echo ""
 }
@@ -1101,9 +1131,10 @@ start_unified() {
         echo ""
     fi
     
-    # 停止已有服务
+    # 停止已有服务（两个都调用，覆盖所有启动方式）
     stop_services > /dev/null 2>&1
-    
+    stop_unified > /dev/null 2>&1
+
     # 启动一体服务
     echo ""
     echo "启动服务..."
@@ -1223,7 +1254,7 @@ PYEOF
 # 停止一体服务
 stop_unified() {
     local pid_stopped=false
-    
+
     if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
         local pid=$(cat "$SCRIPT_DIR/.unified.pid")
         if ps -p "$pid" > /dev/null 2>&1; then
@@ -1254,7 +1285,7 @@ stop_unified() {
         fi
         rm -f "$SCRIPT_DIR/.unified.pid"
     fi
-    
+
     # 额外检查：查找并停止所有项目相关的 Python 一体服务进程
     if [ "$pid_stopped" = false ]; then
         local python_pids=$(pgrep -f "uvicorn.*app.main:app" | while read pid; do
@@ -1262,13 +1293,31 @@ stop_unified() {
                 echo "$pid"
             fi
         done)
-        
+
         if [ -n "$python_pids" ]; then
             echo "发现残留的一体服务进程，正在停止..."
             for pid in $python_pids; do
                 echo "  停止 Python 进程 (PID: $pid)"
                 kill -9 "$pid" 2>/dev/null || true
             done
+        fi
+    fi
+
+    # 最后手段: 按端口清理（仅 LISTEN 状态的进程）
+    local port="${AUDIOMOS_PORT:-$(read_yaml_value "$CONFIG_FILE" "port" "8002")}"
+    local port_pids=$(lsof -ti :"$port" -sTCP:LISTEN 2>/dev/null)
+    if [ -n "$port_pids" ]; then
+        echo "清理端口 $port 残留进程..."
+        for pid in $port_pids; do
+            local pname=$(ps -p "$pid" -o comm= 2>/dev/null)
+            echo "  清理 (PID: $pid, $pname)"
+            kill -9 "$pid" 2>/dev/null || true
+        done
+        sleep 1
+        if lsof -ti :"$port" -sTCP:LISTEN > /dev/null 2>&1; then
+            echo "⚠️  警告: 端口 $port 仍有进程残留，请手动检查"
+        else
+            echo "✅ 端口 $port 已释放"
         fi
     fi
 }
@@ -1296,6 +1345,25 @@ case "${1:-start}" in
         ;;
     stop)
         stop_services
+        stop_unified
+        # 最后手段：直接清理占用配置端口的进程（仅 LISTEN 状态）
+        _port="${AUDIOMOS_PORT:-$(read_yaml_value "$CONFIG_FILE" "port" "8002")}"
+        _port_pids=$(lsof -ti :"$_port" -sTCP:LISTEN 2>/dev/null)
+        if [ -n "$_port_pids" ]; then
+            echo "发现端口 $_port 仍有进程占用，强制清理..."
+            for _pid in $_port_pids; do
+                _pname=$(ps -p "$_pid" -o comm= 2>/dev/null)
+                echo "  清理进程 (PID: $_pid, $_pname)"
+                kill -9 "$_pid" 2>/dev/null || true
+            done
+            sleep 1
+            if lsof -ti :"$_port" -sTCP:LISTEN > /dev/null 2>&1; then
+                echo "⚠️  警告: 端口 $_port 仍有进程残留"
+            else
+                echo "✅ 端口 $_port 已释放"
+            fi
+        fi
+        unset _port _port_pids _pid _pname
         echo ""
         echo "================================"
         echo "  服务已停止"
@@ -1304,6 +1372,7 @@ case "${1:-start}" in
         ;;
     restart)
         stop_services
+        stop_unified
         sleep 2
         shift
         start_unified "$@"
@@ -1312,13 +1381,14 @@ case "${1:-start}" in
         show_status
         # 检查服务状态
         if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
-            local pid=$(cat "$SCRIPT_DIR/.unified.pid")
-            if ps -p "$pid" > /dev/null 2>&1; then
+            _pid=$(cat "$SCRIPT_DIR/.unified.pid")
+            if ps -p "$_pid" > /dev/null 2>&1; then
                 echo ""
                 echo "前后端一体服务:"
-                echo "  ✅ 运行中 (PID: $pid)"
+                echo "  ✅ 运行中 (PID: $_pid)"
             fi
         fi
+        unset _pid
         ;;
     models)
         check_models

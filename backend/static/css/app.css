@@ -431,6 +431,11 @@ body {
   display: flex;
   gap: .5rem;
   flex-wrap: wrap;
+  align-items: center;
+}
+.task-actions .badge {
+  vertical-align: middle;
+  line-height: 1.5;
 }
 
 .task-detail {
@@ -617,12 +622,21 @@ body {
 
 .result-table td { font-family: monospace; }
 
+/* MOS 结果弹窗加宽，容纳多列指标 */
+.modal-mos-result {
+  max-width: 95vw !important;
+}
+.modal-mos-result .modal-body {
+  overflow-x: auto;
+}
+
 /* ===================== 消息提示 ===================== */
 .toast-container {
   position: fixed;
-  top: 70px;
+  top: 64px;
   right: 20px;
   z-index: 9999;
+  max-width: 360px;
 }
 
 .toast-custom {

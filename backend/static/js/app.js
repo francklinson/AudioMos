@@ -187,15 +187,14 @@ function loadAllData() {
 // ==================== MOS 评分 ====================
 let mosFiles = [];
 let mosMetrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos_ovrl', 'nisqa_mos', 'scoreq', 'utmos'];
-const MOS_ALL_METRICS = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos_ovrl', 'nisqa_mos', 'scoreq', 'utmos'];
+const MOS_ALL_METRICS = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos'];
 const MOS_REF_METRICS = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf'];
-const MOS_DEFAULT_METRICS = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos_ovrl', 'nisqa_mos', 'scoreq', 'utmos'];
+const MOS_DEFAULT_METRICS = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos'];
 
 function initMosPage() {
-  // 上传区域
+  // 上传区域（文件 input 用 absolute 覆盖层，直接点它即可打开选择器，不加额外 click 防止冲突）
   const zone = $('mos-upload-zone');
   const input = $('mos-file-input');
-  zone.addEventListener('click', () => input.click());
   zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
   zone.addEventListener('drop', e => {
@@ -262,26 +261,25 @@ async function uploadMosFiles() {
   const btn = $('mos-submit-btn');
   btn.disabled = true;
   $('mos-submit-text').textContent = '上传处理中...';
+  const fileCount = mosFiles.length;
   try {
     // 先上传
     const fd = new FormData();
     mosFiles.forEach(f => fd.append('files', f));
     if (mosMetrics.length > 0) fd.append('metrics', JSON.stringify(mosMetrics));
     const uploadResult = await api(apiUrl('/api/mos/upload'), { method: 'POST', formData: true, body: fd });
-    const taskIds = uploadResult.task_ids || uploadResult.task_ids || [];
-    // 逐个启动处理
-    for (const taskId of taskIds) {
-      await api(apiUrl(`/api/mos/process/${taskId}`), { method: 'POST' });
-    }
-    showToast(`已提交 ${taskIds.length} 个任务`, 'success');
+    const taskId = uploadResult.task_id;
+    if (!taskId) throw new Error('后端未返回任务ID');
+    // 启动处理
+    await api(apiUrl(`/api/mos/process/${taskId}`), { method: 'POST' });
     mosFiles = [];
     $('mos-file-input').value = '';
     updateMosSubmitBtn();
-    loadMosTasks();
+    // 等待任务列表刷新后再提示
+    await loadMosTasks();
+    showToast(`已提交任务，正在处理 ${fileCount} 个文件`, 'success');
   } catch (err) {
     showToast('上传失败: ' + err.message, 'error');
-  } finally {
-    btn.disabled = false;
     updateMosSubmitBtn();
   }
 }
@@ -334,6 +332,24 @@ function updateMosStats(tasks) {
   $('mos-stat-processing').textContent = processing;
 }
 
+/** 获取MOS结果音频试听URL */
+function getMosAudioUrl(taskId, filename) {
+  const token = getToken();
+  return `/api/mos/audio/${taskId}/${encodeURIComponent(filename)}?token=${encodeURIComponent(token || '')}`;
+}
+
+/** 按文件名中的数字自然排序 */
+function sortByFileNameNumeric(arr, key = '文件名') {
+  return [...arr].sort((a, b) => {
+    const nameA = String(a[key] || a['file'] || '');
+    const nameB = String(b[key] || b['file'] || '');
+    const numA = parseInt(nameA.match(/\d+/)?.[0] || '0', 10);
+    const numB = parseInt(nameB.match(/\d+/)?.[0] || '0', 10);
+    if (numA !== numB) return numA - numB;
+    return nameA.localeCompare(nameB);
+  });
+}
+
 async function showMosResult(taskId) {
   const modal = new bootstrap.Modal($('mos-result-modal'));
   const body = $('mos-result-body');
@@ -346,21 +362,38 @@ async function showMosResult(taskId) {
       body.innerHTML = '<div class="text-center text-muted py-4">暂无结果数据</div>';
       return;
     }
-    // 构建结果表格
-    const files = results.map(r => r.file_name || r.file || '未知').join(', ');
-    body.innerHTML = `<div class="mb-3"><strong>任务:</strong> ${shortId(taskId)} | <strong>文件:</strong> ${files}</div>
-      <div class="table-responsive"><table class="table table-striped table-hover result-table">
-        <thead><tr><th>文件</th><th>指标</th><th>值</th></tr></thead>
-        <tbody>${results.map(r => {
-          const fname = r.file_name || r.file || '音频';
-          const scores = r.scores || r.metrics || r;
-          return Object.entries(scores)
-            .filter(([k, v]) => v !== null && v !== undefined && k !== 'file_name' && k !== 'file')
-            .map(([k, v]) => `<tr><td>${fname}</td><td><strong>${k.toUpperCase()}</strong></td><td>${typeof v === 'number' ? v.toFixed(4) : v}</td></tr>`);
-        }).flat().join('')}</tbody>
-      </table></div>`;
-    // 尝试绘制图表
-    setTimeout(() => drawMosChart(results), 100);
+
+    // 按文件名数字排序
+    const sorted = sortByFileNameNumeric(results);
+    const cols = data.columns || Object.keys(results[0]);
+
+    // 构建横表：每行一个文件，每列一个指标
+    const filenameKey = cols.includes('文件名') ? '文件名' : 'file';
+    const metricCols = cols.filter(c => c !== filenameKey);
+
+    let html = `<div class="mb-2"><strong>任务:</strong> ${shortId(taskId)} | <strong>文件数:</strong> ${sorted.length}</div>`;
+    html += '<div class="table-responsive"><table class="table table-striped table-hover result-table" style="font-size:0.85rem">';
+    html += '<thead><tr><th>#</th><th>文件名</th>';
+    metricCols.forEach(c => { html += `<th>${c}</th>`; });
+    html += '<th style="width:180px">试听</th></tr></thead><tbody>';
+
+    sorted.forEach((r, i) => {
+      const fname = r[filenameKey] || r['file'] || '';
+      const audioUrl = getMosAudioUrl(taskId, fname);
+      html += `<tr><td>${i + 1}</td><td><strong>${fname}</strong></td>`;
+      metricCols.forEach(c => {
+        const v = r[c];
+        html += `<td>${typeof v === 'number' ? v.toFixed(4) : (v ?? '-')}</td>`;
+      });
+      html += `<td>
+        <audio controls style="height:30px;width:160px" preload="none">
+          <source src="${audioUrl}">
+        </audio>
+      </td></tr>`;
+    });
+
+    html += '</tbody></table></div>';
+    body.innerHTML = html;
   } catch (err) {
     body.innerHTML = `<div class="alert alert-danger">加载结果失败: ${err.message}</div>`;
   }
@@ -912,7 +945,7 @@ async function drawWaveform(canvasId, url, color) {
 async function loadRefAudioList() {
   try {
     const data = await api(apiUrl('/api/reference-audio/list'));
-    const items = data.audio_list || data || [];
+    const items = data.items || data.audio_list || (Array.isArray(data) ? data : []);
     renderRefAudioList(items);
     updateRefStats(items);
   } catch (_) {}
@@ -925,11 +958,13 @@ function renderRefAudioList(items) {
     return;
   }
   container.innerHTML = items.map(item => {
-    const id = item.audio_id || item.id;
+    const id = item.id || item.audio_id;
+    const fname = item.filename || item.file_name || item.original_name || '未知';
+    const fsize = item.file_size || item.size || 0;
     return `<div class="ref-audio-item">
       <div class="ref-audio-info">
-        <div class="ref-audio-name">${item.file_name || item.filename || '未知'}</div>
-        <div class="ref-audio-meta">${item.duration ? item.duration.toFixed(1) + 's' : ''} ${item.sample_rate ? '| ' + item.sample_rate + 'Hz' : ''} ${item.size ? '| ' + formatSize(item.size) : ''}${item.description ? ' | ' + item.description : ''}</div>
+        <div class="ref-audio-name">${fname}</div>
+        <div class="ref-audio-meta">${item.duration ? item.duration.toFixed(1) + 's' : ''} ${item.sample_rate ? '| ' + item.sample_rate + 'Hz' : ''} ${fsize ? '| ' + formatSize(fsize) : ''}${item.description ? ' | ' + item.description : ''}</div>
       </div>
       <div class="task-actions">
         <button class="btn btn-sm btn-outline-primary" onclick="playRefAudio('${id}')"><i class="bi bi-play-circle"></i></button>
@@ -944,7 +979,7 @@ function renderRefAudioList(items) {
 function updateRefStats(items) {
   $('ref-stat-count').textContent = items ? items.length : 0;
   if (items && items.length > 0) {
-    const totalSize = items.reduce((sum, i) => sum + (i.size || 0), 0);
+    const totalSize = items.reduce((sum, i) => sum + (i.file_size || i.size || 0), 0);
     $('ref-stat-size').textContent = formatSize(totalSize);
   }
 }
@@ -1180,22 +1215,24 @@ function startPolling() {
   setInterval(() => {
     if (!getToken()) return;
     loadMosTasks();
-    loadDenoiseTasks();
+    if ($('denoise-algorithms')) loadDenoiseTasks(); // 降噪测评 Tab 已隐藏
     loadRestorationTasks();
   }, 5000);
 }
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', () => {
-  // 登录
-  $('login-form').addEventListener('submit', handleLogin);
+  // 登录（click + Enter，不用 <form> 防止浏览器自动填充）
+  $('login-btn').addEventListener('click', handleLogin);
+  $('username-input').addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin(e); });
+  $('password-input').addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin(e); });
 
   // 退出
   $('logout-btn').addEventListener('click', handleLogout);
 
   // 初始化各页面
   initMosPage();
-  initDenoisePage();
+  if ($('denoise-algorithms')) initDenoisePage(); // 降噪测评 Tab 已隐藏
   initRestorationPage();
   initReferencePage();
 
