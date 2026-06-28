@@ -1123,22 +1123,21 @@ def cut_all_audio_files_with_optimized_matcher(
     input_file_list: list,
     ref_dir: str,
     output_dir: str,
-    redundancy: float = 0.5
+    redundancy: float = 0.0
 ) -> list:
     """
     使用OptimizedMatcher（全范围DTW）定位并切分音频
-    替代 audio_cut.py 中的 cut_all_audio_files_from_list（旧MFCCLocate方案）
+    切分后每段时长与参考音频完全一致（等长对齐），用于带参考MOS计算。
 
     对每个测试音频:
     1. 用OptimizedMatcher全范围DTW扫描，找出所有参考段的位置
-    2. 在每个位置切出 参考时长 + redundancy 的片段
-    3. 保持前导冗余（语音从0.5s开始）
+    2. 从 offset 到 offset+ref_dur 精确切分
+    3. 输出文件名 _001 ~ _004 对应 ref_001 ~ ref_004
 
     Args:
         input_file_list: 测试音频文件路径列表
         ref_dir: 参考音频目录
         output_dir: 输出目录
-        redundancy: 前/后冗余时间（秒），默认0.5
 
     Returns:
         切分后的音频文件路径列表
@@ -1189,22 +1188,18 @@ def cut_all_audio_files_with_optimized_matcher(
             ref_y, _ = librosa.load(ref_file, sr=16000)
             ref_dur = len(ref_y) / sr_test
 
-            # 切分参数：前导redundancy + 参考内容
-            # 输出时长 = ref_dur + redundancy（语音从redundancy位置开始）
-            cut_start = max(0.0, offset - redundancy)
-            cut_end = offset + ref_dur
-            # 如果音频末尾不足，截断
-            if cut_end > dur_test:
-                logger.info(f"[优化切分] {ref_name} 在音频末尾({dur_test:.1f}s)，"
-                            f"实际截断到{dur_test:.2f}s")
-                cut_end = dur_test
-
-            cut_start_samp = int(cut_start * sr_test)
-            cut_end_samp = int(cut_end * sr_test)
+            # 精确切分：从 offset 到 offset+ref_dur（与参考音频等长对齐）
+            cut_start_samp = int(offset * sr_test)
+            cut_end_samp = min(len(y_test), int((offset + ref_dur) * sr_test))
             segment = y_test[cut_start_samp:cut_end_samp]
 
-            # 输出文件名与参考序号一致: {test_name}_{idx:03d}.wav
-            # idx从1开始，与ref_001 → ref_004对应
+            # 补齐/截断到参考长度（应对音频末尾边界情况）
+            ref_samples = len(ref_y)
+            if len(segment) < ref_samples:
+                segment = np.pad(segment, (0, ref_samples - len(segment)))
+            elif len(segment) > ref_samples:
+                segment = segment[:ref_samples]
+
             suffix = f"_{i + 1:03d}.wav"
             output_name = test_name + suffix
             output_path = os.path.join(output_dir, output_name)
@@ -1214,9 +1209,7 @@ def cut_all_audio_files_with_optimized_matcher(
 
             logger.info(f"[优化切分] {test_name}{suffix}: "
                         f"ref={ref_name:15s} offset={offset:.2f}s "
-                        f"cut=[{cut_start:.2f}s, {cut_end:.2f}s] "
-                        f"dur={len(segment)/sr_test:.2f}s "
-                        f"conf={confidence:.2f}")
+                        f"dur={len(segment)/sr_test:.2f}s")
 
     logger.info(f"[优化切分] 完成: 共切出{len(output_file_list)}个片段")
     return output_file_list
