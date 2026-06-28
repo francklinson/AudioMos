@@ -1311,25 +1311,19 @@ def cut_all_audio_files_with_optimized_matcher(
                 file_outputs.append(r)
         return file_outputs
 
-    # 并行处理所有文件（⚠️ 使用独立线程池，不与内部DTW的get_shared_executor嵌套）
-    # 文件数≤4时直接在当前线程执行，避免线程开销
+    # 并行处理所有文件（使用独立线程池，不与内部DTW的get_shared_executor嵌套）
     logger.info(f"[优化切分] 并行处理{len(input_file_list)}个文件")
-    if len(input_file_list) <= 4:
-        for f in input_file_list:
-            output_file_list.extend(_process_single_file(f))
-    else:
-        # 用独立池避免与DTW内部共享池嵌套死锁
-        from concurrent.futures import ThreadPoolExecutor as _TPE
-        _file_executor = _TPE(max_workers=4, thread_name_prefix='cut_files')
-        try:
-            _futures = {_file_executor.submit(_process_single_file, f): f for f in input_file_list}
-            for future in as_completed(_futures):
-                try:
-                    output_file_list.extend(future.result())
-                except Exception as e:
-                    logger.error(f"[优化切分] 文件异常: {e}")
-        finally:
-            _file_executor.shutdown(wait=True)
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    _file_executor = _TPE(max_workers=min(8, len(input_file_list)), thread_name_prefix='cut_files')
+    try:
+        _futures = {_file_executor.submit(_process_single_file, f): f for f in input_file_list}
+        for future in as_completed(_futures):
+            try:
+                output_file_list.extend(future.result())
+            except Exception as e:
+                logger.error(f"[优化切分] 文件异常: {e}")
+    finally:
+        _file_executor.shutdown(wait=True)
 
     logger.info(f"[优化切分] 完成: 共切出{len(output_file_list)}个片段")
     return output_file_list
