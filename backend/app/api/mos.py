@@ -78,6 +78,15 @@ except ImportError:
     except ImportError:
         from audio_cut import cut_all_audio_files_from_list
         from audio_processor import align_splited_wav_from_list
+
+# 导入优化版匹配切分（优先使用）
+try:
+    from matching_optimizer import cut_all_audio_files_with_optimized_matcher
+    _HAS_OPTIMIZED_CUT = True
+    logger.info("✓ 使用优化版DTW切分模块")
+except ImportError:
+    _HAS_OPTIMIZED_CUT = False
+    logger.warning("优化版DTW切分不可用，使用旧版MFCCLocate切分")
 import numpy as np
 import pandas as pd
 
@@ -434,11 +443,20 @@ async def process_audio_task(queue_task):
                 split_output_dir.mkdir(parents=True, exist_ok=True)
 
                 try:
-                    split_files = cut_all_audio_files_from_list(
-                        input_files,
-                        output_dir=str(split_output_dir),
-                        ref_dir=str(ref_dir)
-                    )
+                    # 优先使用优化版DTW切分（全范围DTW扫描，低SNR下更可靠）
+                    if _HAS_OPTIMIZED_CUT:
+                        logger.info("使用优化版DTW切分...")
+                        split_files = cut_all_audio_files_with_optimized_matcher(
+                            matched_files,
+                            ref_dir=str(ref_dir),
+                            output_dir=str(split_output_dir)
+                        )
+                    else:
+                        split_files = cut_all_audio_files_from_list(
+                            matched_files,
+                            output_dir=str(split_output_dir),
+                            ref_dir=str(ref_dir)
+                        )
                 except Exception as e:
                     logger.error(f"音频切分失败: {e}")
                     split_files = input_files

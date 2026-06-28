@@ -1113,3 +1113,110 @@ class OptimizedMatcher:
 
         logger.warning(f"[优化匹配] ✗ 全部策略失败")
         return result
+
+
+# ============================================================================
+# 基于OptimizedMatcher的音频切分（替代audio_cut.py的旧MFCCLocate方案）
+# ============================================================================
+
+def cut_all_audio_files_with_optimized_matcher(
+    input_file_list: list,
+    ref_dir: str,
+    output_dir: str,
+    redundancy: float = 0.5
+) -> list:
+    """
+    使用OptimizedMatcher（全范围DTW）定位并切分音频
+    替代 audio_cut.py 中的 cut_all_audio_files_from_list（旧MFCCLocate方案）
+
+    对每个测试音频:
+    1. 用OptimizedMatcher全范围DTW扫描，找出所有参考段的位置
+    2. 在每个位置切出 参考时长 + redundancy 的片段
+    3. 保持前导冗余（语音从0.5s开始）
+
+    Args:
+        input_file_list: 测试音频文件路径列表
+        ref_dir: 参考音频目录
+        output_dir: 输出目录
+        redundancy: 前/后冗余时间（秒），默认0.5
+
+    Returns:
+        切分后的音频文件路径列表
+    """
+    import librosa
+    import soundfile as sf
+    from pathlib import Path
+
+    # 确保参考库已加载
+    from reference_matcher import get_reference_matcher
+    matcher = get_reference_matcher(ref_dir=ref_dir)
+    if not matcher.database.entries:
+        matcher.build_database(ref_dir)
+
+    os.makedirs(output_dir, exist_ok=True)
+    output_file_list = []
+
+    logger.info(f"[优化切分] 共{len(input_file_list)}个测试文件，"
+                f"{len(matcher.database.entries)}个参考音频")
+
+    opt_matcher = OptimizedMatcher(ref_dir=ref_dir)
+
+    for test_file in input_file_list:
+        test_name = os.path.splitext(os.path.basename(test_file))[0]
+
+        # 全范围DTW扫描获取所有参考段位置
+        snr, _ = opt_matcher._estimate_snr_and_noise_floor(test_file)
+        dtw_results = opt_matcher._full_range_dtw_sweep(test_file, snr)
+
+        if not dtw_results:
+            logger.warning(f"[优化切分] {test_name}: 未找到任何匹配，跳过")
+            continue
+
+        # 加载测试音频
+        y_test, sr_test = librosa.load(test_file, sr=16000)
+        dur_test = len(y_test) / sr_test
+
+        # 按 ref_name 排序输出（ref_001 → ref_002 → ... 与参考音频一致）
+        dtw_results.sort(key=lambda x: x.get('ref_name', ''))
+
+        for i, r in enumerate(dtw_results):
+            ref_name = r['ref_name']
+            ref_file = r['ref_file']
+            offset = r['offset_in_test']
+            confidence = r['confidence']
+
+            # 加载参考音频确定时长
+            ref_y, _ = librosa.load(ref_file, sr=16000)
+            ref_dur = len(ref_y) / sr_test
+
+            # 切分参数：前导redundancy + 参考内容
+            # 输出时长 = ref_dur + redundancy（语音从redundancy位置开始）
+            cut_start = max(0.0, offset - redundancy)
+            cut_end = offset + ref_dur
+            # 如果音频末尾不足，截断
+            if cut_end > dur_test:
+                logger.info(f"[优化切分] {ref_name} 在音频末尾({dur_test:.1f}s)，"
+                            f"实际截断到{dur_test:.2f}s")
+                cut_end = dur_test
+
+            cut_start_samp = int(cut_start * sr_test)
+            cut_end_samp = int(cut_end * sr_test)
+            segment = y_test[cut_start_samp:cut_end_samp]
+
+            # 输出文件名与参考序号一致: {test_name}_{idx:03d}.wav
+            # idx从1开始，与ref_001 → ref_004对应
+            suffix = f"_{i + 1:03d}.wav"
+            output_name = test_name + suffix
+            output_path = os.path.join(output_dir, output_name)
+
+            sf.write(output_path, segment, sr_test)
+            output_file_list.append(output_path)
+
+            logger.info(f"[优化切分] {test_name}{suffix}: "
+                        f"ref={ref_name:15s} offset={offset:.2f}s "
+                        f"cut=[{cut_start:.2f}s, {cut_end:.2f}s] "
+                        f"dur={len(segment)/sr_test:.2f}s "
+                        f"conf={confidence:.2f}")
+
+    logger.info(f"[优化切分] 完成: 共切出{len(output_file_list)}个片段")
+    return output_file_list
