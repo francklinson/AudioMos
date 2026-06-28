@@ -16,6 +16,7 @@ import logging
 import warnings
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 
 logger = logging.getLogger('audiomos')
@@ -1031,11 +1032,14 @@ class OptimizedMatcher:
         results.sort(key=lambda x: x['confidence'], reverse=True)
         return results
 
-    def _hpss_fine_align(self, ref_audio: np.ndarray, test_audio: np.ndarray,
+    def _hpss_fine_align(self, ref_audio: Optional[np.ndarray],
+                          test_audio: np.ndarray,
                           dtw_offset: float, sr: int = 16000,
                           kernel_size: int = 51,
                           max_correction_s: float = 2.0,
-                          min_quality: float = 0.02) -> Tuple[float, float, float]:
+                          min_quality: float = 0.02,
+                          ref_harmonic: Optional[np.ndarray] = None,
+                          ref_samples: Optional[int] = None) -> Tuple[float, float, float]:
         """
         HPSS谐波互相关精对齐
         对DTW帧级定位结果进行样本级精对齐修正
@@ -1047,39 +1051,42 @@ class OptimizedMatcher:
         4. 修正offset = DTW_offset - lag
 
         Args:
-            ref_audio: 参考音频数组
+            ref_audio: 参考音频数组(ref_harmonic和ref_samples提供时可为None)
             test_audio: 测试音频数组
             dtw_offset: DTW给出的偏移量(秒)
             sr: 采样率
-            kernel_size: HPSS谐波核大小，建议51（值越大谐波越纯净）
-            max_correction_s: 最大允许修正量(秒)，超过此值视为DTW失效、跳过修正
-            min_quality: 最低互相关质量，低于此值跳过修正
+            kernel_size: HPSS谐波核大小，建议51
+            max_correction_s: 最大允许修正量(秒)
+            min_quality: 最低互相关质量阈值
+            ref_harmonic: 预缓存的参考谐波分量, None则从ref_audio计算
+            ref_samples: 预缓存的参考样本数, None则从ref_audio获取
 
         Returns:
             (corrected_offset, residual_lag, quality)
-            - corrected_offset: 精对齐后的偏移量(秒)
-            - residual_lag: 修正后的残留lag(秒)，接近0表示修正成功
-            - quality: 互相关峰值质量(0~1)，越高表示匹配越可靠
-            当质量低于阈值或lag超范围时，返回原始offset
         """
         from scipy import signal as scipy_signal
 
-        ref_dur = len(ref_audio) / sr
-        ref_samples = len(ref_audio)
+        # 使用缓存的ref_samples或从音频获取
+        if ref_samples is None:
+            assert ref_audio is not None, "ref_audio或ref_samples必须提供"
+            ref_samples = len(ref_audio)
 
         # 按DTW offset切出段
         cut_start = int(dtw_offset * sr)
         cut_end = min(len(test_audio), cut_start + ref_samples)
         segment = test_audio[cut_start:cut_end]
 
-        # 补齐到ref长度
         if len(segment) < ref_samples:
             segment = np.pad(segment, (0, ref_samples - len(segment)))
         elif len(segment) > ref_samples:
             segment = segment[:ref_samples]
 
-        # HPSS谐波提取
-        ref_harm = extract_harmonic_component(ref_audio, kernel_size=kernel_size)
+        # HPSS谐波提取（使用缓存或实时计算）
+        if ref_harmonic is not None:
+            ref_harm = ref_harmonic
+        else:
+            ref_harm = extract_harmonic_component(ref_audio, kernel_size=kernel_size)
+
         seg_harm = extract_harmonic_component(segment, kernel_size=kernel_size)
 
         # 互相关找lag
@@ -1277,6 +1284,15 @@ def cut_all_audio_files_with_optimized_matcher(
 
     opt_matcher = OptimizedMatcher(ref_dir=ref_dir)
 
+    # ─── 预计算并缓存所有参考音频的HPSS谐波分量 ───
+    ref_harm_cache = {}
+    ref_samples_cache = {}
+    for ref_id, entry in matcher.database.entries.items():
+        ref_audio, _ = librosa.load(entry.ref_file, sr=16000)
+        ref_harm_cache[ref_id] = extract_harmonic_component(ref_audio, kernel_size=51)
+        ref_samples_cache[ref_id] = len(ref_audio)
+        logger.debug(f"[优化切分] 缓存HPSS: {entry.ref_name} ({ref_samples_cache[ref_id]} samples)")
+
     for test_file in input_file_list:
         test_name = os.path.splitext(os.path.basename(test_file))[0]
 
@@ -1295,57 +1311,71 @@ def cut_all_audio_files_with_optimized_matcher(
         # 按 ref_name 排序输出（ref_001 → ref_002 → ... 与参考音频一致）
         dtw_results.sort(key=lambda x: x.get('ref_name', ''))
 
-        for i, r in enumerate(dtw_results):
-            ref_name = r['ref_name']
-            ref_file = r['ref_file']
+        # ─── 并行处理所有参考段：HPSS精对齐 + 切分 ───
+        def _process_one(index: int, result: dict) -> Optional[str]:
+            """处理单个参考段的HPSS精对齐+切分"""
+            r = result
+            ref_id = r.get('ref_id', '')
+            ref_name = r.get('ref_name', '')
             offset = r['offset_in_test']
-            confidence = r['confidence']
+            ref_harm = ref_harm_cache.get(ref_id)
+            ref_nsamples = ref_samples_cache.get(ref_id, 0)
 
-            # 加载参考音频确定时长
-            ref_y, _ = librosa.load(ref_file, sr=16000)
-            ref_dur = len(ref_y) / sr_test
-            ref_samples = len(ref_y)
+            if ref_harm is None or ref_nsamples == 0:
+                logger.warning(f"[优化切分] 无缓存HPSS: {ref_name}, 跳过")
+                return None
 
-            # --- HPSS精对齐修正 ---
-            # 对DTW定位结果进行样本级精对齐
+            # HPSS精对齐（使用缓存谐波，跳过参考HPSS计算）
             corrected_offset, residual_lag, hpss_quality = \
                 opt_matcher._hpss_fine_align(
-                    ref_y, y_test, offset,
+                    None, y_test, offset,
                     sr=sr_test, kernel_size=51,
-                    max_correction_s=2.0, min_quality=0.02
+                    max_correction_s=2.0, min_quality=0.02,
+                    ref_harmonic=ref_harm, ref_samples=ref_nsamples
                 )
 
-            # 取修正后的offset用于最终切分
             final_offset = corrected_offset
-            lag_info = f"lag={offset - corrected_offset:+.3f}s" if abs(offset - corrected_offset) > 0.001 else "lag=0.000s"
-
             if abs(offset - corrected_offset) > 0.001:
                 logger.info(f"[优化切分]   HPSS精对齐: {ref_name} "
                             f"offset: {offset:.3f}s → {corrected_offset:.3f}s "
-                            f"({lag_info}, q={hpss_quality:.3f})")
-            # --- HPSS精对齐修正结束 ---
+                            f"(lag={offset - corrected_offset:+.3f}s, "
+                            f"q={hpss_quality:.3f})")
 
-            # 精确切分：从 final_offset 到 final_offset + ref_dur
-            cut_start_samp = int(final_offset * sr_test)
-            cut_end_samp = min(len(y_test), int((final_offset + ref_dur) * sr_test))
-            segment = y_test[cut_start_samp:cut_end_samp]
+            # 精确切分
+            cut_start = int(final_offset * sr_test)
+            cut_end = min(len(y_test), cut_start + ref_nsamples)
+            segment = y_test[cut_start:cut_end]
+            if len(segment) < ref_nsamples:
+                segment = np.pad(segment, (0, ref_nsamples - len(segment)))
+            elif len(segment) > ref_nsamples:
+                segment = segment[:ref_nsamples]
 
-            # 补齐/截断到参考长度
-            if len(segment) < ref_samples:
-                segment = np.pad(segment, (0, ref_samples - len(segment)))
-            elif len(segment) > ref_samples:
-                segment = segment[:ref_samples]
-
-            suffix = f"_{i + 1:03d}.wav"
+            suffix = f"_{index + 1:03d}.wav"
             output_name = test_name + suffix
             output_path = os.path.join(output_dir, output_name)
-
             sf.write(output_path, segment, sr_test)
-            output_file_list.append(output_path)
 
             logger.info(f"[优化切分] {test_name}{suffix}: "
-                        f"ref={ref_name:15s} offset={offset:.2f}s "
+                        f"ref={ref_name:15s} offset={final_offset:.2f}s "
                         f"dur={len(segment)/sr_test:.2f}s")
+            return output_path
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_idx = {
+                executor.submit(_process_one, i, r): i
+                for i, r in enumerate(dtw_results)
+            }
+            ordered = {}
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    ordered[idx] = future.result()
+                except Exception as e:
+                    logger.error(f"[优化切分] 段{idx+1}失败: {e}")
+                    ordered[idx] = None
+            for i in range(len(dtw_results)):
+                if ordered.get(i):
+                    output_file_list.append(ordered[i])
 
     logger.info(f"[优化切分] 完成: 共切出{len(output_file_list)}个片段")
     return output_file_list
