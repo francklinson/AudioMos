@@ -1340,7 +1340,9 @@ def cut_all_audio_files_with_optimized_matcher(
         ref_samples_cache[ref_id] = len(ref_audio)
         logger.debug(f"[优化切分] 缓存HPSS: {entry.ref_name} ({ref_samples_cache[ref_id]} samples)")
 
-    for test_file in input_file_list:
+    # ─── 文件间并行处理：每个文件的DTW+HPSS+切分独立 ───
+    def _process_single_file(test_file: str) -> list:
+        """处理单个测试音频：DTW扫描→HPSS精对齐→切分"""
         test_name = os.path.splitext(os.path.basename(test_file))[0]
 
         # 全范围DTW扫描获取所有参考段位置
@@ -1349,81 +1351,73 @@ def cut_all_audio_files_with_optimized_matcher(
 
         if not dtw_results:
             logger.warning(f"[优化切分] {test_name}: 未找到任何匹配，跳过")
-            continue
+            return []
 
         # 加载测试音频
         y_test, sr_test = librosa.load(test_file, sr=16000)
-        dur_test = len(y_test) / sr_test
 
-        # 按 ref_name 排序输出（ref_001 → ref_002 → ... 与参考音频一致）
+        # 按 ref_name 排序输出
         dtw_results.sort(key=lambda x: x.get('ref_name', ''))
 
-        # ─── 并行处理所有参考段：HPSS精对齐 + 切分 ───
-        def _process_one(index: int, result: dict) -> Optional[str]:
-            """处理单个参考段的HPSS精对齐+切分"""
-            r = result
+        # ─── 文件内4个参考段的HPSS精对齐+切分（并行） ───
+        def _hpss_and_cut(i: int, r: dict) -> Optional[str]:
+            """单个参考段的HPSS精对齐+切分"""
             ref_id = r.get('ref_id', '')
             ref_name = r.get('ref_name', '')
             offset = r['offset_in_test']
             ref_harm = ref_harm_cache.get(ref_id)
             ref_nsamples = ref_samples_cache.get(ref_id, 0)
-
             if ref_harm is None or ref_nsamples == 0:
-                logger.warning(f"[优化切分] 无缓存HPSS: {ref_name}, 跳过")
                 return None
+            # HPSS精对齐
+            final_offset, _, _ = opt_matcher._hpss_fine_align(
+                None, y_test, offset, sr=sr_test, kernel_size=51,
+                max_correction_s=2.0, min_quality=0.02,
+                ref_harmonic=ref_harm, ref_samples=ref_nsamples
+            )
+            # 切分
+            cs = int(final_offset * sr_test)
+            ce = min(len(y_test), cs + ref_nsamples)
+            seg = y_test[cs:ce]
+            if len(seg) < ref_nsamples:
+                seg = np.pad(seg, (0, ref_nsamples - len(seg)))
+            elif len(seg) > ref_nsamples:
+                seg = seg[:ref_nsamples]
+            suffix = f"_{i + 1:03d}.wav"
+            op = os.path.join(output_dir, test_name + suffix)
+            sf.write(op, seg, sr_test)
+            logger.info(f"[优化切分] {test_name}{suffix}: ref={ref_name:15s} offset={final_offset:.2f}s")
+            return op
 
-            # HPSS精对齐（使用缓存谐波，跳过参考HPSS计算）
-            corrected_offset, residual_lag, hpss_quality = \
-                opt_matcher._hpss_fine_align(
-                    None, y_test, offset,
-                    sr=sr_test, kernel_size=51,
-                    max_correction_s=2.0, min_quality=0.02,
-                    ref_harmonic=ref_harm, ref_samples=ref_nsamples
-                )
+        # 文件内4段HPSS并行（使用共享池，与文件级独立池不冲突）
+        _seg_exec = get_shared_executor()
+        _seg_futs = {_seg_exec.submit(_hpss_and_cut, i, r): i for i, r in enumerate(dtw_results)}
+        file_outputs = []
+        for _f in as_completed(_seg_futs):
+            r = _f.result()
+            if r:
+                file_outputs.append(r)
+        return file_outputs
 
-            final_offset = corrected_offset
-            if abs(offset - corrected_offset) > 0.001:
-                logger.info(f"[优化切分]   HPSS精对齐: {ref_name} "
-                            f"offset: {offset:.3f}s → {corrected_offset:.3f}s "
-                            f"(lag={offset - corrected_offset:+.3f}s, "
-                            f"q={hpss_quality:.3f})")
-
-            # 精确切分
-            cut_start = int(final_offset * sr_test)
-            cut_end = min(len(y_test), cut_start + ref_nsamples)
-            segment = y_test[cut_start:cut_end]
-            if len(segment) < ref_nsamples:
-                segment = np.pad(segment, (0, ref_nsamples - len(segment)))
-            elif len(segment) > ref_nsamples:
-                segment = segment[:ref_nsamples]
-
-            suffix = f"_{index + 1:03d}.wav"
-            output_name = test_name + suffix
-            output_path = os.path.join(output_dir, output_name)
-            sf.write(output_path, segment, sr_test)
-
-            logger.info(f"[优化切分] {test_name}{suffix}: "
-                        f"ref={ref_name:15s} offset={final_offset:.2f}s "
-                        f"dur={len(segment)/sr_test:.2f}s")
-            return output_path
-
-        # 使用共享线程池并行处理所有参考段
-        shared_executor = get_shared_executor()
-        future_to_idx = {
-            shared_executor.submit(_process_one, i, r): i
-            for i, r in enumerate(dtw_results)
-        }
-        ordered = {}
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                ordered[idx] = future.result()
-            except Exception as e:
-                logger.error(f"[优化切分] 段{idx+1}失败: {e}")
-                ordered[idx] = None
-        for i in range(len(dtw_results)):
-            if ordered.get(i):
-                output_file_list.append(ordered[i])
+    # 并行处理所有文件（⚠️ 使用独立线程池，不与内部DTW的get_shared_executor嵌套）
+    # 文件数≤4时直接在当前线程执行，避免线程开销
+    logger.info(f"[优化切分] 并行处理{len(input_file_list)}个文件")
+    if len(input_file_list) <= 4:
+        for f in input_file_list:
+            output_file_list.extend(_process_single_file(f))
+    else:
+        # 用独立池避免与DTW内部共享池嵌套死锁
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        _file_executor = _TPE(max_workers=4, thread_name_prefix='cut_files')
+        try:
+            _futures = {_file_executor.submit(_process_single_file, f): f for f in input_file_list}
+            for future in as_completed(_futures):
+                try:
+                    output_file_list.extend(future.result())
+                except Exception as e:
+                    logger.error(f"[优化切分] 文件异常: {e}")
+        finally:
+            _file_executor.shutdown(wait=True)
 
     logger.info(f"[优化切分] 完成: 共切出{len(output_file_list)}个片段")
     return output_file_list
