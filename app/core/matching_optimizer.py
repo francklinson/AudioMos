@@ -14,6 +14,7 @@ import sys
 import time
 import logging
 import warnings
+import threading
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,6 +24,23 @@ logger = logging.getLogger('audiomos')
 
 # 项目根目录
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ============ 全局共享线程池 ============
+_SHARED_EXECUTOR = None
+_SHARED_EXECUTOR_LOCK = threading.Lock()
+
+
+def get_shared_executor(max_workers: int = 4) -> ThreadPoolExecutor:
+    """获取全局共享线程池（延迟初始化，避免每次调用创建销毁）"""
+    global _SHARED_EXECUTOR
+    if _SHARED_EXECUTOR is None:
+        with _SHARED_EXECUTOR_LOCK:
+            if _SHARED_EXECUTOR is None:
+                _SHARED_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=max_workers,
+                    thread_name_prefix='matching_shared'
+                )
+    return _SHARED_EXECUTOR
 
 
 # ============================================================================
@@ -931,103 +949,132 @@ class OptimizedMatcher:
                     f"dur={dur_test:.0f}s, 参考数={len(matcher.database.entries)}, "
                     f"pre_enhance={use_pre_enhance}")
 
-        # 提取测试MFCC一次
+        # 提取测试MFCC一次（所有参考复用）
         dtw = self.robust_dtw
         test_mfcc, test_y = dtw.extract_robust_mfcc_from_array(
             y_test, sr_test, pre_enhance=use_pre_enhance
         )
         total_frames = test_mfcc.shape[0]
+        hop_time = 512.0 / sr_test  # 每帧对应时间(秒)
 
-        for ref_id, entry in matcher.database.entries.items():
-            ref_dur = entry.duration
-            ref_frames = int(ref_dur * sr_test / 512)
-            if total_frames <= ref_frames:
-                continue
+        def _process_single_ref(ref_id: str, entry) -> Optional[Dict]:
+            """对单个参考音频执行两级DTW搜索（线程安全，独立上下文）"""
+            try:
+                ref_dur = entry.duration
+                ref_frames = int(ref_dur * sr_test / 512)
+                if total_frames <= ref_frames:
+                    return None
 
-            # 提取参考MFCC
-            ref_y, _ = librosa.load(entry.ref_file, sr=16000)
-            ref_mfcc, _ = dtw.extract_robust_mfcc_from_array(
-                ref_y, 16000, pre_enhance=False
-            )
-            ref_frames_actual = ref_mfcc.shape[0]
+                # 提取参考MFCC
+                ref_y, _ = librosa.load(entry.ref_file, sr=16000)
+                ref_mfcc, _ = dtw.extract_robust_mfcc_from_array(
+                    ref_y, 16000, pre_enhance=False
+                )
+                ref_frames_actual = ref_mfcc.shape[0]
 
-            # --- 粗扫描 ---
-            coarse_step = max(20, int((total_frames - ref_frames_actual) / 15))
-            best_dist = float('inf')
-            best_frame = -1
+                # --- 粗扫描（大步长，快速定位） ---
+                coarse_step = max(20, int((total_frames - ref_frames_actual) / 15))
+                best_dist = float('inf')
+                best_frame = -1
 
-            for i in range(0, max(1, total_frames - ref_frames_actual), coarse_step):
-                window = test_mfcc[i:i + ref_frames_actual]
-                if window.shape[0] < ref_frames_actual:
-                    break
+                for i in range(0, max(1, total_frames - ref_frames_actual), coarse_step):
+                    window = test_mfcc[i:i + ref_frames_actual]
+                    if window.shape[0] < ref_frames_actual:
+                        break
+                    try:
+                        alignment = dtw._dtw(window, ref_mfcc, dist_method='cosine')
+                        if alignment.distance < best_dist:
+                            best_dist = alignment.distance
+                            best_frame = i
+                    except Exception:
+                        continue
+
+                if best_frame < 0:
+                    return None
+
+                coarse_offset = best_frame * hop_time
+                logger.debug(f"[全范围DTW] {entry.ref_name}: 粗扫offset={coarse_offset:.1f}s, "
+                            f"dist={best_dist:.1f}")
+
+                # --- 精细搜索（小步长精确定位） ---
+                fine_range_sec = 3.0
+                fine_start_frame = max(0, int((coarse_offset - fine_range_sec) / hop_time))
+                fine_end_frame = min(total_frames - ref_frames_actual,
+                                     int((coarse_offset + ref_dur + fine_range_sec) / hop_time))
+
+                fine_best_dist = best_dist
+                fine_best_frame = best_frame
+                for i in range(fine_start_frame, fine_end_frame, 3):
+                    window = test_mfcc[i:i + ref_frames_actual]
+                    if window.shape[0] < ref_frames_actual:
+                        break
+                    try:
+                        alignment = dtw._dtw(window, ref_mfcc, dist_method='cosine')
+                        if alignment.distance < fine_best_dist:
+                            fine_best_dist = alignment.distance
+                            fine_best_frame = i
+                    except Exception:
+                        continue
+
+                fine_offset = fine_best_frame * hop_time
+
+                # --- 置信度评估 ---
+                norm_dist = fine_best_dist / max(1, ref_frames_actual)
+                if norm_dist < 0.5:
+                    confidence = 0.9
+                elif norm_dist < 1.0:
+                    confidence = 0.7
+                elif norm_dist < 2.0:
+                    confidence = 0.5
+                elif norm_dist < 4.0:
+                    confidence = 0.3
+                elif norm_dist < 6.0:
+                    confidence = 0.15
+                else:
+                    confidence = 0.05
+
+                logger.info(f"[全范围DTW] {entry.ref_name}: offset={fine_offset:.2f}s, "
+                            f"dist={fine_best_dist:.1f}, norm={norm_dist:.2f}, "
+                            f"conf={confidence:.2f}, enhanced={use_pre_enhance}")
+
+                return {
+                    "ref_id": ref_id,
+                    "ref_file": entry.ref_file,
+                    "ref_name": entry.ref_name,
+                    "offset_in_test": fine_offset,
+                    "confidence": confidence,
+                    "dtw_distance": float(fine_best_dist),
+                    "normalized_distance": float(norm_dist),
+                    "method": "full_range_dtw",
+                    "snr": snr,
+                    "pre_enhanced": use_pre_enhance
+                }
+            except Exception as e:
+                logger.debug(f"[全范围DTW] 参考{entry.ref_name}处理异常: {e}")
+                return None
+
+        # 并行处理所有参考（每个参考独立DTW，互不依赖）
+        entries = list(matcher.database.entries.items())
+        if len(entries) > 1:
+            logger.info(f"[全范围DTW] 并行处理{len(entries)}个参考音频")
+            dtw_executor = get_shared_executor()
+            all_futures = {
+                dtw_executor.submit(_process_single_ref, ref_id, entry): ref_id
+                for ref_id, entry in entries
+            }
+            for future in as_completed(all_futures):
                 try:
-                    alignment = dtw._dtw(window, ref_mfcc, dist_method='cosine')
-                    if alignment.distance < best_dist:
-                        best_dist = alignment.distance
-                        best_frame = i
-                except Exception:
-                    continue
-
-            if best_frame < 0:
-                continue
-
-            coarse_offset = best_frame * 512 / sr_test
-            logger.debug(f"[全范围DTW] {entry.ref_name}: 粗扫offset={coarse_offset:.1f}s, "
-                        f"dist={best_dist:.1f}")
-
-            # --- 精细搜索 ---
-            fine_range_sec = 3.0
-            fine_start_frame = max(0, int((coarse_offset - fine_range_sec) * sr_test / 512))
-            fine_end_frame = min(total_frames - ref_frames_actual,
-                                 int((coarse_offset + ref_dur + fine_range_sec) * sr_test / 512))
-
-            fine_best_dist = best_dist
-            fine_best_frame = best_frame
-            for i in range(fine_start_frame, fine_end_frame, 3):
-                window = test_mfcc[i:i + ref_frames_actual]
-                if window.shape[0] < ref_frames_actual:
-                    break
-                try:
-                    alignment = dtw._dtw(window, ref_mfcc, dist_method='cosine')
-                    if alignment.distance < fine_best_dist:
-                        fine_best_dist = alignment.distance
-                        fine_best_frame = i
-                except Exception:
-                    continue
-
-            fine_offset = fine_best_frame * 512 / sr_test
-
-            # --- 置信度评估 ---
-            norm_dist = fine_best_dist / max(1, ref_frames_actual)
-            if norm_dist < 0.5:
-                confidence = 0.9
-            elif norm_dist < 1.0:
-                confidence = 0.7
-            elif norm_dist < 2.0:
-                confidence = 0.5
-            elif norm_dist < 4.0:
-                confidence = 0.3
-            elif norm_dist < 6.0:
-                confidence = 0.15
-            else:
-                confidence = 0.05
-
-            logger.info(f"[全范围DTW] {entry.ref_name}: offset={fine_offset:.2f}s, "
-                        f"dist={fine_best_dist:.1f}, norm={norm_dist:.2f}, "
-                        f"conf={confidence:.2f}, enhanced={use_pre_enhance}")
-
-            results.append({
-                "ref_id": ref_id,
-                "ref_file": entry.ref_file,
-                "ref_name": entry.ref_name,
-                "offset_in_test": fine_offset,
-                "confidence": confidence,
-                "dtw_distance": float(fine_best_dist),
-                "normalized_distance": float(norm_dist),
-                "method": "full_range_dtw",
-                "snr": snr,
-                "pre_enhanced": use_pre_enhance
-            })
+                    r = future.result()
+                    if r is not None:
+                        results.append(r)
+                except Exception as e:
+                    logger.debug(f"[全范围DTW] 线程异常: {e}")
+        else:
+            # 只有一个参考时，直接执行（避免线程开销）
+            for ref_id, entry in entries:
+                r = _process_single_ref(ref_id, entry)
+                if r is not None:
+                    results.append(r)
 
         results.sort(key=lambda x: x['confidence'], reverse=True)
         return results
@@ -1360,22 +1407,23 @@ def cut_all_audio_files_with_optimized_matcher(
                         f"dur={len(segment)/sr_test:.2f}s")
             return output_path
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_idx = {
-                executor.submit(_process_one, i, r): i
-                for i, r in enumerate(dtw_results)
-            }
-            ordered = {}
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                try:
-                    ordered[idx] = future.result()
-                except Exception as e:
-                    logger.error(f"[优化切分] 段{idx+1}失败: {e}")
-                    ordered[idx] = None
-            for i in range(len(dtw_results)):
-                if ordered.get(i):
-                    output_file_list.append(ordered[i])
+        # 使用共享线程池并行处理所有参考段
+        shared_executor = get_shared_executor()
+        future_to_idx = {
+            shared_executor.submit(_process_one, i, r): i
+            for i, r in enumerate(dtw_results)
+        }
+        ordered = {}
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                ordered[idx] = future.result()
+            except Exception as e:
+                logger.error(f"[优化切分] 段{idx+1}失败: {e}")
+                ordered[idx] = None
+        for i in range(len(dtw_results)):
+            if ordered.get(i):
+                output_file_list.append(ordered[i])
 
     logger.info(f"[优化切分] 完成: 共切出{len(output_file_list)}个片段")
     return output_file_list

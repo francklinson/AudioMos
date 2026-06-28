@@ -273,9 +273,24 @@ show_help() {
     echo "当前配置:"
     echo "  后端: $BACKEND_HOST:$BACKEND_PORT"
     echo ""
-    echo "环境变量:"
+    echo "环境变量(部署时设置):"
     echo "  AUDIOMOS_HOST             服务主机地址"
     echo "  AUDIOMOS_PORT             服务端口"
+    echo "  AUDIOMOS_SECRET_KEY       JWT密钥 (部署时必改)"
+    echo "  AUDIOMOS_ADMIN_PASSWORD   管理员密码"
+    echo "  AUDIOMOS_CORS_ORIGINS     CORS允许来源,逗号分隔"
+    echo "  AUDIOMOS_REF_DIR          参考音频目录"
+    echo "  AUDIOMOS_UPLOAD_DIR       上传目录"
+    echo "  AUDIOMOS_RESULT_DIR       结果目录"
+    echo "  AUDIOMOS_LOG_LEVEL        日志级别"
+    echo "  AUDIOMOS_CUDA_ENABLED     CUDA启用(true/false)"
+    echo "  CUDA_VISIBLE_DEVICES      GPU设备ID"
+    echo ""
+    echo "快速安全启动示例:"
+    echo '  export AUDIOMOS_SECRET_KEY="$(openssl rand -hex 32)"'
+    echo '  export AUDIOMOS_ADMIN_PASSWORD="YourP@ss123"'
+    echo '  export AUDIOMOS_CORS_ORIGINS="https://your-domain.com"'
+    echo "  bash start.sh start"
     echo ""
 }
 
@@ -1087,9 +1102,34 @@ start_unified() {
     # 启动一体服务
     echo ""
     echo "启动服务..."
-    export AUDIOMOS_HOST="$unified_host"
-    export AUDIOMOS_PORT="$unified_port"
-    
+
+    # ---- 部署环境变量配置 ----
+    # 优先级: 环境变量(已设置) > 以下默认值 > 代码内兜底
+    # 生产部署前设置:
+    #   export AUDIOMOS_SECRET_KEY="$(openssl rand -hex 32)"
+    #   export AUDIOMOS_ADMIN_PASSWORD="your-strong-password"
+    #   export AUDIOMOS_CORS_ORIGINS="https://your-domain.com"
+    export AUDIOMOS_HOST="${AUDIOMOS_HOST:-$unified_host}"
+    export AUDIOMOS_PORT="${AUDIOMOS_PORT:-$unified_port}"
+    # JWT密钥: 如未设置,从config.yaml读取; 再没有则使用安全随机生成(每次启动不同,踢下线已登录用户)
+    if [ -z "$AUDIOMOS_SECRET_KEY" ]; then
+        _cfg_key=$(read_yaml_value "$CONFIG_FILE" "secret_key" "")
+        if [ -n "$_cfg_key" ] && [ "$_cfg_key" != "your-secret-key-change-this-in-production" ]; then
+            export AUDIOMOS_SECRET_KEY="$_cfg_key"
+        fi
+    fi
+    # 管理员密码: 如未设置,从config.yaml读取
+    if [ -z "$AUDIOMOS_ADMIN_PASSWORD" ]; then
+        _cfg_pwd=$(read_yaml_value "$CONFIG_FILE" "admin_password" "")
+        if [ -n "$_cfg_pwd" ] && [ "$_cfg_pwd" != "tp123456" ]; then
+            export AUDIOMOS_ADMIN_PASSWORD="$_cfg_pwd"
+        fi
+    fi
+    # CORS来源: 如未设置且非生产默认,保持通配
+    if [ -z "$AUDIOMOS_CORS_ORIGINS" ] && [ "$AUDIOMOS_CORS_ORIGINS_AUTO" != "1" ]; then
+        :  # 保持未设置,代码默认为"*"
+    fi
+
     cd "$SCRIPT_DIR/backend"
     
     # 使用临时Python文件启动，避免shell引号转义问题

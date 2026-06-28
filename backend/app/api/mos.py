@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Annotated
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status, BackgroundTasks, WebSocket, WebSocketDisconnect, Form
 from fastapi.responses import FileResponse
@@ -390,8 +390,20 @@ async def process_audio_task(queue_task):
             unmatched_files = []
             try:
                 from calculator.mos_calculator import get_ref_file_by_content
-                for test_file in input_files:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                def _check_one_file(test_file: str) -> tuple:
+                    """单个文件的参考匹配检查"""
                     ref_file, match_info = get_ref_file_by_content(test_file, str(ref_dir))
+                    return test_file, ref_file, match_info
+
+                # 并行匹配所有测试音频（复用模块级executor，每个文件独立匹配互不依赖）
+                _futures = {
+                    executor.submit(_check_one_file, f): f
+                    for f in input_files
+                }
+                for _future in as_completed(_futures):
+                    test_file, ref_file, match_info = _future.result()
                     if ref_file is not None:
                         matched_files.append(test_file)
                         logger.info(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 匹配到参考音频: "
@@ -600,8 +612,10 @@ async def process_audio_task(queue_task):
 
 
 async def update_task_progress(task_id: str, progress: int, message: str):
-    """更新任务进度"""
+    """更新任务进度（首次调用时自动将状态从 queued→processing）"""
     if task_id in tasks:
+        if tasks[task_id].get("status") == "queued":
+            tasks[task_id]["status"] = "processing"
         tasks[task_id]["progress"] = progress
         tasks[task_id]["message"] = message
         tasks[task_id]["updated_at"] = datetime.now().isoformat()

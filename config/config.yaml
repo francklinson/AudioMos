@@ -1,5 +1,19 @@
 # AudioMOS 系统配置文件
 # 部署前请根据实际情况修改此配置文件
+# ============================================================
+# 环境变量覆盖（优先级高于config.yaml）:
+#   AUDIOMOS_HOST          服务监听地址
+#   AUDIOMOS_PORT          服务端口
+#   AUDIOMOS_SECRET_KEY    JWT密钥(部署时必改)
+#   AUDIOMOS_ADMIN_PASSWORD 管理员密码
+#   AUDIOMOS_CORS_ORIGINS  CORS允许来源(逗号分隔,如 "https://a.com,https://b.com")
+#   AUDIOMOS_REF_DIR       参考音频目录
+#   AUDIOMOS_UPLOAD_DIR    上传目录
+#   AUDIOMOS_RESULT_DIR    结果目录
+#   AUDIOMOS_LOG_LEVEL     日志级别(DEBUG/INFO/WARNING/ERROR)
+#   AUDIOMOS_CUDA_ENABLED  CUDA启用(true/false)
+#   CUDA_VISIBLE_DEVICES   GPU设备ID
+# ============================================================
 
 # 服务器配置
 server:

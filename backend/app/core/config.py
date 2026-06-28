@@ -12,15 +12,17 @@ from pydantic_settings import BaseSettings
 class ServerConfig(BaseSettings):
     """服务器配置"""
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8002  # 与 config.yaml 保持一致
     debug: bool = False
 
 
 class AuthConfig(BaseSettings):
     """认证配置"""
+    # 优先级: 环境变量 AUDIOMOS_SECRET_KEY > config.yaml > 默认值
     secret_key: str = "your-secret-key-change-this-in-production"
     access_token_expire_minutes: int = 60
     admin_username: str = "admin"
+    # 优先级: 环境变量 AUDIOMOS_ADMIN_PASSWORD > config.yaml > 默认值
     admin_password: str = "tp123456"
 
 
@@ -152,6 +154,8 @@ def load_config(config_path: str = None) -> Config:
     
     if os.getenv("AUDIOMOS_SECRET_KEY"):
         config.auth.secret_key = os.getenv("AUDIOMOS_SECRET_KEY")
+    if os.getenv("AUDIOMOS_ADMIN_PASSWORD"):
+        config.auth.admin_password = os.getenv("AUDIOMOS_ADMIN_PASSWORD")
     if os.getenv("AUDIOMOS_REF_DIR"):
         config.paths.ref_dir = os.getenv("AUDIOMOS_REF_DIR")
     if os.getenv("AUDIOMOS_UPLOAD_DIR"):

@@ -128,10 +128,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 配置CORS
+# 配置CORS — 从环境变量读取允许的来源，默认为全部
+# 生产环境应设置: export AUDIOMOS_CORS_ORIGINS="https://your-domain.com"
+_cors_origins_str = os.getenv("AUDIOMOS_CORS_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_origins_str.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应限制为前端域名
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
