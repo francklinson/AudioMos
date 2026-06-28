@@ -68,25 +68,9 @@ except ImportError as e:
         )
         USE_OPTIMIZED = False
 
-try:
-    from audio_cut import cut_all_audio_files_from_list
-    from audio_align import align_splited_wav_from_list
-except ImportError:
-    try:
-        from app.core.audio_cut import cut_all_audio_files_from_list
-        from app.core.audio_processor import align_splited_wav_from_list
-    except ImportError:
-        from audio_cut import cut_all_audio_files_from_list
-        from audio_processor import align_splited_wav_from_list
-
-# 导入优化版匹配切分（优先使用）
-try:
-    from matching_optimizer import cut_all_audio_files_with_optimized_matcher
-    _HAS_OPTIMIZED_CUT = True
-    logger.info("✓ 使用优化版DTW切分模块")
-except ImportError:
-    _HAS_OPTIMIZED_CUT = False
-    logger.warning("优化版DTW切分不可用，使用旧版MFCCLocate切分")
+# 导入优化版匹配切分（全范围DTW + HPSS精对齐）
+from matching_optimizer import cut_all_audio_files_with_optimized_matcher
+logger.info("✓ 使用优化版切分模块（全范围DTW + HPSS精对齐）")
 import numpy as np
 import pandas as pd
 
@@ -443,38 +427,17 @@ async def process_audio_task(queue_task):
                 split_output_dir.mkdir(parents=True, exist_ok=True)
 
                 try:
-                    # 优先使用优化版DTW切分（全范围DTW扫描，低SNR下更可靠）
-                    if _HAS_OPTIMIZED_CUT:
-                        logger.info("使用优化版DTW切分...")
-                        split_files = cut_all_audio_files_with_optimized_matcher(
-                            matched_files,
-                            ref_dir=str(ref_dir),
-                            output_dir=str(split_output_dir)
-                        )
-                    else:
-                        split_files = cut_all_audio_files_from_list(
-                            matched_files,
-                            output_dir=str(split_output_dir),
-                            ref_dir=str(ref_dir)
-                        )
+                    split_files = cut_all_audio_files_with_optimized_matcher(
+                        matched_files,
+                        ref_dir=str(ref_dir),
+                        output_dir=str(split_output_dir)
+                    )
                 except Exception as e:
                     logger.error(f"音频切分失败: {e}")
                     split_files = input_files
 
-                # 优化版切分已在内部做了HPSS精对齐，无需二次对齐
-                if not _HAS_OPTIMIZED_CUT:
-                    await update_task_progress(task_id, 30, "正在进行音频对齐...")
-                    align_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_aligned"
-                    align_output_dir.mkdir(parents=True, exist_ok=True)
-                    try:
-                        aligned_files = align_splited_wav_from_list(
-                            split_files,
-                            ref_dir=str(ref_dir),
-                            output_dir=str(align_output_dir)
-                        )
-                    except Exception as e:
-                        logger.error(f"音频对齐失败: {e}")
-                        aligned_files = split_files
+                # 优化版输出已是样本级对齐的12s段，无需二次对齐
+                aligned_files = split_files
 
                 await update_task_progress(task_id, 50, "正在计算MOS得分...")
                 loop = asyncio.get_event_loop()

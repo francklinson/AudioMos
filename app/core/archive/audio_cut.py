@@ -1,4 +1,15 @@
 """
+【废弃】旧版MFCC定位切分模块
+
+此模块已废弃, 由 matching_optimizer 替代:
+  - MFCCLocate -> 全范围DTW扫描 (RobustDTWLocator + 39维MFCC+CMVN+余弦距离)
+  - cut_all_audio_files_from_list -> cut_all_audio_files_with_optimized_matcher
+     (当前函数已自动重定向到优化版，仅 import 失败时回退到旧实现)
+
+保留作为回退, 新代码请使用 matching_optimizer。
+"""
+
+"""
 根据1kHz标记切分音频文件
 通过分析音频的短时傅里叶变换（STFT）来检测1kHz的频率峰值，然后根据这些峰值将音频切分成多个片段。
 
@@ -324,10 +335,27 @@ def cut_all_audio_files_in_directory_1k(input_dir, output_dir):
 def cut_all_audio_files_from_list(input_file_list, ref_dir, output_dir):
     """
     输入音频文件列表，返回处理后文件保存的路径
-    input_file_list:输入文件列表
-    ref_dir:参考文件路径
-    output_dir:输出文件路径
+
+    注意: 此函数已废弃，由 matching_optimizer.cut_all_audio_files_with_optimized_matcher
+          替代（全范围DTW+HPSS精对齐，低SNR下更可靠）。
+          当前实现优先尝试加载优化版，失败时回退到旧版MFCCLocate。
     """
+    # 优先使用优化版（全范围DTW+HPSS精对齐）
+    _opt_warned = False
+    try:
+        from matching_optimizer import cut_all_audio_files_with_optimized_matcher
+        logger = logging.getLogger('audiomos')
+        logger.warning("[废弃] audio_cut.cut_all_audio_files_from_list 被调用，"
+                       "建议使用 matching_optimizer.cut_all_audio_files_with_optimized_matcher")
+        return cut_all_audio_files_with_optimized_matcher(input_file_list, ref_dir, output_dir)
+    except ImportError:
+        pass
+    except Exception as e:
+        if not _opt_warned:
+            logging.getLogger('audiomos').warning(f"优化切分失败,回退到旧版MFCCLocate: {e}")
+            _opt_warned = True
+
+    # 旧版MFCCLocate实现（回退）
     ref_files = [os.path.join(ref_dir, f) for f in os.listdir(ref_dir) if f.endswith(".wav")]
     # 要排序
     ref_files.sort()

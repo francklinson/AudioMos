@@ -1,5 +1,13 @@
 """
-计算两个音频文件的互相关来找到它们之间的最佳对齐位置，然后将测试音频文件移动到这个位置。
+【废弃】旧版互相关对齐模块
+
+此模块已废弃, 由 matching_optimizer 替代:
+  - align_audio (原始波形互相关, 假设0.5s前置冗余)
+    -> matching_optimizer: HPSS谐波互相关精对齐(样本级, 无需冗余)
+  - align_splited_wav_from_list -> 优化版切分自带HPSS精对齐, 无需二次对齐
+
+保留作为回退(当使用旧版audio_cut切分时需要二次对齐),
+新代码请使用 matching_optimizer.cut_all_audio_files_with_optimized_matcher。
 """
 import os
 import librosa

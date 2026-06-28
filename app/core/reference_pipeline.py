@@ -1,12 +1,18 @@
 """
-参考音频匹配管道
-整合两阶段匹配流程：
+【旧版】参考音频匹配管道（指纹+DTW定位+互相关对齐）
+
+此模块已逐步被 matching_optimizer 替代:
+  - DTWLocator -> RobustDTWLocator (39维MFCC+CMVN+Delta+余弦距离)
+  - ReferencePipeline.match_and_locate -> OptimizedMatcher._full_range_dtw_sweep
+  - ReferencePipeline.cut_and_align -> 优化版切分自带HPSS精对齐, 无需cut_and_align
+
+当前用途: backend/app/api/reference_audio.py 的匹配预览API仍使用此模块。
+该API仅做匹配预览(不参与MOS评分), 后续可迁移。
+
+整合的两阶段匹配流程:
   阶段1 - 指纹快速筛选：使用ReferenceMatcher在测试音频中快速搜索候选参考音频
   阶段2 - DTW精确定位：对候选参考音频使用MFCC+DTW进行精确的时间边界定位
   阶段3 - 音频切分对齐：根据定位结果切分测试音频并与参考音频对齐
-
-该管道替代原有的"固定4段参考音频+1kHz标记音切分"方案，
-支持用户自定义任意数量的参考音频，实现内容级别的自动匹配。
 """
 import os
 import sys
