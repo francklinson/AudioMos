@@ -426,3 +426,28 @@
     - 当前步骤→⏳，之前步骤→✓，之后步骤→○，不再依赖progress值
     - 影响文件: frontend/static/js/app.js (renderMosProgressSteps重写)
     - 生成工作记录: records/work_record_2026-06-30_ui_optimization.md
+
+已完成:
+[5] 切分对齐流程性能优化 (2026-06-30完成)
+    - P0: 消除 RefScore 内部 DTW 重复匹配
+      * 正则扩展: ref_\d+ → ref[_-]?\d+（支持ref_001/ref001/ref-001）
+      * 新增 _ref_match_stats 监控统计 (regex_hit/miss, dtw_triggered/success/failed)
+      * 新增 get_ref_match_stats() / reset_ref_match_stats() API
+    - P1.1: 消除 OptimizedMatcher 实例重复创建
+      * cut_all_audio_files_with_optimized_matcher 新增 opt_matcher 参数
+      * 预检测阶段的MFCC缓存直接传入切分函数，消除重复提取
+    - P1.2: 全范围 DTW 粗扫加速
+      * 新增抛物线插值（3点二次拟合，子帧级精度）
+      * 自适应精扫范围: norm_dist<0.5免精扫, <2.0 ±2s, ≥2.0 ±3s
+      * DTW精扫调用数从~63次/参考降至0-25次/参考
+    - P2.1: 混合场景支持有参考MOS
+      * 匹配文件走切分→有参考MOS，不匹配文件走无参考MOS
+      * 不再全量降级到无参考（旧策略丢弃全部分数）
+    - P2.2: HPSS 谐波提取加速
+      * 使用scipy.ndimage.median_filter替代librosa.effects.hpss（输出完全一致）
+      * kernel_size 从 51 降至 31（中值滤波加速~40%）
+      * quality<0.08时跳过HPSS修正回退到DTW offset
+    - 验证: 拾音距离测试集 2文件×4参考 2.73s±0.01s（加速1.65x）
+    - 对齐精度: 10dB SNR 文件 < 26ms
+    - 影响文件: app/core/matching_optimizer.py, app/core/calculator/mos_calculator.py, backend/app/api/mos.py
+    - 生成工作记录: records/work_record_2026-06-30_segmentation_optimization.md
