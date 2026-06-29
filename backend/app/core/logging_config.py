@@ -1,6 +1,6 @@
 """
 日志配置模块
-提供统一的日志配置 - 前后端一体架构专用
+提供统一的日志配置
 """
 import logging
 import sys
@@ -12,7 +12,7 @@ from .config import settings
 
 def setup_logging() -> logging.Logger:
     """
-    设置日志配置 - 只输出到 unified.log
+    设置日志配置
 
     Returns:
         配置好的logger实例
@@ -34,13 +34,13 @@ def setup_logging() -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    # 文件处理器 - unified.log（前后端一体架构唯一日志文件）
+    # 文件处理器 - audiomos.log（主日志文件）
     log_dir = Path(settings.logging.file).parent
     log_dir.mkdir(parents=True, exist_ok=True)
-    unified_log_path = log_dir / "unified.log"
+    log_path = log_dir / "audiomos.log"
 
     file_handler = RotatingFileHandler(
-        unified_log_path,
+        log_path,
         maxBytes=settings.logging.max_size * 1024 * 1024,
         backupCount=settings.logging.backup_count,
         encoding="utf-8"
@@ -56,7 +56,7 @@ def setup_logging() -> logging.Logger:
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
-    logger.info(f"[日志配置] 日志系统初始化完成，输出到: {unified_log_path}")
+    logger.info(f"[日志配置] 日志系统初始化完成，输出到: {log_path}")
 
     return logger
 

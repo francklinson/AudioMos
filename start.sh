@@ -297,12 +297,12 @@ show_help() {
 # 检查服务是否正在运行
 check_status() {
     local backend_running=false
-    local unified_pid=""
+    local server_pid=""
 
-    # 检查一体服务 PID（优先）
-    if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
-        unified_pid=$(cat "$SCRIPT_DIR/.unified.pid")
-        if ps -p "$unified_pid" > /dev/null 2>&1; then
+    # 检查服务 PID（优先）
+    if [ -f "$SCRIPT_DIR/.server.pid" ]; then
+        server_pid=$(cat "$SCRIPT_DIR/.server.pid")
+        if ps -p "$server_pid" > /dev/null 2>&1; then
             backend_running=true
         fi
     fi
@@ -332,7 +332,7 @@ show_status() {
     local status=$(check_status)
 
     if [ "$status" = "running" ]; then
-        local _pid="$(cat "$SCRIPT_DIR/.unified.pid" 2>/dev/null || cat "$BACKEND_PID_FILE" 2>/dev/null || echo "?")"
+        local _pid="$(cat "$SCRIPT_DIR/.server.pid" 2>/dev/null || cat "$BACKEND_PID_FILE" 2>/dev/null || echo "?")"
         echo "✅ AudioMOS 服务: 运行中 (PID: $_pid)"
         echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
         echo ""
@@ -989,21 +989,21 @@ wait_for_ports() {
     done
 }
 
-# 启动前后端一体服务
-start_unified() {
+# 启动服务（单进程，托管前端静态文件）
+start_server() {
     # 解析参数
-    local unified_port="$BACKEND_PORT"
-    local unified_host="$BACKEND_HOST"
+    local server_port="$BACKEND_PORT"
+    local server_host="$BACKEND_HOST"
     
     # 解析 --port 和 --host 参数
     while [[ $# -gt 0 ]]; do
         case $1 in
             --port)
-                unified_port="$2"
+                server_port="$2"
                 shift 2
                 ;;
             --host)
-                unified_host="$2"
+                server_host="$2"
                 shift 2
                 ;;
             *)
@@ -1013,14 +1013,14 @@ start_unified() {
     done
     
     echo "================================"
-    echo "  启动 AudioMOS 前后端一体服务"
+    echo "  启动 AudioMOS 服务"
     echo "================================"
     echo ""
     echo "项目路径: $SCRIPT_DIR"
     echo ""
     echo "配置:"
-    echo "  监听地址: $unified_host:$unified_port"
-    echo "  模式: 前后端一体（单服务）"
+    echo "  监听地址: $server_host:$server_port"
+    echo "  模式: 单服务（托管前端静态文件）"
     echo ""
     
     # 检查虚拟环境
@@ -1076,9 +1076,9 @@ start_unified() {
     
     # 停止已有服务（两个都调用，覆盖所有启动方式）
     stop_services > /dev/null 2>&1
-    stop_unified > /dev/null 2>&1
+    stop_server > /dev/null 2>&1
 
-    # 启动一体服务
+    # 启动服务
     echo ""
     echo "启动服务..."
 
@@ -1088,8 +1088,8 @@ start_unified() {
     #   export AUDIOMOS_SECRET_KEY="$(openssl rand -hex 32)"
     #   export AUDIOMOS_ADMIN_PASSWORD="your-strong-password"
     #   export AUDIOMOS_CORS_ORIGINS="https://your-domain.com"
-    export AUDIOMOS_HOST="${AUDIOMOS_HOST:-$unified_host}"
-    export AUDIOMOS_PORT="${AUDIOMOS_PORT:-$unified_port}"
+    export AUDIOMOS_HOST="${AUDIOMOS_HOST:-$server_host}"
+    export AUDIOMOS_PORT="${AUDIOMOS_PORT:-$server_port}"
     # JWT密钥: 如未设置,从config.yaml读取; 再没有则使用安全随机生成(每次启动不同,踢下线已登录用户)
     if [ -z "$AUDIOMOS_SECRET_KEY" ]; then
         _cfg_key=$(read_yaml_value "$CONFIG_FILE" "secret_key" "")
@@ -1127,7 +1127,7 @@ host = os.environ.get('AUDIOMOS_HOST', '0.0.0.0')
 port = int(os.environ.get('AUDIOMOS_PORT', '8002'))
 
 logger.info('=' * 60)
-logger.info('AudioMOS 前后端一体模式启动')
+logger.info('AudioMOS 服务启动')
 logger.info('=' * 60)
 logger.info(f'监听地址: {host}:{port}')
 
@@ -1140,12 +1140,12 @@ uvicorn.run(
 )
 PYEOF
     
-    nohup python "$SCRIPT_DIR/.start_server.py" > "$SCRIPT_DIR/logs/unified.log" 2>&1 &
+    nohup python "$SCRIPT_DIR/.start_server.py" > "$SCRIPT_DIR/logs/audiomos.log" 2>&1 &
     
-    UNIFIED_PID=$!
-    echo "$UNIFIED_PID" > "$SCRIPT_DIR/.unified.pid"
+    SERVER_PID=$!
+    echo "$SERVER_PID" > "$SCRIPT_DIR/.server.pid"
     
-    echo "服务已启动, PID: $UNIFIED_PID"
+    echo "服务已启动, PID: $SERVER_PID"
     
     # 等待服务就绪
     echo ""
@@ -1154,27 +1154,27 @@ PYEOF
     local max_wait=30
     
     while [ $check_count -lt $max_wait ]; do
-        if ! ps -p "$UNIFIED_PID" > /dev/null 2>&1; then
+        if ! ps -p "$SERVER_PID" > /dev/null 2>&1; then
             echo "❌ 服务进程已退出，启动失败"
-            echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/unified.log"
-            rm -f "$SCRIPT_DIR/.unified.pid"
+            echo "查看日志: tail -n 50 $SCRIPT_DIR/logs/audiomos.log"
+            rm -f "$SCRIPT_DIR/.server.pid"
             return 1
         fi
         
     # 健康检查: 如果 host 是 0.0.0.0, 用 127.0.0.1 连接
-        local check_host="$unified_host"
+        local check_host="$server_host"
         if [ "$check_host" = "0.0.0.0" ]; then
             check_host="127.0.0.1"
         fi
         
-        if curl -s "http://$check_host:$unified_port/health" > /dev/null 2>&1; then
+        if curl -s "http://$check_host:$server_port/health" > /dev/null 2>&1; then
             echo ""
             echo "================================"
             echo "  ✅ AudioMOS 启动成功!"
             echo "================================"
             echo ""
-            echo "🌐 访问地址: http://$unified_host:$unified_port"
-            echo "📚 API文档:  http://$unified_host:$unified_port/docs"
+            echo "🌐 访问地址: http://$server_host:$server_port"
+            echo "📚 API文档:  http://$server_host:$server_port/docs"
             echo ""
             echo "默认登录账号:"
             echo "  用户名: admin"
@@ -1190,18 +1190,18 @@ PYEOF
     
     echo ""
     echo "⚠️  服务启动超时，可能仍在初始化中"
-    echo "查看日志: tail -f $SCRIPT_DIR/logs/unified.log"
+    echo "查看日志: tail -f $SCRIPT_DIR/logs/audiomos.log"
     return 0
 }
 
-# 停止一体服务
-stop_unified() {
+# 停止服务
+stop_server() {
     local pid_stopped=false
 
-    if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
-        local pid=$(cat "$SCRIPT_DIR/.unified.pid")
+    if [ -f "$SCRIPT_DIR/.server.pid" ]; then
+        local pid=$(cat "$SCRIPT_DIR/.server.pid")
         if ps -p "$pid" > /dev/null 2>&1; then
-            echo "停止前后端一体服务 (PID: $pid)..."
+            echo "停止服务 (PID: $pid)..."
             # 先尝试温和终止
             kill "$pid" 2>/dev/null
             # 等待进程结束，最多等待5秒
@@ -1226,10 +1226,10 @@ stop_unified() {
         else
             pid_stopped=true
         fi
-        rm -f "$SCRIPT_DIR/.unified.pid"
+        rm -f "$SCRIPT_DIR/.server.pid"
     fi
 
-    # 额外检查：查找并停止所有项目相关的 Python 一体服务进程
+    # 额外检查：查找并停止所有项目相关的 Python 服务进程
     if [ "$pid_stopped" = false ]; then
         local python_pids=$(pgrep -f "uvicorn.*app.main:app" | while read pid; do
             if pwdx "$pid" 2>/dev/null | grep -q "$SCRIPT_DIR/backend"; then
@@ -1238,7 +1238,7 @@ stop_unified() {
         done)
 
         if [ -n "$python_pids" ]; then
-            echo "发现残留的一体服务进程，正在停止..."
+            echo "发现残留的服务进程，正在停止..."
             for pid in $python_pids; do
                 echo "  停止 Python 进程 (PID: $pid)"
                 kill -9 "$pid" 2>/dev/null || true
@@ -1272,7 +1272,7 @@ restart_services() {
     echo "================================"
     echo ""
     stop_services
-    stop_unified
+    stop_server
     sleep 2
     start_services
 }
@@ -1284,11 +1284,11 @@ mkdir -p "$SCRIPT_DIR/logs"
 case "${1:-start}" in
     start)
         shift
-        start_unified "$@"
+        start_server "$@"
         ;;
     stop)
         stop_services
-        stop_unified
+        stop_server
         # 最后手段：直接清理占用配置端口的进程（仅 LISTEN 状态）
         _port="${AUDIOMOS_PORT:-$(read_yaml_value "$CONFIG_FILE" "port" "8002")}"
         _port_pids=$(lsof -ti :"$_port" -sTCP:LISTEN 2>/dev/null)
@@ -1315,19 +1315,19 @@ case "${1:-start}" in
         ;;
     restart)
         stop_services
-        stop_unified
+        stop_server
         sleep 2
         shift
-        start_unified "$@"
+        start_server "$@"
         ;;
     status)
         show_status
         # 检查服务状态
-        if [ -f "$SCRIPT_DIR/.unified.pid" ]; then
-            _pid=$(cat "$SCRIPT_DIR/.unified.pid")
+        if [ -f "$SCRIPT_DIR/.server.pid" ]; then
+            _pid=$(cat "$SCRIPT_DIR/.server.pid")
             if ps -p "$_pid" > /dev/null 2>&1; then
                 echo ""
-                echo "前后端一体服务:"
+                echo "服务:"
                 echo "  ✅ 运行中 (PID: $_pid)"
             fi
         fi

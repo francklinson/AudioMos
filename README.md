@@ -377,7 +377,7 @@ python3 tests/complete_test_suite.py
 2. **模型加载失败**
    - 检查模型文件是否完整（运行 `./start.sh` 会自动检查）
    - 检查磁盘空间是否充足
-   - 查看日志：`logs/unified.log`
+   - 查看日志：`logs/audiomos.log`
 
 3. **参考音频匹配失败**
    - 确保参考音频已正确上传
