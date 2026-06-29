@@ -388,32 +388,57 @@ async def process_audio_task(queue_task):
             # 区分能匹配到参考音频的文件和不能匹配的，分别处理
             matched_files = []
             unmatched_files = []
+            # 缓存DTW扫描结果，避免切分阶段重复计算（P0优化）
+            cached_dtw_results = {}  # {test_file: [dtw_result_dict, ...]}
             try:
-                from calculator.mos_calculator import get_ref_file_by_content
+                # 使用OptimizedMatcher直接做全范围DTW扫描，同时缓存结果供切分复用
+                from matching_optimizer import OptimizedMatcher
                 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-                def _check_one_file(test_file: str) -> tuple:
-                    """单个文件的参考匹配检查"""
-                    ref_file, match_info = get_ref_file_by_content(test_file, str(ref_dir))
-                    return test_file, ref_file, match_info
+                # 共享OptimizedMatcher实例（带MFCC缓存，减少重复提取）
+                _opt_matcher = OptimizedMatcher(ref_dir=str(ref_dir))
+                _opt_matcher.build_ref_cache(str(ref_dir))
 
-                # 并行匹配所有测试音频（复用模块级executor，每个文件独立匹配互不依赖）
+                def _check_one_file(test_file: str) -> tuple:
+                    """单文件DTW扫描：返回(文件路径, 最佳匹配参考路径, 完整DTW结果列表)"""
+                    try:
+                        snr, _ = _opt_matcher._estimate_snr_and_noise_floor(test_file)
+                        dtw_results = _opt_matcher._full_range_dtw_sweep(test_file, snr)
+                        if dtw_results:
+                            # 取置信度最高的结果作为"是否匹配"的判断依据
+                            best = max(dtw_results, key=lambda x: x.get('confidence', 0))
+                            ref_file = best.get('ref_file', '') or best.get('ref_path', '')
+                            ref_name = best.get('ref_name', os.path.basename(ref_file))
+                            confidence = best.get('confidence', 0)
+                            logger.info(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 匹配到参考音频: "
+                                        f"'{ref_name}' (confidence={confidence:.3f}, "
+                                        f"offset={best.get('offset_in_test', 0):.2f}s)")
+                            return test_file, ref_file, dtw_results
+                        else:
+                            logger.warning(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 未匹配到任何参考音频")
+                            return test_file, None, []
+                    except Exception as e:
+                        logger.warning(f"[预检测] 音频 '{os.path.basename(test_file)}' 匹配异常: {e}")
+                        return test_file, None, []
+
+                # 并行匹配所有测试音频
                 _futures = {
                     executor.submit(_check_one_file, f): f
                     for f in input_files
                 }
                 for _future in as_completed(_futures):
-                    test_file, ref_file, match_info = _future.result()
+                    test_file, ref_file, dtw_results = _future.result()
                     if ref_file is not None:
                         matched_files.append(test_file)
-                        logger.info(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 匹配到参考音频: "
-                                    f"'{os.path.basename(ref_file)}' (方法={match_info.get('method', 'unknown')})")
+                        if dtw_results:
+                            cached_dtw_results[test_file] = dtw_results
                     else:
                         unmatched_files.append(test_file)
-                        logger.warning(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 未匹配到任何参考音频")
-                logger.info(f"[预检测] 匹配结果: {len(matched_files)}个匹配, {len(unmatched_files)}个未匹配")
+                logger.info(f"[预检测] 匹配结果: {len(matched_files)}个匹配, "
+                            f"{len(unmatched_files)}个未匹配, "
+                            f"{len(cached_dtw_results)}个缓存DTW结果")
             except ImportError as e:
-                logger.warning(f"[预检测] 无法导入参考匹配模块: {e}，回退到传统模式")
+                logger.warning(f"[预检测] 无法导入优化匹配模块: {e}，回退到传统模式")
                 matched_files = list(input_files)
                 unmatched_files = []
 
@@ -442,7 +467,8 @@ async def process_audio_task(queue_task):
                     split_files = cut_all_audio_files_with_optimized_matcher(
                         matched_files,
                         ref_dir=str(ref_dir),
-                        output_dir=str(split_output_dir)
+                        output_dir=str(split_output_dir),
+                        cached_dtw_results=cached_dtw_results if cached_dtw_results else None
                     )
                 except Exception as e:
                     logger.error(f"音频切分失败: {e}")

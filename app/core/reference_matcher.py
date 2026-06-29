@@ -23,6 +23,7 @@ import sys
 import hashlib
 import time
 import json
+import zlib
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Set
 from dataclasses import dataclass, field
@@ -214,8 +215,9 @@ class AudioFingerprinter:
 
                 if self.config.min_time_delta <= t_delta <= self.config.max_time_delta:
                     hash_str = f"{f1}|{f2}|{t_delta}"
-                    hash_hex = hashlib.sha1(hash_str.encode("utf-8")).hexdigest()
-                    hashes.append((hash_hex, t1))
+                    # 使用zlib.adler32替代SHA1（~5x加速，指纹匹配不需要加密哈希）
+                    hash_key = str(zlib.adler32(hash_str.encode("utf-8")))
+                    hashes.append((hash_key, t1))
 
         return hashes
 
@@ -454,12 +456,14 @@ class ReferenceMatcher:
     def build_database(self, ref_dir: str = None) -> Dict:
         """
         建立参考音频指纹数据库
-        从参考音频目录加载所有音频文件并提取指纹
+        从参考音频目录加载所有音频文件并提取指纹（并行化处理）
         Args:
             ref_dir: 参考音频目录（如果不指定则使用初始化时的目录）
         Returns:
             统计信息
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         target_dir = ref_dir or self.ref_dir
         if not target_dir:
             raise ValueError("未指定参考音频目录")
@@ -479,44 +483,57 @@ class ReferenceMatcher:
         metadata = self._load_metadata(target_dir)
         audios = metadata.get("audios", {})
 
-        # 遍历参考音频文件
-        loaded_count = 0
+        def _add_single(audio_id: str, file_path: Path,
+                        gt_text: Optional[str] = None,
+                        desc: Optional[str] = None) -> Optional[str]:
+            """添加单个参考音频到指纹库（线程安全）"""
+            try:
+                self.database.add_reference(
+                    ref_id=audio_id,
+                    audio_path=str(file_path),
+                    ground_truth_text=gt_text,
+                    description=desc
+                )
+                return audio_id
+            except Exception as e:
+                logger.error(f"[参考匹配器] 添加参考音频失败 {file_path.name}: {e}")
+                return None
+
+        # 并行化指纹提取（STFT+峰值检测释放GIL，线程安全）
+        loaded = 0
+        ref_tasks = []
+
         for audio_id, info in audios.items():
             filename = info.get("filename", "")
             file_path = ref_path / filename
             if file_path.exists() and file_path.suffix.lower() in ['.wav', '.mp3', '.flac']:
-                try:
-                    gt_text = info.get("ground_truth_text")
-                    description = info.get("description")
-                    self.database.add_reference(
-                        ref_id=audio_id,
-                        audio_path=str(file_path),
-                        ground_truth_text=gt_text,
-                        description=description
-                    )
-                    loaded_count += 1
-                except Exception as e:
-                    logger.error(f"[参考匹配器] 添加参考音频失败 {filename}: {e}")
+                ref_tasks.append((
+                    audio_id, file_path,
+                    info.get("ground_truth_text"),
+                    info.get("description")
+                ))
 
-        # 如果metadata中没有记录，也尝试直接扫描目录
-        if loaded_count == 0:
+        # 如果metadata为空，直接扫描目录
+        if not ref_tasks:
             logger.info(f"[参考匹配器] 元数据为空，直接扫描目录")
             for f in sorted(ref_path.iterdir()):
                 if f.suffix.lower() in ['.wav', '.mp3', '.flac']:
-                    try:
-                        ref_id = f"direct_{f.stem}"
-                        self.database.add_reference(
-                            ref_id=ref_id,
-                            audio_path=str(f)
-                        )
-                        loaded_count += 1
-                    except Exception as e:
-                        logger.error(f"[参考匹配器] 添加参考音频失败 {f.name}: {e}")
+                    ref_tasks.append((
+                        f"direct_{f.stem}", f, None, None
+                    ))
+
+        if ref_tasks:
+            _max_w = min(4, len(ref_tasks))  # 最多4路并行
+            with ThreadPoolExecutor(max_workers=_max_w, thread_name_prefix='fp_build') as _exe:
+                _futs = {_exe.submit(_add_single, *t): t[0] for t in ref_tasks}
+                for _f in as_completed(_futs):
+                    if _f.result() is not None:
+                        loaded += 1
 
         self.database.build_time = time.time() - start_time
         stats = self.database.get_statistics()
         logger.info(f"[参考匹配器] 指纹数据库建立完成: "
-                     f"{loaded_count} 个参考音频, "
+                     f"{loaded} 个参考音频, "
                      f"{stats['total_hashes']} 个Hash, "
                      f"耗时 {self.database.build_time:.2f}s")
 

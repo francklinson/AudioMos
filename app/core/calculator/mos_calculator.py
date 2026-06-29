@@ -13,6 +13,7 @@ import sys
 import time
 import asyncio
 import threading
+import importlib.util
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 # 需要到达: app/algorithms/
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _ALGORITHMS_DIR = os.path.join(_PROJECT_ROOT, 'app', 'algorithms')
+sys.path.insert(0, _PROJECT_ROOT)  # 用于 `from app.core._executor` 统一线程池导入
 sys.path.insert(0, _ALGORITHMS_DIR)
 sys.path.insert(0, os.path.join(_ALGORITHMS_DIR, 'speechmetrics'))
 # nisqa的predict.py在algorithms/nisqa/目录下，需要添加algorithms目录到路径
@@ -175,26 +177,28 @@ if not MODELSCOPE_AVAILABLE:
     print("警告: modelscope模块未安装，音色还原度评分将不可用")
 
 
-# ============ 全局共享线程池 ============
-_SHARED_EXECUTOR = None
-_SHARED_EXECUTOR_LOCK = threading.Lock()
-
-
-def get_shared_executor(max_workers: int = 4) -> ThreadPoolExecutor:
-    """
-    获取全局共享线程池（延迟初始化，避免每次调用创建销毁的开销）
-    生命周期与应用进程一致，在进程退出时自动清理
-    """
-    global _SHARED_EXECUTOR
-    if _SHARED_EXECUTOR is None:
-        with _SHARED_EXECUTOR_LOCK:
-            if _SHARED_EXECUTOR is None:
-                _SHARED_EXECUTOR = ThreadPoolExecutor(
-                    max_workers=max_workers,
-                    thread_name_prefix='audiomos_shared'
-                )
-                logger.debug(f"[共享线程池] 已创建 (max_workers={max_workers})")
-    return _SHARED_EXECUTOR
+# ============ 全局共享线程池（统一模块，消除多模块独立线程池的资源争用） ============
+# 使用importlib加载统一线程池模块，避免多环境sys.path不一致导致的导入失败
+_shared_executor = None
+def get_shared_executor(max_workers: int = 8) -> ThreadPoolExecutor:
+    global _shared_executor
+    if _shared_executor is not None:
+        return _shared_executor
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_executor",
+            os.path.join(_PROJECT_ROOT, "app", "core", "_executor.py")
+        )
+        if spec and spec.loader:
+            _exec_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_exec_mod)
+            _shared_executor = _exec_mod.get_shared_executor(max_workers=max_workers)
+            return _shared_executor
+    except Exception:
+        pass
+    # 回退到本地创建
+    _shared_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='audiomos_shared')
+    return _shared_executor
 
 
 # ============ 性能监控 ============
@@ -956,6 +960,13 @@ class OptimizedWerScore:
 class OptimizedToneColorFidelityScore:
     """优化的音色还原度评分 - 支持多模型加权评估"""
 
+    # GPU显存预算比例：超过此阈值时将新模型加载到CPU而非GPU
+    # 避免6个TCF管线同时占用GPU导致OOM
+    _GPU_MEM_BUDGET_RATIO = 0.80  # 80%阈值，可通过类变量覆盖
+    # TCF模型最大并发数：限制同时推理的模型数量以控制峰值显存
+    # 2路并发约需6-8GB显存，6路全开可能超24GB（尤其与大模型共存时）
+    _TCF_MAX_CONCURRENT = 2
+
     def __init__(self):
         import time
         logger.info("[TCF] 初始化音色还原度评分模型...")
@@ -1093,15 +1104,31 @@ class OptimizedToneColorFidelityScore:
 
             # 加载前清理CUDA缓存，释放之前模型占用的显存
             device = 'cuda' if cuda.is_available() else 'cpu'
+            mem_free_gb = mem_total_gb = None
             if cuda.is_available():
                 cuda.empty_cache()
                 try:
                     mem_free, mem_total = cuda.mem_get_info()
                     mem_free_gb = mem_free / (1024 ** 3)
                     mem_total_gb = mem_total / (1024 ** 3)
-                    logger.info(f"[TCF] GPU显存: {mem_free_gb:.1f}GB 可用 / {mem_total_gb:.1f}GB 总量")
+                    mem_used_ratio = 1.0 - (mem_free / mem_total)
+                    # GPU显存预算管理：使用率超过80%时自动回退到CPU
+                    if mem_used_ratio > self._GPU_MEM_BUDGET_RATIO:
+                        device = 'cpu'
+                        logger.warning(
+                            f"[TCF] GPU显存使用率{mem_used_ratio:.0%}>"
+                            f"{self._GPU_MEM_BUDGET_RATIO:.0%}, "
+                            f"模型[{alg}]将在CPU上加载"
+                        )
+                    logger.info(f"[TCF] GPU显存: {mem_free_gb:.1f}GB 可用 / "
+                                f"{mem_total_gb:.1f}GB 总量 "
+                                f"(使用率: {mem_used_ratio:.0%}, "
+                                f"预算: {self._GPU_MEM_BUDGET_RATIO:.0%})")
                 except Exception:
-                    mem_free_gb = mem_total_gb = None
+                    dev_info = f"device={device}"
+                    if mem_free_gb is not None:
+                        dev_info += f", mem_free={mem_free_gb:.1f}GB"
+                    logger.info(f"[TCF] GPU显存检查: {dev_info}")
 
             try:
                 # 使用catch_warnings抑制废弃API警告（防止 pynvml 等 FutureWarning 在
@@ -1233,9 +1260,11 @@ class OptimizedToneColorFidelityScore:
                 logger.warning(f"[TCF] ✗ [{alg}] 模型计算失败: {e}")
                 return alg, None, e
 
-        # TCF专用线程池：6路全并行（用完即释放，避免线程泄漏）
+        # TCF模型并行执行（限制并发数防OOM）
+        # _TCF_MAX_CONCURRENT 控制GPU峰值显存，2路并发约需6-8GB
+        _max_concurrent = getattr(self, '_TCF_MAX_CONCURRENT', 2)
         _tcf_executor = ThreadPoolExecutor(
-            max_workers=len(self.sv_model_dict),
+            max_workers=_max_concurrent,
             thread_name_prefix='tcf_parallel'
         )
         try:

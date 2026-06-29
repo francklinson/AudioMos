@@ -106,18 +106,21 @@ function showApp(show) {
   $('app-section').classList.toggle('d-none', !show);
 }
 
+let _authing = false;
 function checkAuth() {
+  if (_authing) return;
   const token = getToken();
   if (token) {
+    _authing = true;
     api(apiUrl('/api/auth/me')).then(user => {
       state.user = user;
       $('user-display').textContent = user.username;
       showApp(true);
       loadAllData();
     }).catch(() => {
-      clearToken();
+      // api() 已在 401 时自动 clearToken，这里只切页面，不清 token
       showApp(false);
-    });
+    }).finally(() => { _authing = false; });
   } else {
     showApp(false);
   }
@@ -186,7 +189,7 @@ function loadAllData() {
 
 // ==================== MOS 评分 ====================
 let mosFiles = [];
-let mosMetrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos_ovrl', 'nisqa_mos', 'scoreq', 'utmos'];
+let mosMetrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos'];
 const MOS_ALL_METRICS = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos'];
 const MOS_REF_METRICS = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf'];
 const MOS_DEFAULT_METRICS = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos'];
@@ -1222,10 +1225,9 @@ function startPolling() {
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', () => {
-  // 登录（click + Enter，不用 <form> 防止浏览器自动填充）
+  // 登录：不使用 form 标签，仅靠单击按钮提交
+  // 不监听任何输入框的 Enter——浏览器自动填充后会派发合成 keydown Enter
   $('login-btn').addEventListener('click', handleLogin);
-  $('username-input').addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin(e); });
-  $('password-input').addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin(e); });
 
   // 退出
   $('logout-btn').addEventListener('click', handleLogout);

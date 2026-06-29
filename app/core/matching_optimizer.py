@@ -22,25 +22,32 @@ import numpy as np
 
 logger = logging.getLogger('audiomos')
 
+import importlib.util
+
 # 项目根目录
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# ============ 全局共享线程池 ============
-_SHARED_EXECUTOR = None
-_SHARED_EXECUTOR_LOCK = threading.Lock()
-
-
-def get_shared_executor(max_workers: int = 4) -> ThreadPoolExecutor:
-    """获取全局共享线程池（延迟初始化，避免每次调用创建销毁）"""
-    global _SHARED_EXECUTOR
-    if _SHARED_EXECUTOR is None:
-        with _SHARED_EXECUTOR_LOCK:
-            if _SHARED_EXECUTOR is None:
-                _SHARED_EXECUTOR = ThreadPoolExecutor(
-                    max_workers=max_workers,
-                    thread_name_prefix='matching_shared'
-                )
-    return _SHARED_EXECUTOR
+# ============ 全局共享线程池（统一模块，消除多模块独立线程池的资源争用） ============
+_shared_executor = None
+def get_shared_executor(max_workers: int = 8) -> ThreadPoolExecutor:
+    global _shared_executor
+    if _shared_executor is not None:
+        return _shared_executor
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_executor",
+            os.path.join(_PROJECT_ROOT, "app", "core", "_executor.py")
+        )
+        if spec and spec.loader:
+            _exec_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_exec_mod)
+            _shared_executor = _exec_mod.get_shared_executor(max_workers=max_workers)
+            return _shared_executor
+    except Exception:
+        pass
+    # 回退到本地创建
+    _shared_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='audiomos_shared')
+    return _shared_executor
 
 
 # ============================================================================
@@ -595,11 +602,8 @@ class EmbeddingMatcher:
     def _compute_embedding_from_segment(self, audio: np.ndarray, sr: int) -> Optional[np.ndarray]:
         """
         从音频片段计算嵌入向量
-        需要保存为临时文件后调用pipeline
+        使用内存传递替代临时文件I/O（P2优化）
         """
-        import tempfile
-        import soundfile as sf
-
         pipe = self._get_sv_pipeline()
         if pipe is None:
             return None
@@ -608,23 +612,32 @@ class EmbeddingMatcher:
         if sr != self.sr:
             audio = librosa_resample(audio, orig_sr=sr, target_sr=self.sr)
 
-        # 保存到临时文件
-        tmp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+        # 尝试内存传递（ModelScope管线支持numpy数组直接输入）
         try:
-            sf.write(tmp_file.name, audio, self.sr)
-            result = pipe(tmp_file.name, output_emb=True)
+            result = pipe(audio, output_emb=True, sampling_rate=self.sr)
             if 'embs' in result and len(result['embs']) > 0:
                 emb = result['embs'][0]
                 if isinstance(emb, (list, tuple)):
                     emb = np.array(emb)
                 return emb.flatten()
         except Exception as e:
-            logger.debug(f"[嵌入匹配] 片段嵌入计算失败: {e}")
-        finally:
-            try:
-                os.unlink(tmp_file.name)
-            except Exception:
-                pass
+            logger.debug(f"[嵌入匹配] 内存传递失败: {e}，回退到BytesIO")
+
+        # 回退：使用BytesIO内存缓冲（不落盘）
+        try:
+            import io
+            import soundfile as sf
+            buf = io.BytesIO()
+            sf.write(buf, audio, self.sr, format='WAV')
+            buf.seek(0)
+            result = pipe(buf, output_emb=True, sampling_rate=self.sr)
+            if 'embs' in result and len(result['embs']) > 0:
+                emb = result['embs'][0]
+                if isinstance(emb, (list, tuple)):
+                    emb = np.array(emb)
+                return emb.flatten()
+        except Exception as e:
+            logger.debug(f"[嵌入匹配] BytesIO也失败: {e}")
 
         return None
 
@@ -804,10 +817,19 @@ class OptimizedMatcher:
         logger.info(f"[MFCC缓存] 已缓存{len(self._ref_mfcc_cache)}个参考音频")
 
     def _estimate_snr_and_noise_floor(self, audio_path: str) -> Tuple[float, float]:
-        """估计SNR和噪声底噪"""
+        """估计SNR和噪声底噪（带缓存，避免同一文件重复计算）"""
+        # 检查缓存（同一音频文件的SNR在整个匹配流程中不变）
+        if hasattr(self, '_snr_cache') and self._snr_cache is not None:
+            cached_path, cached_snr, cached_floor = self._snr_cache
+            if cached_path == audio_path:
+                return cached_snr, cached_floor
+
         y, sr = librosa_load(audio_path, sr=16000)
         snr = self.pre_enhancer.estimate_snr(y)
         noise_floor = self.pre_enhancer.estimate_noise_floor(y)
+
+        # 缓存本次结果
+        self._snr_cache = (audio_path, snr, noise_floor)
         return snr, noise_floor
 
     # _adaptive_fingerprint_matching 已移除（原Shazam指纹算法，不再使用）
@@ -1030,29 +1052,40 @@ class OptimizedMatcher:
         elif len(segment) > ref_samples:
             segment = segment[:ref_samples]
 
-        # HPSS谐波提取（使用缓存或实时计算）
+        # HPSS谐波提取（使用缓存或实时计算；开启降采样时先decimate再HPSS）
+        _hpss_sr = sr
         if ref_harmonic is not None:
             ref_harm = ref_harmonic
+            if decimate_for_hpss and sr >= 16000:
+                _hpss_sr = sr // 2
+                ref_harm = scipy_signal.decimate(ref_harm, 2, ftype='fir')
         else:
-            ref_harm = extract_harmonic_component(ref_audio, kernel_size=kernel_size)
+            _ref_for_hpss = ref_audio
+            if decimate_for_hpss and sr >= 16000:
+                _hpss_sr = sr // 2
+                _ref_for_hpss = scipy_signal.decimate(ref_audio, 2, ftype='fir')
+            ref_harm = extract_harmonic_component(_ref_for_hpss, kernel_size=kernel_size)
 
-        seg_harm = extract_harmonic_component(segment, kernel_size=kernel_size)
+        _seg_for_hpss = segment
+        if decimate_for_hpss and sr >= 16000:
+            _seg_for_hpss = scipy_signal.decimate(segment, 2, ftype='fir')
+        seg_harm = extract_harmonic_component(_seg_for_hpss, kernel_size=kernel_size)
 
-        # 互相关找lag
+        # 互相关找lag（注意：_hpss_sr是decimate后的采样率，与sr可能不同）
         min_len = min(len(ref_harm), len(seg_harm))
         correlation = scipy_signal.correlate(
             ref_harm[:min_len], seg_harm[:min_len], mode='full', method='auto'
         )
         mid = min_len - 1
 
-        max_lag = int(max_correction_s * sr)
+        max_lag = int(max_correction_s * _hpss_sr)
         s = max(0, mid - max_lag)
         e = min(len(correlation), mid + max_lag)
         search = correlation[s:e]
 
         pk = np.argmax(np.abs(search))
         lag = (s + pk) - mid
-        lag_s = lag / sr
+        lag_s = lag / _hpss_sr  # 使用HPSS的采样率换算实际时间
 
         # 质量 = 互相关峰值 / 参考自相关峰值
         auto_corr = scipy_signal.correlate(
@@ -1196,7 +1229,8 @@ def cut_all_audio_files_with_optimized_matcher(
     input_file_list: list,
     ref_dir: str,
     output_dir: str,
-    redundancy: float = 0.0
+    redundancy: float = 0.0,
+    cached_dtw_results: Optional[Dict[str, List[Dict]]] = None
 ) -> list:
     """
     使用OptimizedMatcher（全范围DTW）定位并切分音频
@@ -1211,6 +1245,11 @@ def cut_all_audio_files_with_optimized_matcher(
         input_file_list: 测试音频文件路径列表
         ref_dir: 参考音频目录
         output_dir: 输出目录
+        cached_dtw_results: 可选，预检测阶段缓存的DTW匹配结果。
+            格式: {test_file_path: [{"ref_id", "ref_file", "ref_name",
+                                     "offset_in_test", "confidence", ...}, ...]}
+            提供时跳过内部DTW扫描，直接使用缓存结果做HPSS精对齐+切分，
+            避免预检测与切分阶段DTW重复计算。
 
     Returns:
         切分后的音频文件路径列表
@@ -1249,23 +1288,39 @@ def cut_all_audio_files_with_optimized_matcher(
 
     # ─── 文件间并行处理：每个文件的DTW+HPSS+切分独立 ───
     def _process_single_file(test_file: str) -> list:
-        """处理单个测试音频：DTW扫描→HPSS精对齐→切分"""
+        """处理单个测试音频：DTW扫描→HPSS精对齐→切分
+        如果cached_dtw_results中有该文件的DTW结果，跳过重复扫描。
+        """
         test_name = os.path.splitext(os.path.basename(test_file))[0]
 
-        # 全范围DTW扫描获取所有参考段位置（内部已缓存测试音频）
-        snr, _ = opt_matcher._estimate_snr_and_noise_floor(test_file)
-        dtw_results = opt_matcher._full_range_dtw_sweep(test_file, snr)
-
-        if not dtw_results:
-            logger.warning(f"[优化切分] {test_name}: 未找到任何匹配，跳过")
-            return []
-
-        # 使用DTW阶段缓存的测试音频（消除双加载）
-        if opt_matcher._last_test_path == test_file and opt_matcher._last_test_y is not None:
-            y_test = opt_matcher._last_test_y
-            sr_test = opt_matcher._last_test_sr
+        # 检查是否有缓存的DTW结果（预检测阶段已计算，消除冗余DTW扫描）
+        use_cached = (cached_dtw_results is not None
+                      and test_file in cached_dtw_results
+                      and cached_dtw_results[test_file])
+        if use_cached:
+            dtw_results = cached_dtw_results[test_file]
+            logger.info(f"[优化切分] {test_name}: 复用缓存DTW结果 ({len(dtw_results)}个匹配)，跳过重复扫描")
+            # 使用DTW阶段缓存的测试音频（预检测时已缓存）
+            if opt_matcher._last_test_path == test_file and opt_matcher._last_test_y is not None:
+                y_test = opt_matcher._last_test_y
+                sr_test = opt_matcher._last_test_sr
+            else:
+                y_test, sr_test = librosa.load(test_file, sr=16000)
         else:
-            y_test, sr_test = librosa.load(test_file, sr=16000)
+            # 全范围DTW扫描获取所有参考段位置（内部已缓存测试音频）
+            snr, _ = opt_matcher._estimate_snr_and_noise_floor(test_file)
+            dtw_results = opt_matcher._full_range_dtw_sweep(test_file, snr)
+
+            if not dtw_results:
+                logger.warning(f"[优化切分] {test_name}: 未找到任何匹配，跳过")
+                return []
+
+            # 使用DTW阶段缓存的测试音频（消除双加载）
+            if opt_matcher._last_test_path == test_file and opt_matcher._last_test_y is not None:
+                y_test = opt_matcher._last_test_y
+                sr_test = opt_matcher._last_test_sr
+            else:
+                y_test, sr_test = librosa.load(test_file, sr=16000)
 
         # 按 ref_name 排序输出
         dtw_results.sort(key=lambda x: x.get('ref_name', ''))

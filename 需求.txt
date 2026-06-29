@@ -351,3 +351,7 @@
     - 新增文件: app/core/matching_optimizer.py
     - 修改文件: mos_calculator.py (置信度阈值过滤)
     - 生成工作记录: records/work_record_2026-06-25_low_snr_matching_optimization.md
+
+
+待办:
+分析各阶段耗时,尤其音频搜索和切分,此前设计了多种方案导致流程比较混乱,重新梳理一下执行的流程,减少多层回退等复杂逻辑.
