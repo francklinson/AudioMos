@@ -257,6 +257,29 @@ def timed_execution(stage_name: str):
 _ref_match_cache = {}
 _ref_match_cache_lock = threading.Lock()
 
+# 参考匹配快速路径监控统计
+# 跟踪正则快速路径命中/回退DTW的比例，用于性能监控
+_ref_match_stats = {
+    'regex_hit': 0,       # 正则快速路径命中（免DTW）
+    'regex_miss': 0,      # 正则未命中，需回退DTW
+    'dtw_triggered': 0,   # 实际触发DTW的次数
+    'dtw_success': 0,     # DTW匹配成功
+    'dtw_failed': 0,      # DTW匹配失败
+}
+_ref_match_stats_lock = threading.Lock()
+
+
+def get_ref_match_stats() -> dict:
+    """获取参考匹配快速路径命中统计（用于性能监控）"""
+    with _ref_match_stats_lock:
+        return dict(_ref_match_stats)
+
+
+def reset_ref_match_stats():
+    """重置参考匹配统计"""
+    with _ref_match_stats_lock:
+        _ref_match_stats.update({k: 0 for k in _ref_match_stats})
+
 def get_ref_file_by_content(input_wav_file, ref_dir, use_cache=True):
     """
     使用DTW+嵌入匹配查找对应的参考文件（带缓存，消除重复扫描）。
@@ -286,22 +309,37 @@ def get_ref_file_by_content(input_wav_file, ref_dir, use_cache=True):
                 return cached
 
     # 从切分文件名中提取 ref_tag（如 dut_ref_001_001.wav → ref_001.wav）
-    # 这是 DTW 匹配结果的持久化映射，非文件名匹配
+    # 这是 DTW 匹配结果的持久化映射，非文件名匹配（零成本的快速路径）
     import re
-    ref_matches = re.findall(r'ref_\d+', input_stem)
+    # 支持 ref_001、ref001、ref-001 三种命名模式
+    ref_matches = re.findall(r'ref[_-]?\d+', input_stem, re.IGNORECASE)
     if ref_matches:
-        # 取最后一个 ref_tag（文件名格式 {test}_{ref_tag}_{idx}.wav）
-        ref_tag = ref_matches[-1]
-        ref_candidate = os.path.join(ref_dir, ref_tag + '.wav')
-        if os.path.exists(ref_candidate):
-            logger.info(f"[参考匹配-切分映射] {input_basename} -> {ref_tag}.wav")
-            result = (ref_candidate, {"method": "split_mapping", "ref_name": ref_tag})
-            if use_cache and cache_key:
-                with _ref_match_cache_lock:
-                    _ref_match_cache[cache_key] = result
-            return result
+        # 取最后一个 ref_tag
+        raw_tag = ref_matches[-1]
+        # 标准化为 ref_xxx 格式
+        digits = re.findall(r'\d+', raw_tag)
+        if digits:
+            ref_tag = f"ref_{digits[-1]}"
+            ref_candidate = os.path.join(ref_dir, ref_tag + '.wav')
+            if os.path.exists(ref_candidate):
+                logger.info(f"[参考匹配-切分映射] {input_basename} -> {ref_tag}.wav")
+                with _ref_match_stats_lock:
+                    _ref_match_stats['regex_hit'] += 1
+                result = (ref_candidate, {"method": "split_mapping", "ref_name": ref_tag})
+                if use_cache and cache_key:
+                    with _ref_match_cache_lock:
+                        _ref_match_cache[cache_key] = result
+                return result
 
-    # 优化版多级回退匹配
+    # 正则快速路径未命中 → 记录统计，准备回退到DTW
+    with _ref_match_stats_lock:
+        _ref_match_stats['regex_miss'] += 1
+    logger.warning(f"[参考匹配] 文件名 '{input_basename}' 未匹配到 ref_xxx 模式，"
+                   f"即将回退到全范围DTW扫描（耗时操作）")
+
+    # 优化版多级回退匹配（DTW全范围扫描，耗时操作）
+    with _ref_match_stats_lock:
+        _ref_match_stats['dtw_triggered'] += 1
     try:
         from matching_optimizer import OptimizedMatcher
 
@@ -319,6 +357,8 @@ def get_ref_file_by_content(input_wav_file, ref_dir, use_cache=True):
             logger.info(f"[参考匹配-优化] ✓ 优化匹配成功: {input_basename} -> {ref_name} "
                         f"(method={method}, confidence={confidence:.3f}, "
                         f"offset={offset:.2f}s, snr={snr:.1f}dB)")
+            with _ref_match_stats_lock:
+                _ref_match_stats['dtw_success'] += 1
             result = (ref_file, {
                 "method": f"optimized_{method}",
                 "ref_name": ref_name,
@@ -333,6 +373,8 @@ def get_ref_file_by_content(input_wav_file, ref_dir, use_cache=True):
             return result
         else:
             logger.warning(f"[参考匹配-优化] ✗ 优化匹配也失败: {input_basename}")
+            with _ref_match_stats_lock:
+                _ref_match_stats['dtw_failed'] += 1
     except ImportError as e:
         logger.debug(f"[参考匹配-优化] 优化匹配模块不可用: {e}")
     except Exception as e:

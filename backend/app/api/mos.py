@@ -464,11 +464,13 @@ async def process_audio_task(queue_task):
                 split_output_dir.mkdir(parents=True, exist_ok=True)
 
                 try:
+                    # 传入预检测阶段已建好MFCC缓存的_opt_matcher，消除MFCC重复提取
                     split_files = cut_all_audio_files_with_optimized_matcher(
                         matched_files,
                         ref_dir=str(ref_dir),
                         output_dir=str(split_output_dir),
-                        cached_dtw_results=cached_dtw_results if cached_dtw_results else None
+                        cached_dtw_results=cached_dtw_results if cached_dtw_results else None,
+                        opt_matcher=_opt_matcher
                     )
                 except Exception as e:
                     logger.error(f"音频切分失败: {e}")
@@ -494,24 +496,60 @@ async def process_audio_task(queue_task):
                 )
             else:
                 # 混合场景：部分文件匹配、部分不匹配
-                # 由于切分后片段数与原始文件数不一致，无法简单合并有参考/无参考结果
-                # 安全策略：全部文件仅计算无参考MOS，有参考MOS填0
+                # 对匹配文件做切分+有参考+无参考，对不匹配文件做无参考
                 logger.warning(f"[混合场景] {len(matched_files)}个匹配 + {len(unmatched_files)}个不匹配")
-                logger.warning(f"[混合场景] 匹配文件: {[os.path.basename(f) for f in matched_files]}")
-                logger.warning(f"[混合场景] 未匹配文件: {[os.path.basename(f) for f in unmatched_files]}")
-                logger.warning(f"[混合场景] 为保证结果一致性，全部文件仅计算无参考MOS，有参考MOS填0")
-                logger.warning(f"[混合场景] 建议：将匹配和不匹配的音频分开上传，或确保所有测试音频都能匹配到参考音频")
-                await update_task_progress(task_id, 20, "执行无参考MOS计算（混合场景）...")
-                aligned_files = input_files
-                loop = asyncio.get_event_loop()
-                results = await loop.run_in_executor(
-                    executor,
-                    compute_mos_scores_sync,
-                    aligned_files,
-                    str(ref_dir) if ref_dir.exists() else "",
-                    False,
-                    selected_metrics
-                )
+                logger.info(f"[混合场景] 匹配文件: {[os.path.basename(f) for f in matched_files]}")
+                logger.info(f"[混合场景] 未匹配文件: {[os.path.basename(f) for f in unmatched_files]}")
+                logger.info(f"[混合场景] 匹配文件走切分→有参考MOS，不匹配文件走无参考MOS")
+
+                # 切分匹配文件
+                await update_task_progress(task_id, 10, "正在切分匹配的音频...")
+                split_output_dir = Path(settings.paths.temp_dir) / f"{task_id}_split"
+                split_output_dir.mkdir(parents=True, exist_ok=True)
+
+                try:
+                    split_files = cut_all_audio_files_with_optimized_matcher(
+                        matched_files,
+                        ref_dir=str(ref_dir),
+                        output_dir=str(split_output_dir),
+                        cached_dtw_results=cached_dtw_results if cached_dtw_results else None,
+                        opt_matcher=_opt_matcher
+                    )
+                except Exception as e:
+                    logger.error(f"音频切分失败: {e}")
+                    split_files = []
+
+                if not split_files:
+                    logger.warning(f"[混合场景] 切分结果为空，全部回退到无参考MOS")
+                    aligned_files = input_files
+                    await update_task_progress(task_id, 20, "执行无参考MOS计算（切分失败回退）...")
+                    loop = asyncio.get_event_loop()
+                    results = await loop.run_in_executor(
+                        executor,
+                        compute_mos_scores_sync,
+                        aligned_files,
+                        str(ref_dir) if ref_dir.exists() else "",
+                        False,
+                        selected_metrics
+                    )
+                else:
+                    # 合并：切分段 + 未匹配原始文件
+                    # 切分段通过文件名标记可自动匹配到参考（get_ref_file_by_content）
+                    # 未匹配文件会自然得到 ref_scores=0
+                    aligned_files = split_files + unmatched_files
+                    logger.info(f"[混合场景] 对齐文件列表: {len(split_files)}个切分段 + "
+                                f"{len(unmatched_files)}个未匹配 = {len(aligned_files)}个")
+
+                    await update_task_progress(task_id, 50, "正在计算MOS得分...")
+                    loop = asyncio.get_event_loop()
+                    results = await loop.run_in_executor(
+                        executor,
+                        compute_mos_scores_sync,
+                        aligned_files,
+                        str(ref_dir),
+                        True,
+                        selected_metrics
+                    )
         else:
             # 无参考音频或用户未选择有参考指标：直接处理原始文件
             if not ref_dir.exists():
