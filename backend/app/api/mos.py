@@ -642,15 +642,47 @@ async def process_audio_task(queue_task):
         logger.error(f"任务失败 {task_id}: {e}")
 
 
+# 进度步骤名称映射（与前端 state.mosStepOrder / state.mosStepNames 对应）
+PROGRESS_STEPS = {
+    0: 'uploading',
+    10: 'matching',
+    20: 'splitting',
+    50: 'computing',
+    90: 'generating',
+    100: 'done',
+}
+
+def _get_step_name(progress: int) -> str:
+    """根据进度值推断当前步骤名"""
+    step = 'processing'
+    for p, s in sorted(PROGRESS_STEPS.items()):
+        if progress >= p:
+            step = s
+    return step
+
+
 async def update_task_progress(task_id: str, progress: int, message: str):
     """更新任务进度（首次调用时自动将状态从 queued→processing）"""
     if task_id in tasks:
         if tasks[task_id].get("status") == "queued":
             tasks[task_id]["status"] = "processing"
         tasks[task_id]["progress"] = progress
-        tasks[task_id]["message"] = message
+
+        # 结构化消息: [步骤名]描述
+        step_name = _get_step_name(progress)
+        structured_msg = f"[{step_name}]{message}"
+        tasks[task_id]["message"] = structured_msg
+
         tasks[task_id]["updated_at"] = datetime.now().isoformat()
-        logger.info(f"任务进度 {task_id}: {progress}% - {message}")
+        logger.info(f"任务进度 {task_id}: [{step_name}] {progress}% - {message}")
+
+        # 如果有WebSocket连接，推送进度
+        asyncio.ensure_future(manager.send_progress(task_id, {
+            "status": tasks[task_id]["status"],
+            "progress": progress,
+            "message": structured_msg,
+            "step": step_name
+        }))
 
 
 def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference: bool = True, selected_metrics: Optional[List[str]] = None) -> dict:

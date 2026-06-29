@@ -377,8 +377,7 @@
     - 影响文件: frontend/static/index.html, frontend/static/js/app.js
     - 生成工作记录: records/work_record_2026-06-29_frontend_fix.md
 
-
-待办:
+已完成:
 [1]优化前端页面显示,美化界面,增加背景 (2026-06-29完成)
     - 动态渐变背景 + 径向光晕深度感
     - 玻璃态卡片设计 (backdrop-filter blur + 半透明)
@@ -396,3 +395,34 @@
     - 发现混合场景处理仍为回退到无参考(已记录)
     - 发现旧系统(reference_pipeline.py+reference_matcher.py)与新系统(matching_optimizer.py)并存
     - 生成工作记录: records/work_record_2026-06-29_frontend_beautify_and_backend_optimize.md
+
+已完成:
+[1] 总任务/已完成/处理中 状态显示更新不及时 (2026-06-30完成)
+    - 统计卡片值变化时触发放大高亮闪烁动画
+    - 每个统计卡片底部显示"更新于 HH:MM:SS"时间标签
+    - 动态轮询：有处理中任务时2秒刷新，空闲时5秒
+    - 影响文件: frontend/static/css/app.css, frontend/static/js/app.js
+    - 生成工作记录: records/work_record_2026-06-30_ui_optimization.md
+
+[2] 整理日志输出,查缺补漏,增强可读性 (2026-06-30完成)
+    - 文件日志格式: 时间 | 级别 | 模块.函数:行号 | 消息
+    - 控制台日志格式: 时间 | 级别 | 消息 (仅时分秒)
+    - 新增请求耗时中间件，自动记录API请求耗时
+    - 新增 log_request() 统一HTTP请求日志
+    - 影响文件: backend/app/core/logging_config.py, backend/app/main.py
+    - 生成工作记录: records/work_record_2026-06-30_ui_optimization.md
+
+[3] 处理进度在页面中友好显示 (2026-06-30完成)
+    - 后端进度改为结构化消息: [步骤名]描述
+    - 新增WebSocket实时进度推送 (自动连接/断线重连/5分钟超时)
+    - 前端显示6步分步进度 (上传→匹配→切分→计算→报告→完成)
+    - 增强进度条：8px高+光泽扫描动画+百分比标签
+    - 影响文件: backend/app/api/mos.py, frontend/static/js/app.js, frontend/static/css/app.css
+    - 生成工作记录: records/work_record_2026-06-30_ui_optimization.md
+
+[4] 修复进度步骤提前显示✓的异常 (2026-06-30完成)
+    - 问题: renderMosProgressSteps() 用progress%推断已完成步骤，进度跳跃时误打✓
+    - 修复: 改为根据后端报告的步骤名在mosStepOrder中的索引确定完成状态
+    - 当前步骤→⏳，之前步骤→✓，之后步骤→○，不再依赖progress值
+    - 影响文件: frontend/static/js/app.js (renderMosProgressSteps重写)
+    - 生成工作记录: records/work_record_2026-06-30_ui_optimization.md

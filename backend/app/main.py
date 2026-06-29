@@ -3,14 +3,15 @@ AudioMOS FastAPI 主应用入口
 提供音频质量评估的RESTful API服务
 """
 import os
-from fastapi import FastAPI
+import time
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.core.logging_config import logger
+from app.core.logging_config import logger, log_request
 from app.api import auth, mos, denoise, restoration, reference_audio
 
 
@@ -139,6 +140,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ========== 请求耗时日志中间件 ==========
+@app.middleware("http")
+async def log_request_duration(request: Request, call_next):
+    """记录每个HTTP请求的耗时"""
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = (time.time() - start) * 1000
+    # 只记录API请求，跳过静态文件
+    path = request.url.path
+    if path.startswith("/api/") or path.startswith("/health"):
+        log_request(
+            method=request.method,
+            path=path,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+        )
+    return response
 
 
 @app.get("/health")

@@ -690,6 +690,7 @@ body::after {
   font-size: 1.85rem;
   font-weight: 800;
   line-height: 1.2;
+  transition: color .3s ease;
 }
 
 .stat-label {
@@ -697,6 +698,158 @@ body::after {
   color: #999;
   margin-top: .15rem;
   font-weight: 500;
+}
+
+/* 统计值更新闪烁动画 */
+.stat-value.stat-updated {
+  animation: statFlash .6s ease-out;
+}
+
+@keyframes statFlash {
+  0% { transform: scale(1); }
+  25% { transform: scale(1.25); filter: brightness(1.3); }
+  50% { transform: scale(1.15); filter: brightness(1.1); }
+  100% { transform: scale(1); filter: brightness(1); }
+}
+
+/* 最后更新时间 */
+.stat-updated-at {
+  font-size: .7rem;
+  color: #ccc;
+  margin-top: .05rem;
+  font-weight: 400;
+}
+
+/* 进度详情面板 */
+.progress-detail {
+  margin-top: .5rem;
+  padding: .5rem .75rem;
+  background: linear-gradient(135deg, rgba(102,126,234,.04), rgba(118,75,162,.03));
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(102,126,234,.08);
+}
+
+.progress-step {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .2rem 0;
+  font-size: .82rem;
+  color: #888;
+}
+
+.progress-step.active {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.progress-step.completed {
+  color: var(--success);
+}
+
+.progress-step .step-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.progress-step .step-icon .spinner-sm {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  border-color: var(--primary);
+  border-right-color: transparent;
+}
+
+/* 每文件进度条 */
+.file-progress-item {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .15rem 0;
+  font-size: .8rem;
+}
+
+.file-progress-item .file-name {
+  min-width: 80px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #555;
+  font-weight: 500;
+}
+
+.file-progress-item .file-progress-bar {
+  flex: 1;
+  height: 4px;
+  background: #e8e8e8;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.file-progress-item .file-progress-bar .file-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--bg-gradient);
+  transition: width .3s ease;
+  width: 0%;
+}
+
+.file-progress-item .file-progress-fill.done {
+  background: var(--success);
+}
+
+.file-progress-item .file-progress-fill.fail {
+  background: var(--danger);
+}
+
+.file-progress-item .file-status-icon {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/* 进度条增强 */
+.progress-enhanced {
+  height: 8px !important;
+  border-radius: 4px;
+  background: #f0f0f0;
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-enhanced .progress-bar {
+  background: var(--bg-gradient);
+  border-radius: 4px;
+  position: relative;
+}
+
+.progress-enhanced .progress-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.3), transparent);
+  animation: progressShine 2s ease-in-out infinite;
+}
+
+@keyframes progressShine {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.progress-enhanced .progress-percent {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: .65rem;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.2);
 }
 
 /* ===================== 指标选择 ===================== */

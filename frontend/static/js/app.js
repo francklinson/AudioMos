@@ -219,6 +219,18 @@ const state = {
   mosPollTimer: null,
   denoisePollTimer: null,
   restorationPollTimer: null,
+  mosPrevStats: { total: -1, completed: -1, processing: -1 },
+  mosWsConnections: {},       // { taskId: WebSocket }
+  mosStepNames: {             // 进度步骤名称映射
+    'uploading': '上传文件中',
+    'matching': '匹配参考音频',
+    'splitting': '切分音频',
+    'computing': '计算MOS得分',
+    'generating': '生成报告',
+    'done': '处理完成',
+  },
+  mosStepOrder: ['uploading', 'matching', 'splitting', 'computing', 'generating', 'done'],
+  _pollInterval: 5000,        // 默认轮询间隔
 };
 
 // ======================== 页面初始化数据加载 ========================
@@ -338,36 +350,299 @@ async function loadMosTasks() {
     const tasks = data.tasks || data || [];
     renderMosTasks(tasks);
     updateMosStats(tasks);
-  } catch (_) {}
+    return tasks;
+  } catch (_) { return []; }
 }
 
+/** 判断任务是否为处理中/排队中 */
+function _isActiveTask(t) {
+  return t.status === 'processing' || t.status === 'pending' || t.status === 'queued';
+}
+
+/** 构建单个任务卡片的HTML */
+function _buildMosTaskHtml(t) {
+  const status = t.status || 'pending';
+  const progress = t.progress || 0;
+  const files = t.files ? (Array.isArray(t.files) ? t.files.join(', ') : t.files) : (t.file_name || shortId(t.task_id));
+  const isProcessing = _isActiveTask(t);
+  const msg = t.message || '';
+  const stepMatch = msg.match(/^\[(\w+)\](.+)/);
+  const stepDesc = stepMatch ? stepMatch[2].trim() : msg;
+  return `<div class="task-item" id="mos-task-${t.task_id}">
+    <div class="task-header">
+      <div>
+        <span class="task-id">${shortId(t.task_id)}</span>
+        <span class="task-file ms-2">${_escapeHtml(files)}</span>
+      </div>
+      <div class="task-actions">
+        ${statusBadge(status)}
+        ${status === 'completed' ? `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${t.task_id}')"><i class="bi bi-eye"></i> 查看</button>
+          <button class="btn btn-sm btn-outline-success" onclick="downloadMosResult('${t.task_id}')"><i class="bi bi-download"></i> 下载</button>` : ''}
+        <button class="btn btn-sm btn-outline-danger" onclick="deleteMosTask('${t.task_id}')"><i class="bi bi-trash"></i></button>
+      </div>
+    </div>
+    ${isProcessing ? `<div class="mt-2 progress-wrap">
+      <div class="progress progress-enhanced" style="height:8px">
+        <div class="progress-bar progress-bar-striped progress-bar-animated" style="width:${progress}%"></div>
+        <span class="progress-percent">${progress}%</span>
+      </div>
+    </div>
+    <div class="progress-detail" id="mos-progress-detail-${shortId(t.task_id)}">
+      <div class="progress-step active">
+        <span class="step-icon"><div class="spinner-border spinner-sm" role="status"></div></span>
+        <span>${_escapeHtml(stepDesc || '处理中...')}</span>
+      </div>
+    </div>` : ''}
+    <div class="task-detail">创建: ${formatDate(t.created_at || t.create_time)}${t.message && !stepMatch ? ` | ${_escapeHtml(t.message)}` : ''}</div>
+  </div>`;
+}
+
+/** 增量更新已存在的任务卡片的进度和状态（不替换DOM） */
+function _updateMosTaskElement(el, t) {
+  const taskId = el.id.replace('mos-task-', '');
+  const status = t.status || 'pending';
+  const progress = t.progress || 0;
+  const msg = t.message || '';
+  const stepMatch = msg.match(/^\[(\w+)\](.+)/);
+  const stepDesc = stepMatch ? stepMatch[2].trim() : msg;
+
+  // 1. 更新状态徽章
+  const badgeContainer = el.querySelector('.task-actions');
+  if (badgeContainer) {
+    const oldBadge = badgeContainer.querySelector('.badge');
+    const newBadgeHtml = statusBadge(status);
+    if (!oldBadge || oldBadge.outerHTML !== newBadgeHtml) {
+      if (oldBadge) oldBadge.outerHTML = newBadgeHtml;
+      else badgeContainer.insertAdjacentHTML('afterbegin', newBadgeHtml);
+    }
+  }
+
+  // 2. 更新/移除查看/下载按钮（状态切换时：processing→completed 或反之）
+  const hasViewBtn = el.querySelector('.btn-outline-info');
+  const shouldHaveViewBtn = status === 'completed';
+  if (shouldHaveViewBtn && !hasViewBtn) {
+    const actionsDiv = el.querySelector('.task-actions');
+    if (actionsDiv) {
+      actionsDiv.insertAdjacentHTML('beforeend',
+        `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${taskId}')"><i class="bi bi-eye"></i> 查看</button>
+         <button class="btn btn-sm btn-outline-success" onclick="downloadMosResult('${taskId}')"><i class="bi bi-download"></i> 下载</button>`);
+    }
+  } else if (!shouldHaveViewBtn && hasViewBtn) {
+    // 从completed变成非completed（罕见但处理）
+    const btns = el.querySelectorAll('.btn-outline-info, .btn-outline-success');
+    btns.forEach(b => b.remove());
+  }
+
+  // 3. 更新进度条
+  const progressWrap = el.querySelector('.progress-wrap');
+  if (status === 'processing' || status === 'pending') {
+    if (!progressWrap) {
+      // 尚未有进度条 → 插入
+      const detailDiv = el.querySelector('.task-detail');
+      const newWrap = document.createElement('div');
+      newWrap.className = 'mt-2 progress-wrap';
+      newWrap.innerHTML = `<div class="progress progress-enhanced" style="height:8px">
+        <div class="progress-bar progress-bar-striped progress-bar-animated" style="width:${progress}%"></div>
+        <span class="progress-percent">${progress}%</span>
+      </div>`;
+      el.insertBefore(newWrap, detailDiv);
+
+      const newDetail = document.createElement('div');
+      newDetail.className = 'progress-detail';
+      newDetail.id = `mos-progress-detail-${shortId(taskId)}`;
+      newDetail.innerHTML = `<div class="progress-step active"><span class="step-icon"><div class="spinner-border spinner-sm" role="status"></div></span><span>${_escapeHtml(stepDesc || '处理中...')}</span></div>`;
+      el.insertBefore(newDetail, detailDiv);
+    } else {
+      // 已有进度条 → 只改宽度和百分比文字
+      const bar = progressWrap.querySelector('.progress-bar');
+      const pct = progressWrap.querySelector('.progress-percent');
+      if (bar) bar.style.width = progress + '%';
+      if (pct) pct.textContent = progress + '%';
+    }
+  } else {
+    // 非处理中 → 移除进度条
+    if (progressWrap) progressWrap.remove();
+    const detailDiv = el.querySelector('.progress-detail');
+    if (detailDiv) detailDiv.remove();
+  }
+
+  // 4. 更新步骤详情 — 仅在无WebSocket连接时通过轮询更新
+  //    有WebSocket时由ws实时推送，轮询不覆盖（防止实时步骤跳跃）
+  if (status === 'processing' || status === 'pending') {
+    const hasWs = state.mosWsConnections && !!state.mosWsConnections[taskId];
+    if (!hasWs) {
+      renderMosProgressSteps(taskId, progress, msg);
+    }
+  }
+}
+
+/** HTML转义（防止文件名/消息中包含特殊字符破坏HTML） */
+function _escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+/**
+ * 渲染MOS任务列表 — 智能增量更新
+ *
+ * 关键设计：避免全量innerHTML替换，防止WebSocket实时进度被轮询重置。
+ * - 首次渲染：创建所有任务卡片
+ * - 后续轮询：仅增量更新已有卡片的进度/状态，保持WebSocket更新的DOM存活
+ * - 新任务出现时：添加到列表
+ * - 已删除任务：从DOM移除
+ */
 function renderMosTasks(tasks) {
   const container = $('mos-task-list');
   if (!tasks || tasks.length === 0) {
     container.innerHTML = '<div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无任务</div>';
     return;
   }
-  container.innerHTML = tasks.map(t => {
-    const status = t.status || 'pending';
-    const progress = t.progress || 0;
-    const files = t.files ? (Array.isArray(t.files) ? t.files.join(', ') : t.files) : (t.file_name || shortId(t.task_id));
-    return `<div class="task-item">
-      <div class="task-header">
-        <div>
-          <span class="task-id">${shortId(t.task_id)}</span>
-          <span class="task-file ms-2">${files}</span>
-        </div>
-        <div class="task-actions">
-          ${statusBadge(status)}
-          ${status === 'completed' ? `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${t.task_id}')"><i class="bi bi-eye"></i> 查看</button>
-            <button class="btn btn-sm btn-outline-success" onclick="downloadMosResult('${t.task_id}')"><i class="bi bi-download"></i> 下载</button>` : ''}
-          <button class="btn btn-sm btn-outline-danger" onclick="deleteMosTask('${t.task_id}')"><i class="bi bi-trash"></i></button>
-        </div>
-      </div>
-      ${status === 'processing' || status === 'pending' ? `<div class="mt-2"><div class="progress" style="height:6px"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width:${progress}%"></div></div></div>` : ''}
-      <div class="task-detail">创建: ${formatDate(t.created_at || t.create_time)}${t.message ? ` | ${t.message}` : ''}</div>
+
+  // 判断是否需要全量渲染（首次或所有卡片都被移除）
+  const needsFullRender = !container.querySelector('.task-item');
+
+  if (needsFullRender) {
+    // ====== 首次全量渲染 ======
+    let html = '';
+    tasks.forEach(t => { html += _buildMosTaskHtml(t); });
+    container.innerHTML = html;
+    tasks.forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
+    return;
+  }
+
+  // ====== 增量更新 ======
+  const existingIds = new Set();
+
+  tasks.forEach(t => {
+    existingIds.add(t.task_id);
+    const el = $(`mos-task-${t.task_id}`);
+    if (el) {
+      // 已有卡片 → 增量更新
+      _updateMosTaskElement(el, t);
+    } else {
+      // 新任务 → 插入到列表顶部
+      container.insertAdjacentHTML('afterbegin', _buildMosTaskHtml(t));
+      if (_isActiveTask(t)) connectMosWs(t.task_id);
+    }
+  });
+
+  // 移除已删除的任务（本地删除或别的客户端删除）
+  container.querySelectorAll('.task-item[id^="mos-task-"]').forEach(el => {
+    const id = el.id.replace('mos-task-', '');
+    if (!existingIds.has(id)) {
+      disconnectMosWs(id);
+      el.remove();
+    }
+  });
+}
+
+/** WebSocket推送的处理进度步骤 — 根据后端报告的步骤名确定完成状态 */
+function renderMosProgressSteps(taskId, progress, message) {
+  const shortId_ = shortId(taskId);
+  const container = $(`mos-progress-detail-${shortId_}`);
+  if (!container) return;
+  // 如果消息是纯文本（非步骤格式），直接更新文本
+  const stepMatch = message ? message.match(/^\[(\w+)\](.+)/) : null;
+  if (!stepMatch) {
+    const activeStep = container.querySelector('.progress-step.active');
+    if (activeStep) {
+      activeStep.innerHTML = `<span class="step-icon"><div class="spinner-border spinner-sm" role="status"></div></span><span>${message || '处理中...'}</span>`;
+    }
+    return;
+  }
+  const currentStep = stepMatch[1].toLowerCase();
+  const stepDesc = stepMatch[2].trim();
+
+  // 关键：根据步骤名在 order 中的位置确定完成状态
+  // 步骤顺序: ['uploading','matching','splitting','computing','generating','done']
+  // 当前步骤 → 活跃(⏳)，之前的步骤 → 已完成(✓)，之后的步骤 → 待处理(○)
+  // 绝不靠 progress 值来猜"是否完成"——后端报告了哪个步骤就是哪个
+  const order = state.mosStepOrder;
+  const currentIdx = order.indexOf(currentStep);
+  const hasCurrent = currentIdx >= 0;
+
+  let html = '';
+  order.forEach(step => {
+    const stepLabel = state.mosStepNames[step] || step;
+    const idx = order.indexOf(step);
+
+    const isCompleted = hasCurrent && idx < currentIdx;
+    const isActive = step === currentStep;
+
+    let iconHtml;
+    if (isActive) {
+      iconHtml = '<div class="spinner-border spinner-sm" role="status"></div>';
+    } else if (isCompleted) {
+      iconHtml = '<i class="bi bi-check-circle-fill text-success" style="font-size:.85rem"></i>';
+    } else {
+      iconHtml = '<i class="bi bi-circle" style="font-size:.85rem;color:#ddd"></i>';
+    }
+
+    html += `<div class="progress-step ${isActive ? 'active' : ''} ${isCompleted ? 'completed' : ''}">
+      <span class="step-icon">${iconHtml}</span>
+      <span>${stepLabel}</span>
+      ${isActive ? `<span class="ms-1 small text-muted">— ${stepDesc}</span>` : ''}
     </div>`;
-  }).join('');
+  });
+
+  container.innerHTML = html;
+}
+
+/** 连接到WebSocket获取实时进度 */
+function connectMosWs(taskId) {
+  // 避免重复连接
+  if (state.mosWsConnections[taskId]) return;
+  try {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/mos/ws/${taskId}`;
+    const ws = new WebSocket(wsUrl);
+    state.mosWsConnections[taskId] = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.status && data.progress !== undefined) {
+          // 更新任务列表中的进度条
+          const taskEl = $(`mos-task-${taskId}`);
+          if (taskEl) {
+            const progressBar = taskEl.querySelector('.progress-bar');
+            const percentEl = taskEl.querySelector('.progress-percent');
+            if (progressBar) progressBar.style.width = data.progress + '%';
+            if (percentEl) percentEl.textContent = data.progress + '%';
+          }
+          // 更新详细步骤
+          if (data.progress < 100) {
+            renderMosProgressSteps(taskId, data.progress, data.message || '');
+          } else {
+            // 任务完成 - 关闭WebSocket
+            disconnectMosWs(taskId);
+          }
+        }
+      } catch (_) {}
+    };
+
+    ws.onerror = () => { disconnectMosWs(taskId); };
+    ws.onclose = () => { disconnectMosWs(taskId); };
+
+    // 5秒后自动断开（防止残留连接）
+    setTimeout(() => {
+      if (state.mosWsConnections[taskId]) {
+        disconnectMosWs(taskId);
+      }
+    }, 300000); // 5分钟超时
+  } catch (_) {
+    // WebSocket不可用时静默失败，靠轮询兜底
+  }
+}
+
+function disconnectMosWs(taskId) {
+  if (state.mosWsConnections[taskId]) {
+    try {
+      state.mosWsConnections[taskId].close();
+    } catch (_) {}
+    delete state.mosWsConnections[taskId];
+  }
 }
 
 function updateMosStats(tasks) {
@@ -375,9 +650,50 @@ function updateMosStats(tasks) {
   const total = tasks.length;
   const completed = tasks.filter(t => t.status === 'completed').length;
   const processing = tasks.filter(t => t.status === 'processing' || t.status === 'pending' || t.status === 'queued').length;
-  $('mos-stat-total').textContent = total;
-  $('mos-stat-completed').textContent = completed;
-  $('mos-stat-processing').textContent = processing;
+
+  // 检测变化并触发动画
+  const prev = state.mosPrevStats;
+  const changed = [];
+  if (prev.total !== -1 && prev.total !== total) changed.push('mos-stat-total');
+  if (prev.completed !== -1 && prev.completed !== completed) changed.push('mos-stat-completed');
+  if (prev.processing !== -1 && prev.processing !== processing) changed.push('mos-stat-processing');
+
+  state.mosPrevStats = { total, completed, processing };
+
+  // 更新值
+  const totalEl = $('mos-stat-total');
+  const compEl = $('mos-stat-completed');
+  const procEl = $('mos-stat-processing');
+  totalEl.textContent = total;
+  compEl.textContent = completed;
+  procEl.textContent = processing;
+
+  // 触发脉冲动画
+  changed.forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    el.classList.remove('stat-updated');
+    // 强制回流使动画可重复触发
+    void el.offsetWidth;
+    el.classList.add('stat-updated');
+    // 动画结束后移除类
+    setTimeout(() => el.classList.remove('stat-updated'), 700);
+  });
+
+  // 更新"最后更新"时间
+  const now = new Date();
+  const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+  // 为每个stat-card添加更新时间
+  const statCards = qsa('#mos-stat-cards .stat-card');
+  statCards.forEach(card => {
+    let updatedEl = card.querySelector('.stat-updated-at');
+    if (!updatedEl) {
+      updatedEl = document.createElement('div');
+      updatedEl.className = 'stat-updated-at';
+      card.appendChild(updatedEl);
+    }
+    updatedEl.textContent = `更新于 ${timeStr}`;
+  });
 }
 
 /** 获取MOS结果音频试听URL */
@@ -1260,22 +1576,46 @@ function showConfirm(msg, cb) {
 
 // ==================== 轮询 =====================
 let _pollTimerId = null;
+let _pollIntervalCurrent = 5000;
+
 function startPolling() {
   if (_pollTimerId) return;
-  _pollTimerId = setInterval(() => {
-    const token = getToken();
-    if (!token) {
-      // 在登录页面不自动跳转
-      if ($('app-section') && !$('app-section').classList.contains('d-none')) {
-        showApp(false);
-        showToast('会话已过期，请重新登录', 'error');
-      }
-      return;
+  schedulePoll();
+}
+
+function schedulePoll() {
+  if (_pollTimerId) clearTimeout(_pollTimerId);
+  _pollTimerId = setTimeout(doPoll, _pollIntervalCurrent);
+}
+
+async function doPoll() {
+  const token = getToken();
+  if (!token) {
+    if ($('app-section') && !$('app-section').classList.contains('d-none')) {
+      showApp(false);
+      showToast('会话已过期，请重新登录', 'error');
     }
-    loadMosTasks();
-    if ($('denoise-algorithms')) loadDenoiseTasks(); // 降噪测评 Tab 已隐藏
-    loadRestorationTasks();
-  }, 5000);
+    schedulePoll();
+    return;
+  }
+
+  // 检查是否有处理中的任务，动态调整轮询间隔
+  const curTasks = await loadMosTasks();
+
+  let hasActive = false;
+  if (curTasks && curTasks.length > 0) {
+    hasActive = curTasks.some(t =>
+      t.status === 'processing' || t.status === 'pending' || t.status === 'queued'
+    );
+  }
+
+  // 有活动任务时2秒轮询，无活动时5秒
+  _pollIntervalCurrent = hasActive ? 2000 : 5000;
+
+  if ($('denoise-algorithms')) loadDenoiseTasks();
+  loadRestorationTasks();
+
+  schedulePoll();
 }
 
 // ==================== 初始化 ====================
