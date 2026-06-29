@@ -110,22 +110,52 @@ function showApp(show) {
 }
 
 let _authing = false;
+
+/**
+ * 带超时的 fetch 封装：超过 timeoutMs 毫秒则 reject
+ */
+function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 function checkAuth() {
   if (_authing) return;
   const token = getToken();
   if (token) {
     _authing = true;
+
+    // 有 token 时立即显示主页面，避免"验证会话中..."闪烁
+    showApp(true);
+
+    const fallbackTimer = setTimeout(() => {
+      if (_authing) {
+        _authing = false;
+        showToast('与服务器连接超时，部分功能可能不可用', 'error');
+      }
+    }, 8000);
+
     api(apiUrl('/api/auth/me')).then(user => {
+      clearTimeout(fallbackTimer);
       state.user = user;
       $('user-display').textContent = user.username;
-      showApp(true);
       loadAllData();
-    }).catch(() => {
-      // api() 已在 401 时自动 clearToken，这里只切页面
-      clearToken();
-      showApp(false);
-      showToast('登录已过期，请重新登录', 'error');
-    }).finally(() => { _authing = false; });
+    }).catch((err) => {
+      clearTimeout(fallbackTimer);
+      // 区分认证错误和网络错误
+      if (err.name === 'AbortError' || err.message === '未授权') {
+        // 401 或超时 → 清除 token，踢回登录页
+        clearToken();
+        showApp(false);
+        showToast(err.name === 'AbortError' ? '连接服务器超时，请重新登录' : '登录已过期，请重新登录', 'error');
+      } else {
+        // 网络错误 — 已在主页面，保留界面，后台重试
+        showToast('连接服务器失败 (' + err.message + ')', 'error');
+        setTimeout(() => { _authing = false; checkAuth(); }, 3000);
+        return;
+      }
+    }).finally(() => { if (_authing) _authing = false; });
   } else {
     showApp(false);
   }
@@ -133,6 +163,16 @@ function checkAuth() {
 
 async function handleLogin(e) {
   e.preventDefault();
+  e.stopPropagation();
+
+  // 手动验证：确保字段非空
+  const username = $('username-input').value.trim();
+  const password = $('password-input').value;
+  if (!username || !password) {
+    showToast('请输入用户名和密码', 'warning');
+    return;
+  }
+
   const btn = $('login-btn');
   const text = $('login-btn-text');
   const spinner = $('login-spinner');
@@ -141,13 +181,13 @@ async function handleLogin(e) {
   spinner.classList.remove('d-none');
   try {
     const params = new URLSearchParams();
-    params.append('username', $('username-input').value);
-    params.append('password', $('password-input').value);
-    const data = await fetch(apiUrl('/api/auth/login'), {
+    params.append('username', username);
+    params.append('password', password);
+    const data = await fetchWithTimeout(apiUrl('/api/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
-    });
+    }, 10000);
     if (!data.ok) {
       let msg = '用户名或密码错误';
       try { const e = await data.json(); msg = e.detail || msg; } catch (_) {}
@@ -1239,31 +1279,20 @@ function startPolling() {
 }
 
 // ==================== 初始化 ====================
-document.addEventListener('DOMContentLoaded', () => {
-  // 登录输入框支持回车键提交（同时阻止浏览器自动填充的合成Enter事件）
-  ['username-input', 'password-input'].forEach(id => {
-    $(id).addEventListener('keydown', e => {
-      if (e.key === 'Enter') {
-        e.preventDefault(); // 阻止浏览器默认行为
-        e.stopPropagation();
-        if (!$('login-btn').disabled) handleLogin(e);
-      }
-    });
-  });
-  $('login-btn').addEventListener('click', handleLogin);
 
-  // 退出
-  $('logout-btn').addEventListener('click', handleLogout);
+// 立即执行：认证检查和页面切换（不依赖 Bootstrap / CDN 脚本）
+// app.js 位于页面底部，此时上方 DOM 已全部就绪
+// 不等 DOMContentLoaded — 那会阻塞在远程 CDN 脚本加载上（可能几秒）
+checkAuth();
 
-  // 初始化各页面
-  initMosPage();
-  if ($('denoise-algorithms')) initDenoisePage(); // 降噪测评 Tab 已隐藏
-  initRestorationPage();
-  initReferencePage();
+// 事件绑定 — DOM 已就绪
+$('login-form').addEventListener('submit', handleLogin);
+$('logout-btn').addEventListener('click', handleLogout);
 
-  // 检查认证状态
-  checkAuth();
+// 初始化各页面
+initMosPage();
+initRestorationPage();
+initReferencePage();
 
-  // 启动轮询
-  startPolling();
-});
+// 启动轮询
+startPolling();

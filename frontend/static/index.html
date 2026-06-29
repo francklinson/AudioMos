@@ -24,7 +24,7 @@
 </div>
 
 <!-- ===================== 登录页面 ===================== -->
-<div id="login-section">
+<div id="login-section" class="d-none">
   <div class="login-decoration">
     <div class="shape shape-1"></div><div class="shape shape-2"></div>
     <div class="shape shape-3"></div><div class="shape shape-4"></div>
@@ -51,24 +51,24 @@
         <h3>欢迎登录</h3>
         <p class="text-muted">请输入您的账号信息</p>
       </div>
-      <div id="login-form">
+      <form id="login-form" autocomplete="off" novalidate>
         <div class="mb-3">
           <div class="input-group">
             <span class="input-group-text"><i class="bi bi-person-fill"></i></span>
-            <input type="text" class="form-control" id="username-input" placeholder="用户名" autocomplete="off">
+            <input type="text" class="form-control" id="username-input" placeholder="用户名" autocomplete="username">
           </div>
         </div>
         <div class="mb-4">
           <div class="input-group">
             <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
-            <input type="password" class="form-control" id="password-input" placeholder="密码" autocomplete="new-password">
+            <input type="password" class="form-control" id="password-input" placeholder="密码" autocomplete="current-password">
           </div>
         </div>
-        <button type="button" class="btn btn-primary btn-lg w-100" id="login-btn">
+        <button type="submit" class="btn btn-primary btn-lg w-100" id="login-btn">
           <span id="login-btn-text">登录</span>
           <div class="spinner-border spinner-border-sm d-none" id="login-spinner" role="status"></div>
         </button>
-      </div>
+      </form>
       <div class="login-footer">
         <small class="text-muted">首次登录请联系管理员获取账号</small>
       </div>
@@ -416,8 +416,10 @@
 <audio id="audio-player" style="display:none"></audio>
 
 <!-- ===================== Scripts ===================== -->
+<!-- app.js 放在前面：本地小文件先加载，立即执行认证切换页面 -->
+<script src="js/app.js"></script>
+<!-- CDN 依赖脚本放在后面：不阻塞页面展示，后台加载 -->
 <script src="https://cdn.bootcdn.net/ajax/libs/twitter-bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="js/app.js"></script>
 </body>
 </html>

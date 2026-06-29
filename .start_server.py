@@ -12,7 +12,7 @@ host = os.environ.get('AUDIOMOS_HOST', '0.0.0.0')
 port = int(os.environ.get('AUDIOMOS_PORT', '8002'))
 
 logger.info('=' * 60)
-logger.info('AudioMOS 前后端一体模式启动')
+logger.info('AudioMOS 服务启动')
 logger.info('=' * 60)
 logger.info(f'监听地址: {host}:{port}')
 
