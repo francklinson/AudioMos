@@ -19,6 +19,41 @@ body {
   min-height: 100vh;
 }
 
+/* ===================== 加载状态页 ===================== */
+#loading-section {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-gradient);
+  position: relative;
+  overflow: hidden;
+}
+.loading-container {
+  text-align: center;
+  color: #fff;
+  z-index: 1;
+}
+.loading-container .brand-icon {
+  font-size: 5rem;
+  margin-bottom: 1rem;
+}
+.loading-title {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-bottom: .5rem;
+}
+.loading-subtitle {
+  font-size: 1.1rem;
+  opacity: .8;
+  margin-bottom: 1.5rem;
+}
+.loading-spinner .spinner-border {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-width: .25rem;
+}
+
 /* ===================== 登录页 ===================== */
 #login-section {
   min-height: 100vh;

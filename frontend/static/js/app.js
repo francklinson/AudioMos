@@ -83,8 +83,7 @@ async function api(path, opts = {}) {
   });
   if (resp.status === 401) {
     clearToken();
-    showApp(false);
-    showToast('登录已过期，请重新登录', 'error');
+    // 不在此处自动跳转——让 checkAuth 或调用者处理，避免轮询时意外退出
     throw new Error('未授权');
   }
   if (!resp.ok) {
@@ -101,6 +100,10 @@ function apiUrl(path) { return path; }
 
 // ======================== 认证 ========================
 function showApp(show) {
+  // 隐藏加载状态
+  const loading = $('loading-section');
+  if (loading) loading.classList.add('d-none');
+
   $('login-section').classList.toggle('d-none', show);
   $('login-section').classList.toggle('d-flex', !show);
   $('app-section').classList.toggle('d-none', !show);
@@ -118,8 +121,10 @@ function checkAuth() {
       showApp(true);
       loadAllData();
     }).catch(() => {
-      // api() 已在 401 时自动 clearToken，这里只切页面，不清 token
+      // api() 已在 401 时自动 clearToken，这里只切页面
+      clearToken();
       showApp(false);
+      showToast('登录已过期，请重新登录', 'error');
     }).finally(() => { _authing = false; });
   } else {
     showApp(false);
@@ -1214,9 +1219,19 @@ function showConfirm(msg, cb) {
 }
 
 // ==================== 轮询 =====================
+let _pollTimerId = null;
 function startPolling() {
-  setInterval(() => {
-    if (!getToken()) return;
+  if (_pollTimerId) return;
+  _pollTimerId = setInterval(() => {
+    const token = getToken();
+    if (!token) {
+      // 在登录页面不自动跳转
+      if ($('app-section') && !$('app-section').classList.contains('d-none')) {
+        showApp(false);
+        showToast('会话已过期，请重新登录', 'error');
+      }
+      return;
+    }
     loadMosTasks();
     if ($('denoise-algorithms')) loadDenoiseTasks(); // 降噪测评 Tab 已隐藏
     loadRestorationTasks();
@@ -1225,8 +1240,16 @@ function startPolling() {
 
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', () => {
-  // 登录：不使用 form 标签，仅靠单击按钮提交
-  // 不监听任何输入框的 Enter——浏览器自动填充后会派发合成 keydown Enter
+  // 登录输入框支持回车键提交（同时阻止浏览器自动填充的合成Enter事件）
+  ['username-input', 'password-input'].forEach(id => {
+    $(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault(); // 阻止浏览器默认行为
+        e.stopPropagation();
+        if (!$('login-btn').disabled) handleLogin(e);
+      }
+    });
+  });
   $('login-btn').addEventListener('click', handleLogin);
 
   // 退出

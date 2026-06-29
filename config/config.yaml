@@ -34,8 +34,8 @@ auth:
   #   2. Python:   python -c "import secrets; print(secrets.token_hex(32))"
   #   3. Linux:    head -c 32 /dev/urandom | xxd -p
   secret_key: "your-secret-key-change-this-in-production"
-  # Token过期时间(分钟)
-  access_token_expire_minutes: 60
+  # Token过期时间(分钟) — 设为1440(24小时),避免短时间内刷新退出
+  access_token_expire_minutes: 1440
   # 默认管理员账号
   admin_username: "admin"
   # 默认管理员密码(建议部署后立即修改)

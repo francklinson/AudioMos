@@ -20,7 +20,7 @@ class AuthConfig(BaseSettings):
     """认证配置"""
     # 优先级: 环境变量 AUDIOMOS_SECRET_KEY > config.yaml > 默认值
     secret_key: str = "your-secret-key-change-this-in-production"
-    access_token_expire_minutes: int = 60
+    access_token_expire_minutes: int = 1440  # 24小时，避免频繁重登录
     admin_username: str = "admin"
     # 优先级: 环境变量 AUDIOMOS_ADMIN_PASSWORD > config.yaml > 默认值
     admin_password: str = "tp123456"

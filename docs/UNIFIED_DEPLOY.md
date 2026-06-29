@@ -54,7 +54,7 @@ cd ..
 python start_unified.py --build
 ```
 
-构建输出目录：`backend/static/`
+构建输出目录：`frontend/static/`
 
 ### 3. 启动服务
 
@@ -92,7 +92,7 @@ server:
 ### 前端生产配置（frontend/vite.config.prod.ts）
 
 - 使用相对路径 `./`
-- 构建输出到 `backend/static`
+- 构建输出到 `frontend/static`
 - API 请求使用相对路径 `/api/*`
 
 ## 目录结构
@@ -155,9 +155,9 @@ npm run build:prod
 
 ### 2. 静态文件未找到
 
-检查 `backend/static/index.html` 是否存在：
+检查 `frontend/static/index.html` 是否存在：
 ```bash
-ls -la backend/static/
+ls -la frontend/static/
 ```
 
 ### 3. API 请求 404

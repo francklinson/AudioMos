@@ -163,7 +163,7 @@ app.include_router(reference_audio.router, prefix="/api")
 
 # ========== 前后端一体模式：托管前端静态文件 ==========
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-STATIC_DIR = os.path.join(_PROJECT_ROOT, "backend", "static")
+STATIC_DIR = os.path.join(_PROJECT_ROOT, "frontend", "static")
 INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
 
 logger.info(f"静态文件目录: {STATIC_DIR}")

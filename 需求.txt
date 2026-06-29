@@ -353,5 +353,19 @@
     - 生成工作记录: records/work_record_2026-06-25_low_snr_matching_optimization.md
 
 
-待办:
-分析各阶段耗时,尤其音频搜索和切分,此前设计了多种方案导致流程比较混乱,重新梳理一下执行的流程,减少多层回退等复杂逻辑.
+已完成:
+[1]前端代码有问题,在登陆页面输入几个字符就会自动跳转登陆,在主页面刷新就会退回到主页面.
+[2]前端代码现在位于backend/static,是否应该迁移到frontend,并和废弃的vite代码做好区分
+[3]分析各阶段耗时,尤其音频搜索和切分,此前设计了多种方案导致流程比较混乱,重新梳理一下执行的流程,减少多层回退等复杂逻辑.
+
+
+已完成:
+[1] 修复前端bug + 前端目录迁移 (2026-06-29完成)
+    - 登录页Enter键阻止 + 显式提交处理
+    - token有效期延长至24小时
+    - 401处理改进: 轮询不踢出用户, checkAuth统一管理
+    - 添加页面加载状态过渡(验证会话中...)
+    - 前端从 backend/static/ 迁移到 frontend/static/
+    - 废弃React代码重命名为 frontend/legacy-react/
+    - 更新main.py/start.sh/文档路径
+    - 生成工作记录: records/work_record_2026-06-29_frontend_fix.md
