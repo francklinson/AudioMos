@@ -376,5 +376,23 @@
       * 增强: 增加fetchWithTimeout超时机制、login-section默认d-none
     - 影响文件: frontend/static/index.html, frontend/static/js/app.js
     - 生成工作记录: records/work_record_2026-06-29_frontend_fix.md
-[2]优化前端页面显示,美化界面,增加背景
-[3]分析各阶段耗时,尤其音频搜索和切分,此前设计了多种方案导致流程比较混乱,重新梳理一下执行的流程,减少多层回退等复杂逻辑.
+
+
+待办:
+[1]优化前端页面显示,美化界面,增加背景 (2026-06-29完成)
+    - 动态渐变背景 + 径向光晕深度感
+    - 玻璃态卡片设计 (backdrop-filter blur + 半透明)
+    - 登录/主页面形状浮动动画
+    - 卡片渐进滑入动画
+    - Tab导航半透明背景 + 中间展开指示器
+    - 按钮光晕扫描效果 + 点击缩放反馈
+    - Google Fonts Inter 字体
+    - 生成工作记录: records/work_record_2026-06-29_frontend_beautify_and_backend_optimize.md
+
+[2]分析各阶段耗时,尤其音频搜索和切分,此前设计了多种方案导致流程比较混乱,重新梳理一下执行的流程,减少多层回退等复杂逻辑. (2026-06-29完成)
+    - 修复 matching_optimizer.py decimate_for_hpss 未定义变量bug
+    - 在get_ref_file_by_content中添加进程级DTW缓存，消除RefScore/WER/TCF重复扫描
+    - 已验证预检测-分割间的DTW缓存机制正常工作
+    - 发现混合场景处理仍为回退到无参考(已记录)
+    - 发现旧系统(reference_pipeline.py+reference_matcher.py)与新系统(matching_optimizer.py)并存
+    - 生成工作记录: records/work_record_2026-06-29_frontend_beautify_and_backend_optimize.md

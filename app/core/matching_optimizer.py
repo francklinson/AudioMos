@@ -1010,7 +1010,8 @@ class OptimizedMatcher:
                           max_correction_s: float = 2.0,
                           min_quality: float = 0.02,
                           ref_harmonic: Optional[np.ndarray] = None,
-                          ref_samples: Optional[int] = None) -> Tuple[float, float, float]:
+                          ref_samples: Optional[int] = None,
+                          decimate_for_hpss: bool = True) -> Tuple[float, float, float]:
         """
         HPSS谐波互相关精对齐
         对DTW帧级定位结果进行样本级精对齐修正
@@ -1031,6 +1032,7 @@ class OptimizedMatcher:
             min_quality: 最低互相关质量阈值
             ref_harmonic: 预缓存的参考谐波分量, None则从ref_audio计算
             ref_samples: 预缓存的参考样本数, None则从ref_audio获取
+            decimate_for_hpss: 高采样率(>=16K)时先2倍降采样再HPSS，提效降噪
 
         Returns:
             (corrected_offset, residual_lag, quality)

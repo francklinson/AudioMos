@@ -250,15 +250,21 @@ def timed_execution(stage_name: str):
     return decorator
 
 
-# ============ 基于内容匹配的参考文件查找 ============
+# ============ 基于内容匹配的参考文件查找（带缓存，消除重复DTW扫描） ============
 
-def get_ref_file_by_content(input_wav_file, ref_dir):
+# 进程级匹配结果缓存：{(input_wav_file_abs, ref_dir_abs): (ref_file, match_info)}
+# 同一文件在同一评分任务中被 RefScore/WER/TCF 多次调用时，只跑一次DTW
+_ref_match_cache = {}
+_ref_match_cache_lock = threading.Lock()
+
+def get_ref_file_by_content(input_wav_file, ref_dir, use_cache=True):
     """
-    使用DTW+嵌入匹配查找对应的参考文件。
+    使用DTW+嵌入匹配查找对应的参考文件（带缓存，消除重复扫描）。
 
     Args:
         input_wav_file: 测试音频文件路径
         ref_dir: 参考音频目录
+        use_cache: 是否使用缓存（默认True，同一文件二次调用直接返回缓存结果）
 
     Returns:
         (ref_file_path, match_info) 或 (None, None)
@@ -266,6 +272,18 @@ def get_ref_file_by_content(input_wav_file, ref_dir):
     """
     input_basename = os.path.basename(input_wav_file)
     input_stem = os.path.splitext(input_basename)[0]
+
+    # 构建缓存键（绝对路径防重复）
+    cache_key = None
+    if use_cache:
+        cache_key = (os.path.abspath(input_wav_file),
+                     os.path.abspath(ref_dir) if ref_dir else '')
+        with _ref_match_cache_lock:
+            if cache_key in _ref_match_cache:
+                cached = _ref_match_cache[cache_key]
+                logger.debug(f"[参考匹配-缓存命中] {input_basename} -> "
+                             f"{os.path.basename(cached[0]) if cached[0] else 'None'}")
+                return cached
 
     # 从切分文件名中提取 ref_tag（如 dut_ref_001_001.wav → ref_001.wav）
     # 这是 DTW 匹配结果的持久化映射，非文件名匹配
@@ -277,7 +295,11 @@ def get_ref_file_by_content(input_wav_file, ref_dir):
         ref_candidate = os.path.join(ref_dir, ref_tag + '.wav')
         if os.path.exists(ref_candidate):
             logger.info(f"[参考匹配-切分映射] {input_basename} -> {ref_tag}.wav")
-            return ref_candidate, {"method": "split_mapping", "ref_name": ref_tag}
+            result = (ref_candidate, {"method": "split_mapping", "ref_name": ref_tag})
+            if use_cache and cache_key:
+                with _ref_match_cache_lock:
+                    _ref_match_cache[cache_key] = result
+            return result
 
     # 优化版多级回退匹配
     try:
@@ -297,14 +319,18 @@ def get_ref_file_by_content(input_wav_file, ref_dir):
             logger.info(f"[参考匹配-优化] ✓ 优化匹配成功: {input_basename} -> {ref_name} "
                         f"(method={method}, confidence={confidence:.3f}, "
                         f"offset={offset:.2f}s, snr={snr:.1f}dB)")
-            return ref_file, {
+            result = (ref_file, {
                 "method": f"optimized_{method}",
                 "ref_name": ref_name,
                 "confidence": confidence,
                 "offset": offset,
                 "snr": snr,
                 "detail": match_result.get("detail", {})
-            }
+            })
+            if use_cache and cache_key:
+                with _ref_match_cache_lock:
+                    _ref_match_cache[cache_key] = result
+            return result
         else:
             logger.warning(f"[参考匹配-优化] ✗ 优化匹配也失败: {input_basename}")
     except ImportError as e:
@@ -312,7 +338,11 @@ def get_ref_file_by_content(input_wav_file, ref_dir):
     except Exception as e:
         logger.error(f"[参考匹配-优化] 优化匹配异常: {e}")
 
-    return None, None
+    result = (None, None)
+    if use_cache and cache_key:
+        with _ref_match_cache_lock:
+            _ref_match_cache[cache_key] = result  # 缓存失败结果，避免重试
+    return result
 
 
 def get_ref_ground_truth_text(ref_dir: str, ref_filename: str) -> Optional[str]:
