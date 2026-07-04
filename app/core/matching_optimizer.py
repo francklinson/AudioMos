@@ -832,6 +832,10 @@ class OptimizedMatcher:
         self.embedding_matcher = EmbeddingMatcher(ref_dir=ref_dir)
         self._embedding_initialized = False
 
+        # WeNet ASR语义匹配器（Level A策略）
+        self._wenet_matcher = None  # WeNetSegmentationMatcher实例
+        self._wenet_available = False
+
         # 参考MFCC缓存（避免跨文件重复计算）
         self._ref_mfcc_cache = {}  # ref_name -> (mfcc, frames, y)
         # 最近一次测试音频缓存（避免双加载）
@@ -878,6 +882,109 @@ class OptimizedMatcher:
 
     # _adaptive_fingerprint_matching 已移除（原Shazam指纹算法，不再使用）
     # 匹配策略请参考 match_with_fallback()
+
+    def _init_wenet_matcher(self) -> bool:
+        """初始化WeNet语义匹配器（Level A）
+
+        尝试加载WeNet模型和参考文本，仅在以下条件满足时启用：
+        1. models/wenet/ 目录存在
+        2. ref_dir 中存在 .metadata.json 且包含 ground_truth_text
+
+        Returns:
+            是否初始化成功
+        """
+        if self._wenet_available:
+            return True
+        if self._wenet_matcher is not None:
+            return False  # 已尝试但失败
+
+        # 检查模型目录
+        wenet_dir = os.path.join(_PROJECT_ROOT, "models", "wenet")
+        if not os.path.exists(wenet_dir):
+            logger.debug("[优化匹配-WeNet] 模型目录不存在，跳过ASR语义匹配")
+            self._wenet_matcher = False  # 标记为不可用
+            return False
+
+        # 检查参考文本
+        if not self.ref_dir:
+            logger.debug("[优化匹配-WeNet] 无参考目录，跳过ASR语义匹配")
+            self._wenet_matcher = False
+            return False
+        meta_file = os.path.join(self.ref_dir, ".metadata.json")
+        if not os.path.exists(meta_file):
+            logger.debug("[优化匹配-WeNet] 无.metadata.json，跳过ASR语义匹配")
+            self._wenet_matcher = False
+            return False
+
+        try:
+            from segmentation_optimizer import WeNetSegmentationMatcher
+            matcher = WeNetSegmentationMatcher(ref_dir=self.ref_dir)
+            ok = matcher.load_model(wenet_dir, device='cuda')
+            if not ok:
+                self._wenet_matcher = False
+                return False
+            cnt = matcher.load_ref_texts(self.ref_dir)
+            if cnt == 0:
+                logger.warning("[优化匹配-WeNet] 参考文本加载失败或无文本")
+                self._wenet_matcher = False
+                return False
+            self._wenet_matcher = matcher
+            self._wenet_available = True
+            logger.info(f"[优化匹配-WeNet] 初始化成功: {cnt}个参考文本, "
+                        f"subsampling={matcher._frame_shift*1000:.0f}ms/帧")
+            return True
+        except Exception as e:
+            logger.warning(f"[优化匹配-WeNet] 初始化失败: {e}")
+            self._wenet_matcher = False
+            return False
+
+    def get_all_segment_matches(self, test_audio_path: str) -> List[Dict]:
+        """
+        获取测试音频中所有参考段的匹配信息（用于预检测+切分阶段）
+
+        优先使用WeNet语义匹配（当可用时），回退到全范围DTW。
+        返回格式与 _full_range_dtw_sweep() 兼容。
+
+        Args:
+            test_audio_path: 测试音频路径
+
+        Returns:
+            [{"ref_id", "ref_file", "ref_name", "offset_in_test",
+              "confidence", "method", "wer"(optional), ...}]
+        """
+        # 尝试Level A: WeNet语义匹配
+        if self._init_wenet_matcher():
+            try:
+                asr_result = self._wenet_matcher.match_with_fallback(test_audio_path)
+                seg_matches = asr_result.get("detail", {}).get("segment_matches", [])
+                if seg_matches:
+                    # 转换为与_dtw_sweep兼容的格式
+                    return [
+                        {
+                            "ref_id": s["ref_name"],
+                            "ref_file": s["ref_file"],
+                            "ref_name": s["ref_name"],
+                            "offset_in_test": s["offset_in_test"],
+                            "confidence": s["confidence"],
+                            "method": "asr_text_dtw",
+                            "snr": asr_result.get("snr", 0.0),
+                            "duration": s.get("duration", 0.0),
+                            "wer": s.get("wer", 0.0),
+                            "wcorr": s.get("wcorr", 0.0),
+                            "n_chars": s.get("n_chars", 0),
+                        }
+                        for s in seg_matches
+                    ]
+            except Exception as e:
+                logger.debug(f"[获取段匹配] WeNet失败: {e}，降级到DTW")
+
+        # 回退: 全范围DTW扫描
+        snr = 0.0
+        try:
+            snr, _ = self._estimate_snr_and_noise_floor(test_audio_path)
+        except Exception:
+            pass
+        return self._full_range_dtw_sweep(test_audio_path, snr)
 
     def _full_range_dtw_sweep(self, test_audio_path: str,
                                 snr: float) -> List[Dict]:
@@ -1265,13 +1372,21 @@ class OptimizedMatcher:
 
     def match_with_fallback(self, test_audio_path: str) -> Dict:
         """
-        优化匹配 - 全范围DTW为主，嵌入向量为回退
+        优化匹配 - WeNet语义匹配为主，全范围DTW为回退
+
+        匹配策略层级：
+          Level A: WeNet ASR + 文本DTW（语义匹配，含WER副产品）
+          Level B: 全范围DTW扫描（声学匹配，原Level A）
+          Level C: 嵌入向量匹配（SV模型）
+          Level D: 接受低置信度DTW结果
 
         Returns:
             {
                 "matched": bool, "ref_file": str or None,
                 "offset": float, "method": str,
-                "confidence": float, "detail": dict
+                "confidence": float, "detail": dict,
+                "wer": float,       # WER（Level A匹配时的副产品）
+                "segment_matches": list  # 全部分段匹配信息
             }
         """
         test_basename = os.path.basename(test_audio_path)
@@ -1284,15 +1399,51 @@ class OptimizedMatcher:
 
         result = {
             "matched": False, "ref_file": None, "offset": 0.0,
-            "method": "none", "confidence": 0.0, "snr": snr, "detail": {}
+            "method": "none", "confidence": 0.0, "snr": snr,
+            "wer": 0.0, "segment_matches": [], "detail": {}
         }
 
-        # ----- Level A: 全范围DTW扫描（主方案）-----
-        logger.info(f"[优化匹配] Level A: 全范围DTW扫描")
+        # ----- Level A: WeNet语义匹配（主方案）-----
+        if self._init_wenet_matcher():
+            logger.info(f"[优化匹配] Level A: WeNet ASR + 文本DTW")
+            asr_start = time.time()
+            asr_result = self._wenet_matcher.match_with_fallback(test_audio_path)
+            asr_time = time.time() - asr_start
+
+            seg_matches = asr_result.get("detail", {}).get("segment_matches", [])
+            if seg_matches:
+                best = seg_matches[0]
+                logger.info(f"[优化匹配] ✓ Level A 语义匹配: {best['ref_name']} "
+                            f"@ {best['offset_in_test']:.2f}s, "
+                            f"conf={best['confidence']:.3f}, WER={best['wer']:.3f}, "
+                            f"耗时={asr_time:.1f}s")
+                result.update({
+                    "matched": True,
+                    "ref_file": best["ref_file"],
+                    "ref_name": best["ref_name"],
+                    "offset": best["offset_in_test"],
+                    "method": "asr_text_dtw",
+                    "confidence": best["confidence"],
+                    "wer": best["wer"],
+                    "segment_matches": seg_matches,
+                    "detail": {
+                        "asr_result": asr_result,
+                        "asr_time": asr_time,
+                        "n_segments": len(seg_matches)
+                    }
+                })
+                return result
+            else:
+                logger.info(f"[优化匹配] Level A 未匹配 (耗时={asr_time:.1f}s), 降级到Level B")
+        else:
+            logger.info(f"[优化匹配] Level A: WeNet不可用，直接降级到Level B")
+
+        # ----- Level B: 全范围DTW扫描（原Level A）-----
+        logger.info(f"[优化匹配] Level B: 全范围DTW扫描")
         dtw_start = time.time()
         dtw_results = self._full_range_dtw_sweep(test_audio_path, snr)
         dtw_time = time.time() - dtw_start
-        logger.info(f"[优化匹配] Level A 耗时={dtw_time:.1f}s, 结果={len(dtw_results)}个")
+        logger.info(f"[优化匹配] Level B 耗时={dtw_time:.1f}s, 结果={len(dtw_results)}个")
 
         if dtw_results:
             best = dtw_results[0]
@@ -1311,7 +1462,7 @@ class OptimizedMatcher:
                 return result
             result["detail"]["dtw_results"] = dtw_results
 
-        # ----- Level B: 嵌入向量匹配（低SNR回退）-----
+        # ----- Level C: 嵌入向量匹配（低SNR回退）-----
         if not self._embedding_initialized:
             try:
                 self.embedding_matcher.build_reference_embeddings(self.ref_dir)
@@ -1320,7 +1471,7 @@ class OptimizedMatcher:
                 logger.warning(f"[优化匹配] 嵌入初始化失败: {e}")
 
         if self._embedding_initialized:
-            logger.info(f"[优化匹配] Level B: 嵌入向量匹配")
+            logger.info(f"[优化匹配] Level C: 嵌入向量匹配")
             emb_matches = self.embedding_matcher.match_by_embedding(
                 test_audio_path, pre_enhance=(snr < 10)
             )
@@ -1337,7 +1488,7 @@ class OptimizedMatcher:
                 })
                 return result
 
-        # ----- Level C: 接受低置信度DTW结果 -----
+        # ----- Level D: 接受低置信度DTW结果 -----
         if dtw_results and dtw_results[0]['confidence'] >= 0.1:
             best = dtw_results[0]
             logger.info(f"[优化匹配] ✓ 接受低置信DTW结果: {best['ref_name']} "
@@ -1451,9 +1602,8 @@ def cut_all_audio_files_with_optimized_matcher(
             else:
                 y_test, sr_test = librosa.load(test_file, sr=16000)
         else:
-            # 全范围DTW扫描获取所有参考段位置（内部已缓存测试音频）
-            snr, _ = opt_matcher._estimate_snr_and_noise_floor(test_file)
-            dtw_results = opt_matcher._full_range_dtw_sweep(test_file, snr)
+            # 多级匹配获取所有参考段位置（优先ASR语义匹配，回退到DTW）
+            dtw_results = opt_matcher.get_all_segment_matches(test_file)
 
             if not dtw_results:
                 logger.warning(f"[优化切分] {test_name}: 未找到任何匹配，跳过")

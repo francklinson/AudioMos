@@ -390,8 +390,10 @@ async def process_audio_task(queue_task):
             unmatched_files = []
             # 缓存DTW扫描结果，避免切分阶段重复计算（P0优化）
             cached_dtw_results = {}  # {test_file: [dtw_result_dict, ...]}
+            # 缓存ASR匹配的WER（避免评分阶段重复计算）
+            cached_wer = {}  # {ref_name_or_file: (wer, wcorr)}
             try:
-                # 使用OptimizedMatcher直接做全范围DTW扫描，同时缓存结果供切分复用
+                # 使用OptimizedMatcher做多级匹配（WeNet语义匹配→全范围DTW→嵌入向量）
                 from matching_optimizer import OptimizedMatcher
                 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -400,20 +402,20 @@ async def process_audio_task(queue_task):
                 _opt_matcher.build_ref_cache(str(ref_dir))
 
                 def _check_one_file(test_file: str) -> tuple:
-                    """单文件DTW扫描：返回(文件路径, 最佳匹配参考路径, 完整DTW结果列表)"""
+                    """单文件匹配：返回(文件路径, 最佳匹配参考路径, 完整段匹配结果列表)"""
                     try:
-                        snr, _ = _opt_matcher._estimate_snr_and_noise_floor(test_file)
-                        dtw_results = _opt_matcher._full_range_dtw_sweep(test_file, snr)
-                        if dtw_results:
-                            # 取置信度最高的结果作为"是否匹配"的判断依据
-                            best = max(dtw_results, key=lambda x: x.get('confidence', 0))
+                        # 使用多级匹配（新：ASR语义匹配优先→DTW声学回退）
+                        seg_results = _opt_matcher.get_all_segment_matches(test_file)
+                        if seg_results:
+                            best = max(seg_results, key=lambda x: x.get('confidence', 0))
                             ref_file = best.get('ref_file', '') or best.get('ref_path', '')
                             ref_name = best.get('ref_name', os.path.basename(ref_file))
                             confidence = best.get('confidence', 0)
+                            method = best.get('method', 'unknown')
                             logger.info(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 匹配到参考音频: "
-                                        f"'{ref_name}' (confidence={confidence:.3f}, "
+                                        f"'{ref_name}' (method={method}, confidence={confidence:.3f}, "
                                         f"offset={best.get('offset_in_test', 0):.2f}s)")
-                            return test_file, ref_file, dtw_results
+                            return test_file, ref_file, seg_results
                         else:
                             logger.warning(f"[预检测] 测试音频 '{os.path.basename(test_file)}' 未匹配到任何参考音频")
                             return test_file, None, []
@@ -427,16 +429,31 @@ async def process_audio_task(queue_task):
                     for f in input_files
                 }
                 for _future in as_completed(_futures):
-                    test_file, ref_file, dtw_results = _future.result()
+                    test_file, ref_file, seg_results = _future.result()
                     if ref_file is not None:
                         matched_files.append(test_file)
-                        if dtw_results:
-                            cached_dtw_results[test_file] = dtw_results
+                        if seg_results:
+                            cached_dtw_results[test_file] = seg_results
+                            # 提取WER（ASR语义匹配的副产品）
+                            for s in seg_results:
+                                wer = s.get('wer', 0.0)
+                                wcorr = s.get('wcorr', 0.0)
+                                ref_name = s.get('ref_name', '')
+                                if wer > 0 and ref_name:
+                                    cached_wer[ref_name] = (wer, wcorr)
                     else:
                         unmatched_files.append(test_file)
+                if cached_wer:
+                    logger.info(f"[预检测] ASR语义匹配WER副产品: {cached_wer}")
+                    # 写入全局WER缓存，评分阶段可直接使用，避免重复ASR
+                    try:
+                        from segmentation_optimizer import set_wer_cache
+                        set_wer_cache(cached_wer)
+                    except ImportError:
+                        pass
                 logger.info(f"[预检测] 匹配结果: {len(matched_files)}个匹配, "
                             f"{len(unmatched_files)}个未匹配, "
-                            f"{len(cached_dtw_results)}个缓存DTW结果")
+                            f"{len(cached_dtw_results)}个缓存段匹配结果")
             except ImportError as e:
                 logger.warning(f"[预检测] 无法导入优化匹配模块: {e}，回退到传统模式")
                 matched_files = list(input_files)

@@ -993,9 +993,34 @@ class OptimizedWerScore:
         wer_data = [0.0 for _ in range(file_num)]
         wcorr = [0.0 for _ in range(file_num)]
 
+        # 检查全局WER缓存（由预检测阶段的ASR语义匹配写入）
+        _precomputed_wer = None
+        try:
+            from segmentation_optimizer import get_wer_from_cache
+            _precomputed_wer = get_wer_from_cache
+        except ImportError:
+            pass
+
         def _process_one_file(file_index: int, file: str) -> tuple:
             """单个文件的ASR转写+WER计算"""
             try:
+                # 先检查是否已有预计算的WER（ASR语义匹配的副产品）
+                if _precomputed_wer is not None:
+                    file_basename = os.path.basename(file)
+                    # 从文件名提取 ref_name（如 split_001_ref_001_002.wav → ref_001.wav）
+                    import re
+                    ref_matches = re.findall(r'ref[_-]?\d+', file_basename, re.IGNORECASE)
+                    if ref_matches:
+                        digits = re.findall(r'\d+', ref_matches[-1])
+                        if digits:
+                            ref_tag = f"ref_{digits[-1]}.wav"
+                            cached = _precomputed_wer(ref_tag)
+                            if cached is not None:
+                                logger.debug(f"[WER-缓存] {file_basename} -> {ref_tag}: "
+                                            f"WER={cached[0]:.3f}, WCorr={cached[1]:.3f}")
+                                return file_index, cached[0], cached[1]
+
+                # 缓存未命中，执行ASR转写
                 result = self.model.transcribe(file)
                 ref = self.__get_ref_gt_text(file, ref_dir=ref_dir)
                 if ref is None:
