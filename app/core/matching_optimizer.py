@@ -1685,7 +1685,7 @@ def cut_all_audio_files_with_optimized_matcher(
             elif len(seg) > ref_nsamples:
                 seg = seg[:ref_nsamples]
             ref_tag = os.path.splitext(ref_name)[0] if ref_name else f"ref_{i + 1:03d}"
-            suffix = f"_{ref_tag}_{i + 1:03d}.wav"
+            suffix = f"_{ref_tag}.wav"
             op = os.path.join(output_dir, test_name + suffix)
             sf.write(op, seg, sr_test)
             logger.info(f"[优化切分] {test_name}{suffix}: ref={ref_name:15s} offset={final_offset:.2f}s")
