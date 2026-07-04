@@ -1140,10 +1140,25 @@ async def list_tasks(
         任务列表
     """
     # 只返回当前用户的任务
-    user_tasks = [
-        task for task in tasks.values()
-        if task.get("user") == current_user.username
-    ]
+    user_tasks = []
+    for task in tasks.values():
+        if task.get("user") != current_user.username:
+            continue
+        # 添加前端友好的文件信息
+        uploaded = task.get("uploaded_files", [])
+        task_out = dict(task)
+        task_out["files"] = uploaded  # 前端使用 files 字段
+        task_out["file_count"] = len(uploaded)
+        if uploaded:
+            # 摘要：显示前2个文件名，多余用+N标注
+            names = [os.path.splitext(f)[0] for f in uploaded[:2]]
+            summary = ", ".join(names)
+            if len(uploaded) > 2:
+                summary += f" 等{len(uploaded)}个文件"
+            task_out["file_summary"] = summary
+        else:
+            task_out["file_summary"] = "(无文件)"
+        user_tasks.append(task_out)
     return user_tasks
 
 

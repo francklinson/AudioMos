@@ -948,6 +948,42 @@ body::after {
   color: #999;
 }
 
+.task-info {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.task-title {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
+.task-file-count.badge {
+  font-size: .75rem;
+  font-weight: 500;
+  background: #e8e8e8 !important;
+  color: #555 !important;
+  flex-shrink: 0;
+}
+
+.task-file {
+  font-weight: 600;
+  color: #444;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-meta {
+  font-size: .78rem;
+  color: #999;
+}
+
 /* ===================== 进度条 ===================== */
 .progress {
   border-radius: 4px;

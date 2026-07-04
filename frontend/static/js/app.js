@@ -363,16 +363,26 @@ function _isActiveTask(t) {
 function _buildMosTaskHtml(t) {
   const status = t.status || 'pending';
   const progress = t.progress || 0;
-  const files = t.files ? (Array.isArray(t.files) ? t.files.join(', ') : t.files) : (t.file_name || shortId(t.task_id));
+  // 优先使用后端返回的 file_summary，降级到文件名列表
+  const fileSummary = t.file_summary || (
+    t.files ? (Array.isArray(t.files) ? t.files.join(', ') : t.files) :
+    (t.file_name || '')
+  );
+  const fileCount = t.file_count || 0;
   const isProcessing = _isActiveTask(t);
   const msg = t.message || '';
   const stepMatch = msg.match(/^\[(\w+)\](.+)/);
   const stepDesc = stepMatch ? stepMatch[2].trim() : msg;
   return `<div class="task-item" id="mos-task-${t.task_id}">
     <div class="task-header">
-      <div>
-        <span class="task-id">${shortId(t.task_id)}</span>
-        <span class="task-file ms-2">${_escapeHtml(files)}</span>
+      <div class="task-info">
+        <div class="task-title">
+          <span class="task-file-count badge bg-secondary me-1">${fileCount}个文件</span>
+          <span class="task-file">${_escapeHtml(fileSummary)}</span>
+        </div>
+        <div class="task-meta text-muted small">
+          创建: ${formatDate(t.created_at || t.create_time)}
+        </div>
       </div>
       <div class="task-actions">
         ${statusBadge(status)}
@@ -393,7 +403,7 @@ function _buildMosTaskHtml(t) {
         <span>${_escapeHtml(stepDesc || '处理中...')}</span>
       </div>
     </div>` : ''}
-    <div class="task-detail">创建: ${formatDate(t.created_at || t.create_time)}${t.message && !stepMatch ? ` | ${_escapeHtml(t.message)}` : ''}</div>
+    <div class="task-detail small text-muted">${t.message && !stepMatch ? _escapeHtml(t.message) : ''}</div>
   </div>`;
 }
 
