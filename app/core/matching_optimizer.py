@@ -942,8 +942,9 @@ class OptimizedMatcher:
         """
         获取测试音频中所有参考段的匹配信息（用于预检测+切分阶段）
 
-        优先使用WeNet语义匹配（当可用时），回退到全范围DTW。
-        返回格式与 _full_range_dtw_sweep() 兼容。
+        策略：
+          先用ASR语义匹配，对ASR未找到的参考段用DTW补缺。
+          返回格式与 _full_range_dtw_sweep() 兼容。
 
         Args:
             test_audio_path: 测试音频路径
@@ -952,39 +953,77 @@ class OptimizedMatcher:
             [{"ref_id", "ref_file", "ref_name", "offset_in_test",
               "confidence", "method", "wer"(optional), ...}]
         """
-        # 尝试Level A: WeNet语义匹配
-        if self._init_wenet_matcher():
+        # 所有期望的参考段名称
+        expected_refs = set()
+        if self.ref_dir and os.path.isdir(self.ref_dir):
+            for fname in os.listdir(self.ref_dir):
+                if fname.endswith(('.wav', '.mp3', '.flac')):
+                    expected_refs.add(fname)
+
+        # ----- 第1轮: WeNet语义匹配 -----
+        asr_segments = []
+        if self._init_wenet_matcher() and expected_refs:
             try:
                 asr_result = self._wenet_matcher.match_with_fallback(test_audio_path)
-                seg_matches = asr_result.get("detail", {}).get("segment_matches", [])
-                if seg_matches:
-                    # 转换为与_dtw_sweep兼容的格式
-                    return [
-                        {
-                            "ref_id": s["ref_name"],
-                            "ref_file": s["ref_file"],
-                            "ref_name": s["ref_name"],
-                            "offset_in_test": s["offset_in_test"],
-                            "confidence": s["confidence"],
-                            "method": "asr_text_dtw",
-                            "snr": asr_result.get("snr", 0.0),
-                            "duration": s.get("duration", 0.0),
-                            "wer": s.get("wer", 0.0),
-                            "wcorr": s.get("wcorr", 0.0),
-                            "n_chars": s.get("n_chars", 0),
-                        }
-                        for s in seg_matches
-                    ]
+                asr_segments = asr_result.get("detail", {}).get("segment_matches", [])
             except Exception as e:
-                logger.debug(f"[获取段匹配] WeNet失败: {e}，降级到DTW")
+                logger.debug(f"[获取段匹配] WeNet失败: {e}")
 
-        # 回退: 全范围DTW扫描
+        # 转换ASR结果
+        asr_map = {}  # ref_name -> segment_dict
+        for s in asr_segments:
+            asr_map[s["ref_name"]] = {
+                "ref_id": s["ref_name"],
+                "ref_file": s["ref_file"],
+                "ref_name": s["ref_name"],
+                "offset_in_test": s["offset_in_test"],
+                "confidence": s["confidence"],
+                "method": "asr_text_dtw",
+                "snr": asr_result.get("snr", 0.0) if asr_result else 0.0,
+                "duration": s.get("duration", 0.0),
+                "wer": s.get("wer", 0.0),
+                "wcorr": s.get("wcorr", 0.0),
+                "n_chars": s.get("n_chars", 0),
+            }
+
+        # 如果ASR找到了所有期望段，直接返回
+        asr_found = set(asr_map.keys())
+        missing = expected_refs - asr_found
+        if not missing and asr_found:
+            logger.info(f"[获取段匹配] ASR匹配全部{len(expected_refs)}个段")
+            return list(asr_map.values())
+
+        # ----- 第2轮: DTW补缺（针对ASR未找到的段）-----
+        if missing:
+            logger.info(f"[获取段匹配] ASR匹配{len(asr_found)}/{len(expected_refs)}个段, "
+                        f"DTW补缺{len(missing)}个: {missing}")
+
+        # 全范围DTW扫描
         snr = 0.0
         try:
             snr, _ = self._estimate_snr_and_noise_floor(test_audio_path)
         except Exception:
             pass
-        return self._full_range_dtw_sweep(test_audio_path, snr)
+        dtw_results = self._full_range_dtw_sweep(test_audio_path, snr)
+
+        # 从DTW结果中取缺失段
+        for d in dtw_results:
+            rn = d.get("ref_name", "")
+            if rn in missing:
+                d["method"] = d.get("method", "full_range_dtw")
+                asr_map[rn] = d
+                logger.info(f"[获取段匹配] DTW补缺: {rn} @ {d.get('offset_in_test', 0):.2f}s")
+
+        # ----- 合并结果 -----
+        final = list(asr_map.values())
+        final.sort(key=lambda x: x.get('offset_in_test', 0))
+
+        found_names = {s['ref_name'] for s in final}
+        still_missing = expected_refs - found_names
+        if still_missing:
+            logger.warning(f"[获取段匹配] 仍有段未找到: {still_missing}")
+
+        return final
 
     def _full_range_dtw_sweep(self, test_audio_path: str,
                                 snr: float) -> List[Dict]:
