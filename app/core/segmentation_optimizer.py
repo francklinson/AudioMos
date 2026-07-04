@@ -74,6 +74,9 @@ class RefTextInfo:
     ref_file: str        # 完整路径
     text: str            # ground truth 文本
     chars: List[str]     # 字符序列
+    head_silence: float = 0.0  # 段首静音时长（秒）
+    tail_silence: float = 0.0  # 段尾静音时长（秒）
+    ref_first_char_time: float = 0.0  # 参考音频自身的首字时间戳（秒），用于精确修正偏移
 
 
 # ============================================================================
@@ -346,6 +349,9 @@ class WeNetSegmentationMatcher:
         self._model = model
         if hasattr(model, 'subsampling_rate'):
             self._frame_shift = 0.01 * model.subsampling_rate()
+        # 如果参考文本已加载，补算首字时间戳
+        if self._ref_texts:
+            self._compute_ref_first_char_times()
 
     def is_model_ready(self) -> bool:
         return self._model is not None
@@ -353,7 +359,7 @@ class WeNetSegmentationMatcher:
     # ---- 参考文本管理 ----
 
     def load_ref_texts(self, ref_dir: str = None) -> int:
-        """从参考音频目录加载ground truth文本
+        """从参考音频目录加载ground truth文本，并检测段首/段尾静音时长
 
         Args:
             ref_dir: 参考音频目录
@@ -387,21 +393,128 @@ class WeNetSegmentationMatcher:
                 if not os.path.exists(filepath):
                     logger.warning(f"[WeNet匹配] 文件不存在（metadata中有但磁盘无）: {filepath}")
                     continue
+
+                # 检测段首/段尾静音时长（用于修正ASR时间戳偏移）
+                head_sil, tail_sil = self._detect_silence(filepath)
+
                 self._ref_texts[filename] = RefTextInfo(
                     ref_name=filename,
                     ref_file=filepath,
                     text=gt_text,
-                    chars=list(gt_text)
+                    chars=list(gt_text),
+                    head_silence=head_sil,
+                    tail_silence=tail_sil
                 )
                 count += 1
-                logger.info(f"[WeNet匹配] 加载参考文本: {filename} ({len(gt_text)}字)")
+                logger.info(f"[WeNet匹配] 加载参考文本: {filename} ({len(gt_text)}字, "
+                           f"head_sil={head_sil:.3f}s, tail_sil={tail_sil:.3f}s)")
 
             logger.info(f"[WeNet匹配] 共加载 {count}/{len(audios)} 个参考文本")
             self._initialized = count > 0
+
+            # 如果模型已加载，计算参考音频自身的首字时间戳（用于精确偏移修正）
+            if self._model is not None and count > 0:
+                self._compute_ref_first_char_times()
+
             return count
         except Exception as e:
             logger.error(f"[WeNet匹配] 加载元数据失败: {e}")
             return 0
+
+    def _compute_ref_first_char_times(self):
+        """计算每个参考音频自身的ASR首字时间戳
+
+        原理：
+          ASR返回的offset是测试音频中首字的CTC峰值时间。
+          要得到参考段在测试音频中的真实起始位置，需要：
+            real_offset = test_first_char_time - ref_first_char_time
+          其中ref_first_char_time是首字在参考音频自身中的时间戳。
+
+          这比单纯减去段首静音更精确，因为CTC峰值偏移也被考虑在内。
+        """
+        if not self._model:
+            return
+        for name, info in self._ref_texts.items():
+            try:
+                ref_path = info.ref_file
+                if not os.path.exists(ref_path):
+                    continue
+                result = self._model.transcribe(ref_path)
+                raw_times = result.times if hasattr(result, 'times') else None
+                if raw_times and len(raw_times) > 0:
+                    first_char_time = raw_times[0] * self._frame_shift
+                    info.ref_first_char_time = first_char_time
+                    logger.debug(f"[参考首字时间] {name}: first_char={first_char_time:.3f}s "
+                                f"(head_sil={info.head_silence:.3f}s)")
+            except Exception as e:
+                logger.debug(f"[参考首字时间] 计算失败 {name}: {e}")
+                info.ref_first_char_time = info.head_silence  # fallback
+
+        times = [info.ref_first_char_time for info in self._ref_texts.values()
+                if info.ref_first_char_time > 0]
+        if times:
+            avg = np.mean(times)
+            logger.info(f"[参考首字时间] 完成，平均={avg:.3f}s")
+
+    @staticmethod
+    def _detect_silence(wav_path: str, sr: int = 16000,
+                         threshold: float = 0.02,
+                         frame_ms: int = 10) -> Tuple[float, float]:
+        """检测音频的段首和段尾静音时长
+
+        使用短时能量检测：
+        - 分帧（10ms/帧）
+        - 能量低于全局最大能量的 threshold 视为静音
+        - 从头部扫描到第一个非静音帧 = head_silence
+        - 从尾部扫描到最后一个非静音帧 = tail_silence
+
+        Args:
+            wav_path: 音频文件路径
+            sr: 目标采样率
+            threshold: 静音能量阈值比例（相对于全局最大能量）
+            frame_ms: 帧长（毫秒）
+
+        Returns:
+            (head_silence_seconds, tail_silence_seconds)
+        """
+        try:
+            import librosa
+            audio, _ = librosa.load(wav_path, sr=sr, mono=True)
+            frame_len = int(sr * frame_ms / 1000)
+            hop = frame_len // 2
+
+            # 分帧能量
+            energy = np.array([
+                np.sum(audio[i:i + frame_len] ** 2)
+                for i in range(0, len(audio) - frame_len, hop)
+            ])
+            if len(energy) == 0:
+                return 0.0, 0.0
+
+            energy_thresh = np.max(energy) * threshold
+
+            # 头部静音
+            head_frames = 0
+            for e in energy:
+                if e < energy_thresh:
+                    head_frames += 1
+                else:
+                    break
+            head_sil = head_frames * hop / sr
+
+            # 尾部静音
+            tail_frames = 0
+            for e in reversed(energy):
+                if e < energy_thresh:
+                    tail_frames += 1
+                else:
+                    break
+            tail_sil = tail_frames * hop / sr
+
+            return head_sil, tail_sil
+        except Exception as e:
+            logger.debug(f"[静音检测] 失败 {wav_path}: {e}")
+            return 0.0, 0.0
 
     def get_ref_texts(self) -> Dict[str, RefTextInfo]:
         """获取已加载的参考文本"""
@@ -513,10 +626,22 @@ class WeNetSegmentationMatcher:
                 start_pos = max(0, min(alignment["start_pos"], M - 1))
                 end_pos = max(start_pos, min(alignment["end_pos"], M - 1))
 
-                start_time = test_times[start_pos] if start_pos < len(test_times) else 0.0
+                start_time_raw = test_times[start_pos] if start_pos < len(test_times) else 0.0
                 end_time = (test_times[end_pos] + self._frame_shift
                            if end_pos < len(test_times)
                            else test_times[-1] + self._frame_shift)
+
+                # 修正偏移：减去参考音频首字时间戳（精确修正）
+                # ASR返回测试音频中首字的CTC峰值时间，但参考段在测试音频中的
+                # 真实起始位置还需要考虑参考音频自身的首字偏移（段首静音+CTC峰值偏移）。
+                # real_offset = test_first_char_time - ref_first_char_time
+                ref_first = ref.ref_first_char_time if hasattr(ref, 'ref_first_char_time') and ref.ref_first_char_time > 0 else 0.0
+                if ref_first > 0:
+                    start_time = max(0.0, start_time_raw - ref_first)
+                else:
+                    # fallback: 仅减去段首静音（仍残留CTC峰值偏移约0.12s）
+                    head_sil = ref.head_silence if hasattr(ref, 'head_silence') else 0.0
+                    start_time = max(0.0, start_time_raw - head_sil)
 
                 text_conf = alignment["confidence"]
                 # 如果文本DTW本身置信度已低于阈值，提前跳过
