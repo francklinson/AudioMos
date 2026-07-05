@@ -16,8 +16,6 @@ ASR 模型下载脚本
     firered-asr2           - FireRedASR2-AED   (HuggingFace: FireRedTeam/FireRedASR2-AED)
     qwen3-asr              - Qwen3-ASR-1.7B    (HuggingFace: Qwen/Qwen3-ASR-1.7B)
     funasr-llm             - Fun-ASR-Nano 800M (HuggingFace: FunAudioLLM/Fun-ASR-Nano-2512)
-    step-audio-2-mini      - Step-Audio-2-mini  (HuggingFace: stepfun-ai/Step-Audio-2-mini)
-    vibevoice-asr          - VibeVoice-ASR-7B   (HuggingFace: microsoft/VibeVoice-ASR-HF)
 """
 
 import argparse
@@ -97,21 +95,7 @@ MODEL_DEFS = {
         "source": "huggingface",
         "repo_id": "FunAudioLLM/Fun-ASR-Nano-2512",
         "local_dir": ASR_MODELS_DIR / "funasr-llm",
-        "marker_files": ["config.yaml", "model.pt"],
-    },
-    "step-audio-2-mini": {
-        "display_name": "Step-Audio-2-mini",
-        "source": "huggingface",
-        "repo_id": "stepfun-ai/Step-Audio-2-mini",
-        "local_dir": ASR_MODELS_DIR / "step-audio-2-mini",
-        "marker_files": ["config.json", "model.safetensors"],
-    },
-    "vibevoice-asr": {
-        "display_name": "VibeVoice-ASR-7B",
-        "source": "huggingface",
-        "repo_id": "microsoft/VibeVoice-ASR-HF",
-        "local_dir": ASR_MODELS_DIR / "vibevoice-asr",
-        "marker_files": ["config.json", "model.safetensors.index.json"],
+        "marker_files": ["model.pt", "configuration.json"],
     },
 }
 

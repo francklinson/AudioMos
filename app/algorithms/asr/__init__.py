@@ -1,6 +1,6 @@
 """
 ASR评测模块
-集成9个前沿中文ASR开源SOTA算法，支持手动上传解析和Benchmark评测
+集成7个轻量化中文ASR开源SOTA算法，支持手动上传解析和Benchmark评测
 """
 
 from .base import BaseASR, ASRResult, ASRSegment
@@ -9,7 +9,6 @@ from .evaluator import ASRMetrics, compute_cer, compute_wer, evaluate_asr
 from .adapters import (
     ParaformerAdapter, SenseVoiceAdapter, WeNetAdapter, WhisperAdapter,
     FireRedASR2Adapter, Qwen3ASRAdapter, FunASRLLMAdapter,
-    StepAudioAdapter, VibeVoiceAdapter,
 )
 
 
@@ -31,8 +30,6 @@ def _get_adapter_class(name: str):
         "firered-asr2": FireRedASR2Adapter,
         "qwen3-asr": Qwen3ASRAdapter,
         "funasr-llm": FunASRLLMAdapter,
-        "step-audio-2-mini": StepAudioAdapter,
-        "vibevoice-asr": VibeVoiceAdapter,
     }
     return adapter_map.get(name)
 
