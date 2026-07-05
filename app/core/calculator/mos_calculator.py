@@ -1061,8 +1061,8 @@ class OptimizedToneColorFidelityScore:
     # 避免6个TCF管线同时占用GPU导致OOM
     _GPU_MEM_BUDGET_RATIO = 0.80  # 80%阈值，可通过类变量覆盖
     # TCF模型最大并发数：限制同时推理的模型数量以控制峰值显存
-    # 2路并发约需6-8GB显存，6路全开可能超24GB（尤其与大模型共存时）
-    _TCF_MAX_CONCURRENT = 2
+    # 3路并发约需9-12GB显存（RTX 3090 24GB足够）
+    _TCF_MAX_CONCURRENT = 3
 
     def __init__(self):
         import time
@@ -1078,55 +1078,33 @@ class OptimizedToneColorFidelityScore:
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
         logger.info(f"[TCF] 项目根目录: {project_root}")
-        logger.info(f"[TCF] 配置多模型加权评估...")
+        logger.info(f"[TCF] 配置top-3多模型加权评估 (eres2net/eres2netv2/campplus)...")
 
-        # 多模型配置，权重根据ERR值得到: weight = 10 - ERR
-        # ERR越小(性能越好)，权重越高
+        # 多模型配置，保留效果最好的3个模型（删除ecapa-tdnn/res2net/resnet34提速）
         self.sv_model_dict = {
             "eres2net": {
                 "model_id": "damo/speech_eres2net_sv_zh-cn_16k-common",
                 "project_path": os.path.join(project_root, "models", "tcf", "eres2net"),
                 "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_eres2net_sv_zh-cn_16k-common"),
-                "weight": 7.21,  # 10 - 2.79
+                "weight": 7.21,
                 "revision": "v1.0.0"
             },
             "eres2netv2": {
                 "model_id": "damo/speech_eres2netv2_sv_zh-cn_16k-common",
                 "project_path": os.path.join(project_root, "models", "tcf", "eres2netv2"),
                 "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_eres2netv2_sv_zh-cn_16k-common"),
-                "weight": 6.19,  # 10 - 3.81
+                "weight": 6.19,
                 "revision": "v1.0.0"
             },
             "campplus": {
                 "model_id": "damo/speech_campplus_sv_zh-cn_16k-common",
                 "project_path": os.path.join(project_root, "models", "tcf", "campplus"),
                 "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_campplus_sv_zh-cn_16k-common"),
-                "weight": 5.0,   # 根据实际ERR调整
+                "weight": 5.0,
                 "revision": "v1.0.0"
             },
-            "ecapa-tdnn": {
-                "model_id": "damo/speech_ecapa-tdnn_sv_zh-cn_cnceleb_16k",
-                "project_path": os.path.join(project_root, "models", "tcf", "ecapa-tdnn"),
-                "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_ecapa-tdnn_sv_zh-cn_cnceleb_16k"),
-                "weight": 4.5,
-                "revision": "v1.0.0"
-            },
-            "res2net": {
-                "model_id": "damo/speech_res2net_sv_zh-cn_3dspeaker_16k",
-                "project_path": os.path.join(project_root, "models", "tcf", "res2net"),
-                "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_res2net_sv_zh-cn_3dspeaker_16k"),
-                "weight": 5.0,   # 10 - 5
-                "revision": "v1.0.0"
-            },
-            "resnet34": {
-                "model_id": "damo/speech_resnet34_sv_zh-cn_3dspeaker_16k",
-                "project_path": os.path.join(project_root, "models", "tcf", "resnet34"),
-                "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_resnet34_sv_zh-cn_3dspeaker_16k"),
-                "weight": 3.03,  # 10 - 6.97
-                "revision": "v1.0.0"
-            }
         }
-        
+
         self._pipeline_cache = {}
         self._init_error = None
     
