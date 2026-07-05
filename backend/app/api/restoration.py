@@ -9,7 +9,6 @@ import uuid
 import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status, Form
 from fastapi.responses import FileResponse
@@ -19,9 +18,6 @@ from app.api.auth import get_current_active_user, get_current_user_optional
 from app.core.security import User
 from app.core.config import settings
 from app.core.logging_config import logger
-
-# 创建线程池
-executor = ThreadPoolExecutor(max_workers=2)
 
 # 导入修复模块
 import sys
@@ -375,7 +371,9 @@ async def upload_audio(
         status="pending",
         created_at=time.strftime("%Y-%m-%d %H:%M:%S"),
     )
-    restoration_tasks[task_id] = task_info.dict()
+    task_dict = task_info.dict()
+    task_dict["user"] = current_user.username
+    restoration_tasks[task_id] = task_dict
 
     return {
         "task_id": task_id,
@@ -560,8 +558,8 @@ async def get_task(task_id: str, current_user: User = Depends(get_current_active
 
 @router.get("/tasks")
 async def list_tasks(current_user: User = Depends(get_current_active_user)) -> List[Dict[str, Any]]:
-    """获取所有任务"""
-    return list(restoration_tasks.values())
+    """获取当前用户的所有任务"""
+    return [t for t in restoration_tasks.values() if t.get("user") == current_user.username]
 
 
 @router.get("/source/{task_id}")
@@ -662,6 +660,10 @@ async def delete_task(task_id: str, current_user: User = Depends(get_current_act
     if task_id not in restoration_tasks:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
+    # 用户隔离
+    if restoration_tasks[task_id].get("user") != current_user.username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除此任务")
+
     # 删除上传文件
     upload_dir = os.path.join(settings.paths.upload_dir, task_id)
     if os.path.exists(upload_dir):
@@ -675,21 +677,3 @@ async def delete_task(task_id: str, current_user: User = Depends(get_current_act
     del restoration_tasks[task_id]
 
     return {"message": "任务已删除"}
-
-
-def init_restoration():
-    """初始化音频修复模块（启动时调用）"""
-    if not RESTORATION_AVAILABLE:
-        logger.warning("音频修复模块不可用")
-        return
-
-    logger.info("=" * 60)
-    logger.info("[音频修复算法初始化]")
-    logger.info("=" * 60)
-
-    restorers = get_available_restorers()
-    for key, info in restorers.items():
-        logger.info(f"  {key}: {info.get('name', 'N/A')} - {info.get('description', 'N/A')}")
-
-    logger.info(f"共 {len(restorers)} 个音频修复算法可用")
-    logger.info("=" * 60)

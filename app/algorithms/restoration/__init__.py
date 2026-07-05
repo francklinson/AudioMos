@@ -71,166 +71,18 @@ def _make_denoise_restorer_class(denoiser_name: str, default_sr: int = 16000):
     return _ConfiguredDenoiseRestorer
 
 
-# ── 所有降噪算法配置 (名称 → 适配器类) ──
-_DENOISE_ALGORITHMS = {
-    # ClearVoice-Studio 系列
-    "clearvoice_frcrn_se_16k": {
-        "name": "ClearVoice FRCRN 降噪 (16K)",
-        "description": "阿里巴巴FRCRN实时语音增强模型，16kHz，轻量高效，支持流式处理",
-        "type": "深度学习",
-        "advantages": [
-            "实时处理，RTF仅0.086",
-            "模型轻量仅154MB",
-            "300万+生产环境验证",
-            "支持流式处理",
-        ],
-        "limitations": [
-            "仅支持16kHz输入",
-            "极端噪声场景效果有限",
-        ],
-        "denoiser_name": "clearvoice_frcrn_se_16k",
-        "sample_rate": 16000,
-    },
-    "clearvoice_mossformer2_se_48k": {
-        "name": "ClearVoice MossFormer2 降噪 (48K)",
-        "description": "MossFormer2架构48kHz高保真语音增强，最优降噪质量，性能优于Resemble-enhance和DeepFilterNet",
-        "type": "深度学习",
-        "advantages": [
-            "48kHz高保真输出",
-            "SOTA降噪性能",
-            "支持多种音频格式",
-            "专业音频处理级别",
-        ],
-        "limitations": [
-            "模型较大(212MB)",
-            "需要较多GPU内存",
-            "推理速度较慢",
-        ],
-        "denoiser_name": "clearvoice_mossformer2_se_48k",
-        "sample_rate": 48000,
-    },
-    "clearvoice_mossformer_gan_se_16k": {
-        "name": "ClearVoice MossFormerGAN 降噪 (16K)",
-        "description": "基于GAN的MossFormer语音增强，VoiceBank+DEMAND上PESQ=3.47/STOI=0.96，DNS Challenge PESQ=3.57",
-        "type": "深度学习",
-        "advantages": [
-            "SOTA客观指标",
-            "GAN增强语音自然度",
-            "VoiceBank+DEMAND最优",
-            "16kHz快速推理",
-        ],
-        "limitations": [
-            "模型约131MB",
-            "GAN推理有随机性",
-        ],
-        "denoiser_name": "clearvoice_mossformer_gan_se_16k",
-        "sample_rate": 16000,
-    },
-    "clearvoice_mossformer2_ss_16k": {
-        "name": "ClearVoice MossFormer2 语音分离 (16K)",
-        "description": "MossFormer2语音分离模型，WSJ0-2Mix上SI-SNRi=22.0dB，支持2人语音分离",
-        "type": "深度学习",
-        "advantages": [
-            "SOTA分离性能",
-            "WSJ0-2Mix最优",
-            "多说话人场景适用",
-        ],
-        "limitations": [
-            "模型较大(640MB)",
-            "仅支持2人分离",
-            "长音频需分段处理",
-        ],
-        "denoiser_name": "clearvoice_mossformer2_ss_16k",
-        "sample_rate": 16000,
-    },
-    "clearvoice_mossformer2_sr_48k": {
-        "name": "ClearVoice MossFormer2 超分辨率 (48K)",
-        "description": "MossFormer2语音超分辨率模型，16kHz→48kHz高保真重建，恢复高频细节",
-        "type": "深度学习",
-        "advantages": [
-            "16k→48k超分",
-            "恢复高频细节",
-            "提升听感质量",
-        ],
-        "limitations": [
-            "模型巨大(2.1GB)",
-            "推理时间较长",
-            "需16kHz以上输入",
-        ],
-        "denoiser_name": "clearvoice_mossformer2_sr_48k",
-        "sample_rate": 48000,
-    },
-    # SpeechBrain 系列
-    "speechbrain_metricgan": {
-        "name": "SpeechBrain MetricGAN+ 降噪",
-        "description": "基于MetricGAN+的深度学习方法，Voicebank-DEMAND数据集上PESQ=3.15/STOI=93.0%",
-        "type": "深度学习",
-        "advantages": [
-            "高质量语音增强",
-            "针对感知指标优化",
-            "GAN训练策略",
-        ],
-        "limitations": [
-            "计算复杂度较高",
-            "依赖SpeechBrain库",
-        ],
-        "denoiser_name": "speechbrain_metricgan",
-        "sample_rate": 16000,
-    },
-    "speechbrain_sepformer": {
-        "name": "SpeechBrain SepFormer 语音分离",
-        "description": "基于Transformer的语音分离/增强模型，WHAM!数据集训练",
-        "type": "深度学习",
-        "advantages": [
-            "分离效果好",
-            "适合多说话人场景",
-            "Transformer架构",
-        ],
-        "limitations": [
-            "模型较大",
-            "推理速度较慢",
-            "依赖SpeechBrain库",
-        ],
-        "denoiser_name": "speechbrain_sepformer",
-        "sample_rate": 16000,
-    },
-    # 传统方法
-    "spectral_subtraction": {
-        "name": "谱减法降噪",
-        "description": "经典信号处理降噪方法，基于噪声频谱估计和减法运算",
-        "type": "传统方法",
-        "advantages": [
-            "计算极快，实时性最佳",
-            "无需训练/下载模型",
-            "内存占用极小",
-            "适合嵌入式设备",
-        ],
-        "limitations": [
-            "会产生音乐噪声",
-            "对非平稳噪声效果差",
-            "需要噪声估计",
-        ],
-        "denoiser_name": "spectral_subtraction",
-        "sample_rate": 16000,
-    },
-    "wiener_filtering": {
-        "name": "维纳滤波降噪",
-        "description": "基于最小均方误差准则的最优线性滤波方法",
-        "type": "传统方法",
-        "advantages": [
-            "理论基础扎实",
-            "计算效率高",
-            "无需训练",
-            "平稳噪声效果好",
-        ],
-        "limitations": [
-            "需准确噪声估计",
-            "对非平稳噪声敏感",
-            "降噪量有限",
-        ],
-        "denoiser_name": "wiener_filtering",
-        "sample_rate": 16000,
-    },
+# ── 降噪算法采样率配置 (名称 → {sample_rate}) ──
+# 算法描述信息从 denoise/registry.DENOISER_DESCRIPTIONS 获取，避免重复
+_DENOISER_SR_CONFIG = {
+    "clearvoice_frcrn_se_16k": 16000,
+    "clearvoice_mossformer2_se_48k": 48000,
+    "clearvoice_mossformer_gan_se_16k": 16000,
+    "clearvoice_mossformer2_ss_16k": 16000,
+    "clearvoice_mossformer2_sr_48k": 48000,
+    "speechbrain_metricgan": 16000,
+    "speechbrain_sepformer": 16000,
+    "spectral_subtraction": 16000,
+    "wiener_filtering": 16000,
 }
 
 
@@ -253,17 +105,20 @@ def get_available_restorers() -> dict:
             "description": "将低采样率音频重建为高采样率（带宽扩展）",
         }
 
-    # ── 降噪算法（通过适配器）──
+    # ── 降噪算法（通过适配器，描述从 denoise 模块获取避免重复）──
     if DENOISE_ADAPTER_AVAILABLE:
-        for key, config in _DENOISE_ALGORITHMS.items():
-            available[key] = {
-                "name": config["name"],
-                "class": _make_denoise_restorer_class(
-                    config["denoiser_name"],
-                    config["sample_rate"],
-                ),
-                "description": config["description"],
-            }
+        try:
+            from denoise.registry import DENOISER_DESCRIPTIONS
+            for key, sr in _DENOISER_SR_CONFIG.items():
+                desc = DENOISER_DESCRIPTIONS.get(key, {})
+                available[key] = {
+                    "name": desc.get("name", key),
+                    "class": _make_denoise_restorer_class(key, sr),
+                    "description": desc.get("description", ""),
+                }
+        except ImportError:
+            import logging
+            logging.getLogger('audiomos').warning("[音频修复] 无法从 denoise 模块加载算法描述，降噪算法不可用")
 
     return available
 
@@ -306,15 +161,24 @@ RESTORATION_DESCRIPTIONS: dict = {
     },
 }
 
-# 合并降噪算法描述
-for key, config in _DENOISE_ALGORITHMS.items():
-    RESTORATION_DESCRIPTIONS[key] = {
-        "name": config["name"],
-        "description": config["description"],
-        "type": config["type"],
-        "advantages": config.get("advantages", []),
-        "limitations": config.get("limitations", []),
-    }
+# 合并降噪算法描述（从 denoise 模块引用，避免重复维护）
+def _load_denoise_descriptions():
+    """运行时从 denoise 模块加载降噪算法描述"""
+    try:
+        from denoise.registry import DENOISER_DESCRIPTIONS
+        for key, info in DENOISER_DESCRIPTIONS.items():
+            if key in _DENOISER_SR_CONFIG and key not in RESTORATION_DESCRIPTIONS:
+                RESTORATION_DESCRIPTIONS[key] = {
+                    "name": info.get("name", key),
+                    "description": info.get("description", ""),
+                    "type": info.get("type", "未知"),
+                    "advantages": info.get("pros", []),
+                    "limitations": info.get("cons", []),
+                }
+    except ImportError:
+        pass
+
+_load_denoise_descriptions()
 
 
 def get_restoration_description(name: str) -> dict:

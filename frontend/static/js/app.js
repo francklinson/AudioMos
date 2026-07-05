@@ -217,7 +217,6 @@ function handleLogout() {
 const state = {
   user: null,
   mosPollTimer: null,
-  denoisePollTimer: null,
   restorationPollTimer: null,
   mosPrevStats: { total: -1, completed: -1, processing: -1 },
   mosWsConnections: {},       // { taskId: WebSocket }
@@ -236,8 +235,6 @@ const state = {
 // ======================== 页面初始化数据加载 ========================
 function loadAllData() {
   loadMosTasks();
-  loadDenoiseAlgorithms();
-  loadDenoiseTasks();
   loadRestorationAlgorithms();
   loadRestorationTasks();
   loadRefAudioList();
@@ -836,179 +833,6 @@ async function deleteMosTask(taskId) {
   });
 }
 
-// ==================== 降噪测评 ====================
-let denoiseSelectedAlgorithms = [];
-let denoiseNoisyFiles = null;
-let denoiseRefFiles = null;
-
-async function loadDenoiseAlgorithms() {
-  try {
-    const data = await api(apiUrl('/api/denoise/algorithms'));
-    const algs = data.algorithms || data || [];
-    renderDenoiseAlgorithms(algs);
-  } catch (_) {}
-}
-
-function renderDenoiseAlgorithms(algs) {
-  const container = $('denoise-algorithms');
-  if (!algs || algs.length === 0) {
-    container.innerHTML = '<div class="text-muted">暂无可用算法</div>';
-    return;
-  }
-  container.innerHTML = algs.map((a, i) => {
-    const type = a.type || '深度学习';
-    const typeClass = type.includes('传统') ? 'bg-secondary' : 'bg-info';
-    const selected = denoiseSelectedAlgorithms.includes(a.name) ? 'selected' : '';
-    const disabled = a.initialized === false ? 'opacity-50' : '';
-    return `<div class="col-md-4 col-sm-6">
-      <div class="algorithm-card ${selected} ${disabled}" data-alg="${a.name}" onclick="toggleDenoiseAlgorithm('${a.name}')">
-        <div class="alg-name">${a.display_name || a.name}</div>
-        <span class="alg-type ${typeClass} text-white">${type}</span>
-        ${a.initialized === false ? '<span class="badge bg-warning ms-1">未初始化</span>' : ''}
-        <div class="alg-desc mt-1">${a.description || ''}</div>
-        ${a.advantages ? `<small class="text-success d-block mt-1"><i class="bi bi-check-circle"></i> ${a.advantages}</small>` : ''}
-      </div>
-    </div>`;
-  }).join('');
-  updateDenoiseSubmitBtn();
-}
-
-function toggleDenoiseAlgorithm(name) {
-  const idx = denoiseSelectedAlgorithms.indexOf(name);
-  if (idx >= 0) denoiseSelectedAlgorithms.splice(idx, 1);
-  else denoiseSelectedAlgorithms.push(name);
-  qsa('#denoise-algorithms .algorithm-card').forEach(c => {
-    c.classList.toggle('selected', denoiseSelectedAlgorithms.includes(c.dataset.alg));
-  });
-  updateDenoiseSubmitBtn();
-}
-
-function initDenoisePage() {
-  $('denoise-file-input').addEventListener('change', () => {
-    denoiseNoisyFiles = $('denoise-file-input').files;
-    updateDenoiseFileInfo();
-    updateDenoiseSubmitBtn();
-  });
-  $('denoise-has-ref').addEventListener('change', () => {
-    $('denoise-ref-upload').classList.toggle('d-none', !$('denoise-has-ref').checked);
-  });
-  $('denoise-ref-input').addEventListener('change', () => {
-    denoiseRefFiles = $('denoise-ref-input').files;
-  });
-  $('denoise-submit-btn').addEventListener('click', submitDenoiseTask);
-}
-
-function updateDenoiseFileInfo() {
-  if (denoiseNoisyFiles && denoiseNoisyFiles.length > 0) {
-    $('denoise-file-info').classList.remove('d-none');
-    $('denoise-file-count').textContent = `已选择 ${denoiseNoisyFiles.length} 个文件`;
-  } else {
-    $('denoise-file-info').classList.add('d-none');
-  }
-}
-
-function updateDenoiseSubmitBtn() {
-  const btn = $('denoise-submit-btn');
-  btn.disabled = denoiseSelectedAlgorithms.length === 0 || !denoiseNoisyFiles || denoiseNoisyFiles.length === 0;
-}
-
-async function submitDenoiseTask() {
-  const btn = $('denoise-submit-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<div class="spinner-border spinner-border-sm"></div> 提交中...';
-  try {
-    const fd = new FormData();
-    for (const f of denoiseNoisyFiles) fd.append('files', f);
-    if (denoiseRefFiles) { for (const f of denoiseRefFiles) fd.append('reference_files', f); }
-    fd.append('algorithms', JSON.stringify(denoiseSelectedAlgorithms));
-    const data = await api(apiUrl('/api/denoise/upload'), { method: 'POST', formData: true, body: fd });
-    // 启动处理
-    for (const taskId of (data.task_ids || [data.task_id])) {
-      await api(apiUrl(`/api/denoise/process/${taskId}`), { method: 'POST' });
-    }
-    showToast('降噪测评任务已提交', 'success');
-    loadDenoiseTasks();
-    // 切换到任务列表
-    $('denoise-tab-tasks').click();
-  } catch (err) {
-    showToast('提交失败: ' + err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-play-fill"></i> 开始测评';
-  }
-}
-
-async function loadDenoiseTasks() {
-  try {
-    const data = await api(apiUrl('/api/denoise/tasks'));
-    const tasks = data.tasks || data || [];
-    renderDenoiseTasks(tasks);
-  } catch (_) {}
-}
-
-function renderDenoiseTasks(tasks) {
-  // 更新计数
-  $('denoise-task-count').textContent = tasks.length;
-  const container = $('denoise-task-list');
-  if (!tasks || tasks.length === 0) {
-    container.innerHTML = '<div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无任务</div>';
-    return;
-  }
-  container.innerHTML = tasks.map(t => {
-    const status = t.status || 'pending';
-    const progress = t.progress || 0;
-    return `<div class="task-item">
-      <div class="task-header">
-        <div>
-          <span class="task-id">${shortId(t.task_id)}</span>
-          <span class="task-file ms-2">${t.message || ''}</span>
-        </div>
-        <div class="task-actions">
-          ${statusBadge(status)}
-          ${status === 'completed' ? `
-            <button class="btn btn-sm btn-outline-success" onclick="downloadDenoiseReport('${t.task_id}','excel')"><i class="bi bi-file-earmark-excel"></i> Excel</button>
-            <button class="btn btn-sm btn-outline-info" onclick="downloadDenoiseReport('${t.task_id}','html')"><i class="bi bi-file-earmark-code"></i> HTML</button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="downloadDenoiseReport('${t.task_id}','markdown')"><i class="bi bi-file-earmark-text"></i> Markdown</button>
-          ` : ''}
-          <button class="btn btn-sm btn-outline-danger" onclick="deleteDenoiseTask('${t.task_id}')"><i class="bi bi-trash"></i></button>
-        </div>
-      </div>
-      ${status === 'processing' || status === 'pending' ? `<div class="mt-2"><div class="progress" style="height:6px"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width:${progress}%"></div></div></div>` : ''}
-      <div class="task-detail">创建: ${formatDate(t.created_at || t.create_time)}${t.message ? ` | ${t.message}` : ''}</div>
-    </div>`;
-  }).join('');
-}
-
-async function downloadDenoiseReport(taskId, format) {
-  try {
-    const resp = await api(apiUrl(`/api/denoise/download/${taskId}?format=${format}`), { method: 'GET', raw: true });
-    const blob = await resp.blob();
-    const ext = format === 'excel' ? 'xlsx' : format;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `降噪测评报告_${shortId(taskId)}.${ext}`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  } catch (err) {
-    showToast('下载失败: ' + err.message, 'error');
-  }
-}
-
-async function deleteDenoiseTask(taskId) {
-  showConfirm('确定要删除此任务吗？', async () => {
-    try {
-      await api(apiUrl(`/api/denoise/tasks/${taskId}`), { method: 'DELETE' });
-      showToast('删除成功', 'success');
-      loadDenoiseTasks();
-    } catch (err) {
-      showToast('删除失败: ' + err.message, 'error');
-    }
-  });
-}
-
 // ==================== 音频修复 ====================
 let restorationAlgs = [];
 let restorationSelectedAlg = null;
@@ -1109,6 +933,19 @@ async function loadRestorationTasks() {
 }
 
 function renderRestorationTasks(tasks) {
+  // 保存已展开的对比面板状态，避免轮询刷新时被销毁
+  const expandedPanels = new Map();
+  const classPrefix = 'restoration-compare-';
+  document.querySelectorAll('[class*="restoration-compare-"]').forEach(el => {
+    const taskId = Array.from(el.classList).find(c => c.startsWith(classPrefix))?.replace(classPrefix, '');
+    if (taskId && !el.classList.contains('d-none')) {
+      expandedPanels.set(taskId, {
+        loaded: el.dataset.loaded === 'true',
+        html: el.innerHTML
+      });
+    }
+  });
+  // 重渲染任务列表
   $('restoration-task-count').textContent = tasks.length;
   const container = $('restoration-task-list');
   if (!tasks || tasks.length === 0) {
@@ -1141,6 +978,19 @@ function renderRestorationTasks(tasks) {
       <div class="restoration-compare-${t.task_id} d-none mt-2"></div>
     </div>`;
   }).join('');
+  // 恢复已展开的对比面板
+  container.querySelectorAll('[class*="restoration-compare-"]').forEach(el => {
+    const taskId = Array.from(el.classList).find(c => c.startsWith(classPrefix))?.replace(classPrefix, '');
+    if (!taskId) return;
+    const saved = expandedPanels.get(taskId);
+    if (saved) {
+      el.classList.remove('d-none');
+      if (saved.loaded) {
+        el.dataset.loaded = 'true';
+        el.innerHTML = saved.html;
+      }
+    }
+  });
 }
 
 async function toggleRestorationCompare(taskId, btn) {
@@ -1277,8 +1127,8 @@ async function drawWaveform(canvasId, url, color) {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
     const data = buf.getChannelData(0);
-    const w = canvas.width || canvas.clientWidth;
-    const h = canvas.height || canvas.clientHeight;
+    const w = canvas.clientWidth || canvas.width || 300;
+    const h = canvas.clientHeight || canvas.height || 60;
     canvas.width = w * 2; canvas.height = h * 2;
     canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
     const cctx = canvas.getContext('2d');
@@ -1622,7 +1472,6 @@ async function doPoll() {
   // 有活动任务时2秒轮询，无活动时5秒
   _pollIntervalCurrent = hasActive ? 2000 : 5000;
 
-  if ($('denoise-algorithms')) loadDenoiseTasks();
   loadRestorationTasks();
 
   schedulePoll();
