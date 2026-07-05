@@ -94,14 +94,20 @@ class FireRedASR2Adapter(BaseASR):
 
     def _initialize_fasr(self) -> bool:
         """使用fasr库初始化"""
+        from fasr.config import registry  # 在方法内部导入
+
         model_dir = self._find_model_dir()
         if not model_dir:
             raise FileNotFoundError("未找到FireRedASR2-AED模型文件")
 
         logger.info(f"[FireRedASR2-AED] 使用fasr库从本地加载: {model_dir}")
-        model_class = self._registry.asr_models.get("firered_aed")
+
+        # 使用registry获取模型类并实例化
+        model_class = registry.asr_models.get("firered_aed")
         self._model = model_class()
-        self._model.from_checkpoint(checkpoint_dir=model_dir)
+        # 使用load_checkpoint方法加载权重
+        self._model.load_checkpoint(checkpoint_dir=model_dir)
+        self._use_fasr = True
         self._is_initialized = True
         logger.info("[FireRedASR2-AED] 模型初始化成功 (fasr)")
         return True
@@ -172,23 +178,42 @@ class FireRedASR2Adapter(BaseASR):
         )
 
     def _transcribe_fasr(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> ASRResult:
-        """使用fasr库推理"""
+        """使用fasr库推理 - 通过临时文件"""
+        from fasr import Audio
+        import soundfile as sf
+        import tempfile
+        import os
+
         sr = sample_rate or self.sample_rate
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
 
-        tokens = self._model.transcribe([audio], sample_rate=sr)
-        text = ""
-        if tokens and len(tokens) > 0:
-            token_list = tokens[0]
-            if isinstance(token_list, list):
-                text = "".join(token_list)
-            else:
-                text = str(token_list)
-        text = text.strip()
+        # 创建临时文件，fasr从文件加载
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            temp_path = f.name
+        try:
+            sf.write(temp_path, audio, sr)
+            audio_obj = Audio(url=temp_path)
+            audio_obj.load()
 
-        return ASRResult(
-            text=text,
-            language=self.language,
-            algorithm_name=self.name,
-        )
+            # 调用transcribe
+            result = self._model.transcribe([audio_obj])
+
+            text = ""
+            if result and len(result) > 0:
+                audio_result = result[0]
+                if hasattr(audio_result, 'text') and audio_result.text:
+                    text = audio_result.text
+                elif isinstance(audio_result, dict):
+                    text = audio_result.get('text', '')
+                else:
+                    text = str(audio_result)
+
+            return ASRResult(
+                text=text.strip(),
+                language=self.language,
+                algorithm_name=self.name,
+            )
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)

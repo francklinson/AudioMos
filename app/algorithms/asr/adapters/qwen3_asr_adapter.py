@@ -44,7 +44,7 @@ class Qwen3ASRAdapter(BaseASR):
 
     def initialize(self) -> bool:
         try:
-            from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+            from transformers import AutoModel, AutoProcessor
             import torch
 
             model_dir = self._find_model_dir()
@@ -58,16 +58,17 @@ class Qwen3ASRAdapter(BaseASR):
 
             torch_dtype = torch.float16 if self.device != "cpu" else torch.float32
 
+            # 使用trust_remote_code=True支持自定义模型架构
             self._processor = AutoProcessor.from_pretrained(
                 model_path,
-                local_files_only=bool(model_dir),
+                trust_remote_code=True,
             )
-            self._model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            self._model = AutoModel.from_pretrained(
                 model_path,
+                trust_remote_code=True,
                 torch_dtype=torch_dtype,
                 low_cpu_mem_usage=True,
                 use_safetensors=True,
-                local_files_only=bool(model_dir),
             )
             self._model.to(self.device)
             self._model.eval()

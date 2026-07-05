@@ -55,7 +55,6 @@ class FunASRLLMAdapter(BaseASR):
                 self._model = AutoModel(
                     model=model_path,
                     trust_remote_code=True,
-                    remote_code="./model.py",
                     vad_model="fsmn-vad",
                     vad_kwargs={"max_single_segment_time": 30000},
                     device=self.device,
@@ -67,7 +66,6 @@ class FunASRLLMAdapter(BaseASR):
                 self._model = AutoModel(
                     model="FunAudioLLM/Fun-ASR-Nano-2512",
                     trust_remote_code=True,
-                    remote_code="./model.py",
                     vad_model="fsmn-vad",
                     vad_kwargs={"max_single_segment_time": 30000},
                     device=self.device,
