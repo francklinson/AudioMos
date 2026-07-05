@@ -5,7 +5,7 @@
 import os
 import yaml
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings
 
 
