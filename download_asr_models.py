@@ -4,7 +4,7 @@ ASR 模型下载脚本
 将模型下载到项目本地 models/asr/ 目录，而非默认缓存路径。
 
 用法:
-    python download_asr_models.py                  # 下载全部4个模型
+    python download_asr_models.py                  # 下载全部9个模型
     python download_asr_models.py --model paraformer-large  # 仅下载指定模型
     python download_asr_models.py --list           # 查看已下载的模型
 
@@ -13,6 +13,11 @@ ASR 模型下载脚本
     sensevoice-small       - SenseVoice-Small  (HuggingFace: FunAudioLLM/SenseVoiceSmall)
     wenet-u2pp             - WeNet U2++        (本地复制: models/wenet/)
     whisper-large-v3-turbo - Whisper large-v3-turbo (HuggingFace: openai/whisper-large-v3-turbo)
+    firered-asr2           - FireRedASR2-LLM   (HuggingFace: FireRedTeam/FireRedASR2-LLM)
+    qwen3-asr              - Qwen3-ASR-1.7B    (HuggingFace: Qwen/Qwen3-ASR-1.7B)
+    funasr-llm             - FunASR-LLM 7.7B   (HuggingFace: iic/speech_seallm_asr_nat-zh-cn-16k)
+    step-audio-2-mini      - Step-Audio-2-mini  (HuggingFace: stepfun-ai/Step-Audio-2-mini)
+    vibevoice-asr          - VibeVoice-ASR-7B   (HuggingFace: microsoft/VibeVoice-ASR-HF)
 """
 
 import argparse
@@ -72,6 +77,41 @@ MODEL_DEFS = {
         "repo_id": "openai/whisper-large-v3-turbo",
         "local_dir": ASR_MODELS_DIR / "whisper-large-v3-turbo",
         "marker_files": ["model.safetensors", "config.json"],
+    },
+    "firered-asr2": {
+        "display_name": "FireRedASR2-LLM",
+        "source": "huggingface",
+        "repo_id": "FireRedTeam/FireRedASR2-LLM",
+        "local_dir": ASR_MODELS_DIR / "firered-asr2",
+        "marker_files": ["config.json", "model.safetensors"],
+    },
+    "qwen3-asr": {
+        "display_name": "Qwen3-ASR-1.7B",
+        "source": "huggingface",
+        "repo_id": "Qwen/Qwen3-ASR-1.7B",
+        "local_dir": ASR_MODELS_DIR / "qwen3-asr",
+        "marker_files": ["config.json", "model.safetensors"],
+    },
+    "funasr-llm": {
+        "display_name": "FunASR-LLM 7.7B",
+        "source": "huggingface",
+        "repo_id": "iic/speech_seallm_asr_nat-zh-cn-16k",
+        "local_dir": ASR_MODELS_DIR / "funasr-llm",
+        "marker_files": ["configuration.json", "model.pt"],
+    },
+    "step-audio-2-mini": {
+        "display_name": "Step-Audio-2-mini",
+        "source": "huggingface",
+        "repo_id": "stepfun-ai/Step-Audio-2-mini",
+        "local_dir": ASR_MODELS_DIR / "step-audio-2-mini",
+        "marker_files": ["config.json", "model.safetensors"],
+    },
+    "vibevoice-asr": {
+        "display_name": "VibeVoice-ASR-7B",
+        "source": "huggingface",
+        "repo_id": "microsoft/VibeVoice-ASR-HF",
+        "local_dir": ASR_MODELS_DIR / "vibevoice-asr",
+        "marker_files": ["config.json", "model.safetensors"],
     },
 }
 

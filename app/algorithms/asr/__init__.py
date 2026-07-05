@@ -1,12 +1,16 @@
 """
 ASR评测模块
-集成10个前沿中文ASR开源SOTA算法，支持手动上传解析和Benchmark评测
+集成9个前沿中文ASR开源SOTA算法，支持手动上传解析和Benchmark评测
 """
 
 from .base import BaseASR, ASRResult, ASRSegment
 from .registry import ASRRegistry, ASR_ALGORITHM_DESCRIPTIONS
 from .evaluator import ASRMetrics, compute_cer, compute_wer, evaluate_asr
-from .adapters import ParaformerAdapter, SenseVoiceAdapter, WeNetAdapter, WhisperAdapter
+from .adapters import (
+    ParaformerAdapter, SenseVoiceAdapter, WeNetAdapter, WhisperAdapter,
+    FireRedASR2Adapter, Qwen3ASRAdapter, FunASRLLMAdapter,
+    StepAudioAdapter, VibeVoiceAdapter,
+)
 
 
 def register_all_asr_algorithms():
@@ -24,13 +28,11 @@ def _get_adapter_class(name: str):
         "sensevoice-small": SenseVoiceAdapter,
         "wenet-u2pp": WeNetAdapter,
         "whisper-large-v3-turbo": WhisperAdapter,
-        # 以下为第二期适配器，暂用占位基类
-        "firered-asr2": None,
-        "qwen3-asr": None,
-        "funasr-llm": None,
-        "step-audio-2-mini": None,
-        "vibevoice-asr": None,
-        "nemo-conformer-transducer": None,
+        "firered-asr2": FireRedASR2Adapter,
+        "qwen3-asr": Qwen3ASRAdapter,
+        "funasr-llm": FunASRLLMAdapter,
+        "step-audio-2-mini": StepAudioAdapter,
+        "vibevoice-asr": VibeVoiceAdapter,
     }
     return adapter_map.get(name)
 

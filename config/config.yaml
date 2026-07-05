@@ -222,10 +222,6 @@ asr:
       enabled: true
       model_dir: "./models/asr/vibevoice-asr"
       preload: false
-    nemo-conformer-transducer:
-      enabled: true
-      model_dir: "./models/asr/nemo-conformer-transducer"
-      preload: false
   # 数据集配置
   datasets:
     aishell1_test:

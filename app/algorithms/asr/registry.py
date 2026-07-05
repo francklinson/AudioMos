@@ -227,16 +227,4 @@ ASR_ALGORITHM_DESCRIPTIONS = {
         "preload": False,
         "tags": ["超长音频", "说话人分离", "ICLR"],
     },
-    "nemo-conformer-transducer": {
-        "display_name": "NeMo Conformer-Transducer",
-        "description": "NVIDIA NeMo框架，Conformer+RNN-T流式Transducer基线",
-        "architecture": "Conformer + RNN-T",
-        "params": "~120M",
-        "cer_aishell1": "~6%",
-        "streaming": True,
-        "languages": ["zh", "en"],
-        "license": "Apache 2.0",
-        "preload": False,
-        "tags": ["流式", "Transducer", "NeMo"],
-    },
 }
