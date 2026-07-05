@@ -27,7 +27,7 @@ from app.core.logging_config import logger
 from app.core.task_queue import task_queue, Task, TaskStatus
 
 # 创建线程池用于执行同步任务
-executor = ThreadPoolExecutor(max_workers=4)
+executor = ThreadPoolExecutor(max_workers=2)
 
 # 导入优化版MOS计算模块
 import sys
@@ -585,8 +585,8 @@ async def process_audio_task(queue_task):
                     # 切分段通过文件名标记可自动匹配到参考（get_ref_file_by_content）
                     # 未匹配文件会自然得到 ref_scores=0
                     aligned_files = split_files + unmatched_files
-                                        _precache_ref_matches(aligned_files, str(ref_dir))
-logger.info(f"[混合场景] 对齐文件列表: {len(split_files)}个切分段 + "
+                    _precache_ref_matches(aligned_files, str(ref_dir))
+                    logger.info(f"[混合场景] 对齐文件列表: {len(split_files)}个切分段 + "
                                 f"{len(unmatched_files)}个未匹配 = {len(aligned_files)}个")
 
                     await update_task_progress(task_id, 50, "正在计算MOS得分...")
