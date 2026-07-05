@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.logging_config import logger, log_request
-from app.api import auth, mos, restoration, reference_audio
+from app.api import auth, mos, restoration, reference_audio, restoration_batch
 
 
 @asynccontextmanager
@@ -98,6 +98,20 @@ async def lifespan(app: FastAPI):
         import traceback
         logger.error(f"  错误详情: {traceback.format_exc()}")
 
+    # 启动GPU显存监控守护线程
+    logger.info("[GPU显存监控]")
+    try:
+        logger.info("  正在启动GPU显存监控守护线程...")
+        from app.core.gpu_monitor import init_gpu_monitor
+        gpu_monitor = init_gpu_monitor()
+        gpu_monitor.start()
+        app.state.gpu_monitor = gpu_monitor  # 保存到app.state以便shutdown时停止
+        logger.info("  ✅ GPU显存监控线程启动成功")
+    except Exception as e:
+        logger.error(f"  ❌ GPU显存监控启动失败: {e}")
+        import traceback
+        logger.error(f"  错误详情: {traceback.format_exc()}")
+
     elapsed_time = time.time() - start_time
     logger.info("=" * 60)
     logger.info(f"系统启动完成 (耗时: {elapsed_time:.2f}s)")
@@ -123,6 +137,13 @@ async def lifespan(app: FastAPI):
         logger.info("  ✅ 音频修复任务队列已停止")
     except Exception as e:
         logger.error(f"  ❌ 音频修复任务队列停止失败: {e}")
+
+    try:
+        if hasattr(app.state, "gpu_monitor"):
+            app.state.gpu_monitor.stop()
+            logger.info("  ✅ GPU显存监控线程已停止")
+    except Exception as e:
+        logger.error(f"  ❌ GPU显存监控停止失败: {e}")
 
     logger.info("=" * 60)
     logger.info("AudioMOS 系统已关闭")
@@ -185,6 +206,7 @@ async def health_check():
 app.include_router(auth.router, prefix="/api")
 app.include_router(mos.router, prefix="/api")
 app.include_router(restoration.router, prefix="/api")
+app.include_router(restoration_batch.router, prefix="/api")  # 批量处理路由
 app.include_router(reference_audio.router, prefix="/api")
 
 

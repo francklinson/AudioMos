@@ -187,10 +187,11 @@ async def process_restoration_task(queue_task: Task):
 
         logger.info(f"[音频修复] 任务完成: {task_id}")
 
-        # 清理显存
+        # 显存状态报告(不主动清理,依赖GPU监控线程)
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info(f"[音频修复] 显存已清理")
+            allocated_mb = torch.cuda.memory_allocated() / 1024**2
+            reserved_mb = torch.cuda.memory_reserved() / 1024**2
+            logger.info(f"[音频修复] 显存状态: {allocated_mb:.1f}MB / {reserved_mb:.1f}MB")
 
         # 推送完成状态
         asyncio.ensure_future(restoration_manager.send_progress(task_id, {
@@ -788,6 +789,35 @@ async def delete_task(task_id: str, current_user: User = Depends(get_current_act
     del restoration_tasks[task_id]
 
     return {"message": "任务已删除"}
+
+
+@router.get("/gpu-status")
+async def get_gpu_status(
+    current_user: User = Depends(get_current_active_user)
+) -> Dict[str, Any]:
+    """获取GPU显存状态"""
+    try:
+        from app.core.gpu_monitor import get_gpu_monitor
+        
+        monitor = get_gpu_monitor()
+        if monitor is None:
+            return {
+                "gpu_monitor": False,
+                "message": "GPU监控未启动"
+            }
+        
+        status = monitor.get_status()
+        return {
+            "gpu_monitor": True,
+            **status
+        }
+        
+    except Exception as e:
+        logger.error(f"[GPU状态] 获取失败: {e}")
+        return {
+            "gpu_monitor": False,
+            "error": str(e)
+        }
 
 
 @router.websocket("/ws/{task_id}")
