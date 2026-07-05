@@ -1842,13 +1842,13 @@ let asrBenchmarkAlgos = new Set();
 async function loadAsrAlgorithms() {
   try {
     const data = await api(apiUrl('/api/asr/algorithms'));
-    asrAlgorithms = data.algorithms || [];
+    asrAlgorithms = data.algorithms || data || [];
     const sel = $('asr-algorithm-select');
     sel.innerHTML = '';
     asrAlgorithms.forEach(a => {
       const opt = document.createElement('option');
       opt.value = a.name;
-      opt.textContent = `${a.description?.display_name || a.name}${a.initialized ? ' ✅' : ''}`;
+      opt.textContent = `${a.display_name || a.name}${a.initialized ? ' ✅' : ''}`;
       sel.appendChild(opt);
     });
     if (asrAlgorithms.length > 0) {
@@ -1865,9 +1865,8 @@ async function loadAsrAlgorithms() {
 function updateAsrAlgoInfo() {
   const info = $('asr-algorithm-info');
   const algo = asrAlgorithms.find(a => a.name === asrSelectedAlgorithm);
-  if (algo && algo.description) {
-    const d = algo.description;
-    info.innerHTML = `<strong>${d.display_name}</strong> | 架构: ${d.architecture || '-'} | 参数: ${d.params || '-'} | AISHELL-1 CER: ${d.cer_aishell1 || '-'} | ${d.streaming ? '支持流式' : '非流式'} | ${d.license || '-'}`;
+  if (algo) {
+    info.innerHTML = `<strong>${algo.display_name || algo.name}</strong> | 架构: ${algo.architecture || '-'} | 参数: ${algo.params || '-'} | AISHELL-1 CER: ${algo.cer_aishell1 || '-'} | ${algo.streaming ? '支持流式' : '非流式'} | ${algo.license || '-'}`;
   } else {
     info.textContent = '';
   }
@@ -1894,7 +1893,6 @@ function renderAsrBenchmarkAlgos() {
   const container = $('asr-benchmark-algorithms');
   container.innerHTML = '';
   asrAlgorithms.forEach(a => {
-    const d = a.description || {};
     const col = document.createElement('div');
     col.className = 'col-md-4 col-lg-3';
     const checked = asrBenchmarkAlgos.has(a.name) ? 'checked' : '';
@@ -1902,7 +1900,7 @@ function renderAsrBenchmarkAlgos() {
       <div class="form-check">
         <input class="form-check-input asr-bench-algo" type="checkbox" value="${a.name}" id="asr-ba-${a.name}" ${checked}>
         <label class="form-check-label" for="asr-ba-${a.name}">
-          ${d.display_name || a.name} <small class="text-muted">(${d.params || '?'})</small>
+          ${a.display_name || a.name} <small class="text-muted">(${a.params || '?'})</small>
         </label>
       </div>`;
     container.appendChild(col);
