@@ -16,6 +16,7 @@ class GPUMemoryMonitor:
     def __init__(
         self,
         check_interval: float = 60.0,
+        gpu_id: int = 0,  # 监控指定的GPU ID
         warning_threshold_mb: float = 20_000,
         critical_threshold_mb: float = 23_000,
         cleanup_callback: Optional[Callable] = None,
@@ -23,10 +24,12 @@ class GPUMemoryMonitor:
         """
         Args:
             check_interval: 检查间隔(秒)
+            gpu_id: 监控的GPU设备ID(默认0)
             warning_threshold_mb: 警告阈值(MB)
             critical_threshold_mb: 严重阈值(MB)
             cleanup_callback: 清理回调函数
         """
+        self.gpu_id = gpu_id
         self.check_interval = check_interval
         self.warning_threshold_mb = warning_threshold_mb
         self.critical_threshold_mb = critical_threshold_mb
@@ -41,7 +44,7 @@ class GPUMemoryMonitor:
             import torch
             self._cuda_available = torch.cuda.is_available()
             if self._cuda_available:
-                logger.info(f"[GPU监控] CUDA可用 - 设备: {torch.cuda.get_device_name(0)}")
+                logger.info(f"[GPU监控] CUDA可用 - 设备: {torch.cuda.get_device_name(self.gpu_id)} (GPU ID: {self.gpu_id})")
             else:
                 logger.warning("[GPU监控] CUDA不可用,监控线程将跳过启动")
         except ImportError:
@@ -59,7 +62,7 @@ class GPUMemoryMonitor:
         self._thread.start()
         logger.info(
             f"[GPU监控] 监控线程已启动 "
-            f"(间隔={self.check_interval}s, "
+            f"(GPU ID={self.gpu_id}, 间隔={self.check_interval}s, "
             f"警告阈值={self.warning_threshold_mb:.0f}MB, "
             f"严重阈值={self.critical_threshold_mb:.0f}MB)"
         )
@@ -77,10 +80,10 @@ class GPUMemoryMonitor:
         
         while self._running:
             try:
-                # 获取显存状态
-                allocated_mb = torch.cuda.memory_allocated() / 1024**2
-                reserved_mb = torch.cuda.memory_reserved() / 1024**2
-                total_mb = torch.cuda.get_device_properties(0).total_memory / 1024**2
+                # 获取指定GPU的显存状态
+                allocated_mb = torch.cuda.memory_allocated(self.gpu_id) / 1024**2
+                reserved_mb = torch.cuda.memory_reserved(self.gpu_id) / 1024**2
+                total_mb = torch.cuda.get_device_properties(self.gpu_id).total_memory / 1024**2
                 
                 # 记录历史
                 self._history.append({
@@ -88,6 +91,7 @@ class GPUMemoryMonitor:
                     "allocated_mb": allocated_mb,
                     "reserved_mb": reserved_mb,
                     "utilization_pct": (allocated_mb / total_mb) * 100,
+                    "gpu_id": self.gpu_id,
                 })
                 
                 # 保留最近1小时数据(最多60条)
@@ -97,7 +101,7 @@ class GPUMemoryMonitor:
                 # ── 状态判断 ──
                 if allocated_mb > self.critical_threshold_mb:
                     logger.critical(
-                        f"[GPU监控] ⚠️ 显存严重超限: {allocated_mb:.1f}MB "
+                        f"[GPU监控] ⚠️ GPU {self.gpu_id} 显存严重超限: {allocated_mb:.1f}MB "
                         f"(阈值={self.critical_threshold_mb:.1f}MB, "
                         f"利用率={allocated_mb/total_mb*100:.1f}%)"
                     )
@@ -111,20 +115,20 @@ class GPUMemoryMonitor:
                             logger.error(f"[GPU监控] 清理回调执行失败: {e}")
                     
                     # 强制清理缓存池
-                    torch.cuda.empty_cache()
-                    logger.critical("[GPU监控] 已强制清理缓存池碎片")
+                    torch.cuda.empty_cache(self.gpu_id)
+                    logger.critical(f"[GPU监控] 已强制清理GPU {self.gpu_id} 缓存池碎片")
                     
                     # 再次检查
-                    allocated_after = torch.cuda.memory_allocated() / 1024**2
+                    allocated_after = torch.cuda.memory_allocated(self.gpu_id) / 1024**2
                     freed_mb = allocated_mb - allocated_after
                     logger.critical(
-                        f"[GPU监控] 清理后显存: {allocated_after:.1f}MB "
+                        f"[GPU监控] GPU {self.gpu_id} 清理后显存: {allocated_after:.1f}MB "
                         f"(释放碎片: {freed_mb:.1f}MB)"
                     )
                     
                 elif allocated_mb > self.warning_threshold_mb:
                     logger.warning(
-                        f"[GPU监控] ⚠️ 显存占用偏高: {allocated_mb:.1f}MB "
+                        f"[GPU监控] ⚠️ GPU {self.gpu_id} 显存占用偏高: {allocated_mb:.1f}MB "
                         f"(阈值={self.warning_threshold_mb:.1f}MB, "
                         f"利用率={allocated_mb/total_mb*100:.1f}%)"
                     )
@@ -192,13 +196,14 @@ class GPUMemoryMonitor:
                     "message": "CUDA不可用"
                 }
             
-            allocated_mb = torch.cuda.memory_allocated() / 1024**2
-            reserved_mb = torch.cuda.memory_reserved() / 1024**2
-            total_mb = torch.cuda.get_device_properties(0).total_memory / 1024**2
+            allocated_mb = torch.cuda.memory_allocated(self.gpu_id) / 1024**2
+            reserved_mb = torch.cuda.memory_reserved(self.gpu_id) / 1024**2
+            total_mb = torch.cuda.get_device_properties(self.gpu_id).total_memory / 1024**2
             
             return {
                 "cuda_available": True,
-                "device_name": torch.cuda.get_device_name(0),
+                "gpu_id": self.gpu_id,
+                "device_name": torch.cuda.get_device_name(self.gpu_id),
                 "total_mb": round(total_mb, 1),
                 "allocated_mb": round(allocated_mb, 1),
                 "reserved_mb": round(reserved_mb, 1),
@@ -255,7 +260,7 @@ def emergency_gpu_cleanup():
 gpu_monitor: Optional[GPUMemoryMonitor] = None
 
 
-def init_gpu_monitor():
+def init_gpu_monitor(gpu_id: int = 0):
     """初始化GPU监控实例"""
     global gpu_monitor
     
@@ -265,6 +270,7 @@ def init_gpu_monitor():
     
     gpu_monitor = GPUMemoryMonitor(
         check_interval=60.0,       # 每分钟检查一次
+        gpu_id=gpu_id,  # 指定GPU ID
         warning_threshold_mb=20_000,  # 20GB警告
         critical_threshold_mb=23_000, # 23GB严重(24GB显存的95%)
         cleanup_callback=emergency_gpu_cleanup,

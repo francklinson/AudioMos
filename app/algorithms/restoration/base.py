@@ -43,19 +43,39 @@ class BaseRestorer(ABC):
     并实现 initialize() 和 restore() 方法。
     """
 
-    def __init__(self, name: str, sample_rate: int = 16000, device: str = "cuda"):
+    def __init__(self, name: str, sample_rate: int = 16000, device: str = None):
         """
         初始化修复器
 
         Args:
             name: 算法名称
             sample_rate: 目标采样率
-            device: 计算设备 (cuda/cpu)
+            device: 计算设备 (cuda:X/cpu),如果为None则自动选择配置的GPU
         """
+        import torch
+        
         self.name = name
         self.sample_rate = sample_rate
-        self.device = device
         self._is_initialized = False
+        
+        # 设备选择逻辑(多卡部署支持)
+        if device is None:
+            # 从配置读取GPU ID
+            try:
+                from backend.app.core.config import settings
+                gpu_id = settings.cuda.device_id
+            except:
+                # 配置不可用时,使用默认GPU 0
+                gpu_id = 0
+            
+            # 自动选择设备
+            if torch.cuda.is_available():
+                self.device = torch.device(f"cuda:{gpu_id}")
+            else:
+                self.device = torch.device("cpu")
+        else:
+            # 用户指定设备
+            self.device = torch.device(device)
 
     @abstractmethod
     def initialize(self) -> bool:

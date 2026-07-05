@@ -126,51 +126,120 @@ async def process_batch_restoration(
         batch_tasks[batch_id]["progress"] = 50
         
         def _batch_inference():
-            """批量推理(GPU并发处理)"""
-            results = []
+            """批量推理(智能调度: SpeechBrain batch vs 逐个处理)"""
             
-            for idx, item in enumerate(batch_audio_data, 1):
-                filename = item["filename"]
+            # ── 智能选择推理策略 ──
+            algorithm = batch_tasks[batch_id]["algorithm"]
+            restorer = restorers[algorithm]
+            
+            # 判断是否支持batch推理
+            supports_batch = (
+                hasattr(restorer, 'restore_batch') or 
+                hasattr(restorer, 'denoise_batch')
+            )
+            
+            # ── 策略选择 ──
+            if supports_batch and len(batch_audio_data) >= 3:
+                # 策略1: SpeechBrain Batch推理(至少3个文件)
+                logger.info(
+                    f"[批量修复] 使用Batch推理策略 "
+                    f"(算法: {algorithm}, batch_size={len(batch_audio_data)}, "
+                    f"支持batch方法: {'restore_batch' if hasattr(restorer, 'restore_batch') else 'denoise_batch'})"
+                )
                 
-                if item.get("audio") is None:
-                    logger.error(f"[批量修复] 跳过失败文件: {filename}")
-                    results.append({
-                        "filename": filename,
-                        "status": "failed",
-                        "error": item.get("error", "读取失败"),
-                    })
-                    continue
+                # 准备批量数据
+                audio_list = [item["audio"] for item in batch_audio_data if item.get("audio") is not None]
+                sr_list = [item["sr"] for item in batch_audio_data if item.get("audio") is not None]
+                filenames = [item["filename"] for item in batch_audio_data if item.get("audio") is not None]
                 
-                logger.info(f"[批量修复] 处理 [{idx}/{len(batch_audio_data)}]: {filename}")
-                
+                # 调用batch推理方法
                 try:
-                    start_time = time.time()
-                    result = restorer.restore(item["audio"], item["sr"])
-                    process_time = time.time() - start_time
+                    if hasattr(restorer, 'restore_batch'):
+                        batch_results_data = restorer.restore_batch(audio_list, sr_list)
+                    elif hasattr(restorer, 'denoise_batch'):
+                        batch_results_data = restorer.denoise_batch(audio_list, sr_list)
                     
-                    logger.info(
-                        f"[批量修复] ✓ 处理完成: {filename} "
-                        f"(耗时: {process_time:.2f}s, RTF: {result.rtf:.3f})"
-                    )
+                    logger.info(f"[批量修复] ✓ Batch推理完成")
                     
-                    results.append({
-                        "filename": filename,
-                        "status": "completed",
-                        "audio": result.audio,
-                        "sample_rate": result.sample_rate,
-                        "processing_time": process_time,
-                        "metadata": result.metadata,
-                    })
+                    # 包装结果
+                    results = []
+                    for i, result in enumerate(batch_results_data):
+                        results.append({
+                            "filename": filenames[i],
+                            "status": "completed",
+                            "audio": result.audio,
+                            "sample_rate": result.sample_rate,
+                            "processing_time": result.processing_time,
+                            "metadata": result.metadata,
+                        })
+                    
+                    # 处理失败文件
+                    failed_items = [item for item in batch_audio_data if item.get("audio") is None]
+                    for item in failed_items:
+                        results.append({
+                            "filename": item["filename"],
+                            "status": "failed",
+                            "error": item.get("error", "读取失败"),
+                        })
+                    
+                    return results
                     
                 except Exception as e:
-                    logger.error(f"[批量修复] ✗ 处理失败: {filename}, 错误: {e}")
-                    results.append({
-                        "filename": filename,
-                        "status": "failed",
-                        "error": str(e),
-                    })
+                    logger.error(f"[批量修复] Batch推理失败: {e}, 回退逐个处理")
+                    supports_batch = False  # 回退策略
             
-            return results
+            if not supports_batch or len(batch_audio_data) < 3:
+                # 策略2: 逐个处理(不支持batch或文件数<3)
+                logger.info(
+                    f"[批量修复] 使用逐个处理策略 "
+                    f"(算法: {algorithm}, 文件数={len(batch_audio_data)}, "
+                    f"支持batch: {supports_batch})"
+                )
+                
+                results = []
+                
+                for idx, item in enumerate(batch_audio_data, 1):
+                    filename = item["filename"]
+                    
+                    if item.get("audio") is None:
+                        logger.error(f"[批量修复] 跳过失败文件: {filename}")
+                        results.append({
+                            "filename": filename,
+                            "status": "failed",
+                            "error": item.get("error", "读取失败"),
+                        })
+                        continue
+                    
+                    logger.info(f"[批量修复] 处理 [{idx}/{len(batch_audio_data)}]: {filename}")
+                    
+                    try:
+                        start_time = time.time()
+                        result = restorer.restore(item["audio"], item["sr"])
+                        process_time = time.time() - start_time
+                        
+                        logger.info(
+                            f"[批量修复] ✓ 处理完成: {filename} "
+                            f"(耗时: {process_time:.2f}s, RTF: {result.rtf:.3f})"
+                        )
+                        
+                        results.append({
+                            "filename": filename,
+                            "status": "completed",
+                            "audio": result.audio,
+                            "sample_rate": result.sample_rate,
+                            "processing_time": process_time,
+                            "metadata": result.metadata,
+                        })
+                        
+                    except Exception as e:
+                        logger.error(f"[批量修复] ✗ 处理失败: {filename}, 错误: {e}")
+                        results.append({
+                            "filename": filename,
+                            "status": "failed",
+                            "error": str(e),
+                        })
+                
+                return results
         
         batch_results = await loop.run_in_executor(None, _batch_inference)
         logger.info(f"[批量修复] ✓ 批量推理完成")

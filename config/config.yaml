@@ -58,8 +58,13 @@ paths:
 cuda:
   # 是否使用CUDA
   enabled: true
-  # GPU设备ID
+  # GPU设备ID (多卡部署时指定使用的GPU,如0/1/2/...)
   device_id: 0
+  # GPU显存限制比例 (可选,null表示不限制; 建议值0.8表示限制为80%)
+  memory_fraction: null
+  # GPU显存监控阈值(MB)
+  warning_threshold_mb: 20000  # 警告阈值(20GB)
+  critical_threshold_mb: 23000  # 严重阈值(23GB,24GB显存的95%)
 
 # 日志配置
 logging:

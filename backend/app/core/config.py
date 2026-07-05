@@ -38,7 +38,10 @@ class PathsConfig(BaseSettings):
 class CUDAConfig(BaseSettings):
     """CUDA配置"""
     enabled: bool = True
-    device_id: int = 0
+    device_id: int = 0  # GPU设备ID(多卡部署时指定)
+    memory_fraction: float = None  # GPU显存限制比例(可选,null表示不限制)
+    warning_threshold_mb: int = 20000  # GPU显存警告阈值(MB)
+    critical_threshold_mb: int = 23000  # GPU显存严重阈值(MB)
 
 
 class LoggingConfig(BaseSettings):

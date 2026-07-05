@@ -86,6 +86,73 @@ async def lifespan(app: FastAPI):
         import traceback
         logger.error(f"  错误详情: {traceback.format_exc()}")
 
+    # GPU设备初始化(多卡部署支持)
+    logger.info("[GPU设备配置]")
+    try:
+        import torch
+        import os
+        
+        # 从配置读取GPU ID
+        gpu_id = settings.cuda.device_id
+        
+        # 验证CUDA可用性
+        if torch.cuda.is_available():
+            device_count = torch.cuda.device_count()
+            
+            logger.info(f"  检测到 {device_count} 张GPU")
+            
+            # 验证GPU ID有效性
+            if gpu_id >= device_count:
+                logger.warning(
+                    f"  ⚠️ 配置的GPU ID({gpu_id})超出范围(0-{device_count-1}), "
+                    f"自动调整为GPU 0"
+                )
+                gpu_id = 0
+                settings.cuda.device_id = 0
+            
+            # 设置默认设备
+            torch.cuda.set_device(gpu_id)
+            
+            # 获取设备信息
+            device_name = torch.cuda.get_device_name(gpu_id)
+            total_memory = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
+            compute_capability = torch.cuda.get_device_properties(gpu_id).major
+            
+            logger.info(f"  ✅ GPU初始化成功:")
+            logger.info(f"     配置GPU ID: {gpu_id}")
+            logger.info(f"     设备名称: {device_name}")
+            logger.info(f"     显存容量: {total_memory:.1f} GB")
+            logger.info(f"     计算能力: {compute_capability.x}")
+            
+            # 显存限制(可选)
+            if settings.cuda.memory_fraction is not None:
+                try:
+                    torch.cuda.set_per_process_memory_fraction(
+                        settings.cuda.memory_fraction, 
+                        gpu_id
+                    )
+                    logger.info(
+                        f"     显存限制: {settings.cuda.memory_fraction*100:.1f}% "
+                        f"(约 {total_memory * settings.cuda.memory_fraction:.1f} GB)"
+                    )
+                except Exception as e:
+                    logger.warning(f"     ⚠️ 显存限制设置失败: {e}")
+            
+            # 当前显存占用验证
+            free_memory = torch.cuda.memory_reserved(gpu_id) / 1024**3
+            logger.info(f"     当前占用: {free_memory:.3f} GB")
+            
+        else:
+            logger.warning("  ⚠️ CUDA不可用,服务将使用CPU模式运行")
+            logger.warning("     性能将大幅降低,建议检查CUDA安装")
+            gpu_id = -1  # CPU模式标记
+            
+    except Exception as e:
+        logger.error(f"  ❌ GPU初始化失败: {e}")
+        import traceback
+        logger.error(f"  错误详情: {traceback.format_exc()}")
+        logger.warning("  将尝试使用CPU模式运行")
+
     # 启动音频修复任务队列（与 MOS 队列隔离，避免互相阻塞）
     logger.info("[音频修复任务队列]")
     try:
@@ -103,10 +170,25 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("  正在启动GPU显存监控守护线程...")
         from app.core.gpu_monitor import init_gpu_monitor
-        gpu_monitor = init_gpu_monitor()
+        
+        # 传入GPU ID和阈值配置
+        gpu_monitor = init_gpu_monitor(
+            gpu_id=settings.cuda.device_id  # 使用配置的GPU ID
+        )
+        
+        # 更新阈值配置(覆盖默认值)
+        gpu_monitor.warning_threshold_mb = settings.cuda.warning_threshold_mb
+        gpu_monitor.critical_threshold_mb = settings.cuda.critical_threshold_mb
+        
         gpu_monitor.start()
         app.state.gpu_monitor = gpu_monitor  # 保存到app.state以便shutdown时停止
-        logger.info("  ✅ GPU显存监控线程启动成功")
+        
+        logger.info(
+            f"  ✅ GPU显存监控线程启动成功 "
+            f"(GPU {settings.cuda.device_id}, "
+            f"警告阈值={settings.cuda.warning_threshold_mb}MB, "
+            f"严重阈值={settings.cuda.critical_threshold_mb}MB)"
+        )
     except Exception as e:
         logger.error(f"  ❌ GPU显存监控启动失败: {e}")
         import traceback
