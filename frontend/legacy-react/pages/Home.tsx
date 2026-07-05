@@ -45,8 +45,6 @@ import {
   ToolOutlined,
   FileAddOutlined,
   EditOutlined,
-  DatabaseOutlined,
-  SearchOutlined,
   InfoCircleOutlined,
   SafetyOutlined
 } from '@ant-design/icons';
@@ -161,11 +159,6 @@ const Home: React.FC = () => {
     total_size_formatted: string;
     files: Array<{ id: string; filename: string }>;
   }
-  interface FingerprintStatus {
-    has_database: boolean;
-    statistics?: any;
-    error?: string;
-  }
   const [refAudioList, setRefAudioList] = useState<ReferenceAudioItem[]>([]);
   const [refAudioStatus, setRefAudioStatus] = useState<ReferenceAudioStatus | null>(null);
   const [refUploading, setRefUploading] = useState(false);
@@ -174,12 +167,6 @@ const Home: React.FC = () => {
   const [refEditItem, setRefEditItem] = useState<ReferenceAudioItem | null>(null);
   const [refEditDescription, setRefEditDescription] = useState('');
   const [refEditGroundTruth, setRefEditGroundTruth] = useState('');
-  const [fingerprintStatus, setFingerprintStatus] = useState<FingerprintStatus | null>(null);
-  const [fingerprintBuilding, setFingerprintBuilding] = useState(false);
-  const [matchTestModalVisible, setMatchTestModalVisible] = useState(false);
-  const [matchTestTaskId, setMatchTestTaskId] = useState('');
-  const [matchTestResult, setMatchTestResult] = useState<any>(null);
-  const [matchTestLoading, setMatchTestLoading] = useState(false);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [playingAudioUrl, setPlayingAudioUrl] = useState<string | null>(null);
 
@@ -256,22 +243,12 @@ const Home: React.FC = () => {
     }
   };
 
-  const loadFingerprintStatus = async () => {
-    try {
-      const data = await referenceAudioApi.getFingerprintStatus();
-      setFingerprintStatus(data);
-    } catch (error) {
-      console.error('加载指纹库状态失败:', error);
-    }
-  };
-
   useEffect(() => {
     loadTasks();
     loadRestorationAlgorithms();
     loadRestorationTasks();
     loadRefAudios();
     loadRefStatus();
-    loadFingerprintStatus();
 
     const interval = setInterval(() => {
       loadTasks();
@@ -613,7 +590,6 @@ const Home: React.FC = () => {
       setRefUploadFiles([]);
       loadRefAudios();
       loadRefStatus();
-      loadFingerprintStatus();  // 后端已增量更新，仅刷新状态
     } catch (error: any) {
       message.error(error.response?.data?.detail || '上传失败');
     } finally {
@@ -627,7 +603,6 @@ const Home: React.FC = () => {
       message.success('删除成功');
       loadRefAudios();
       loadRefStatus();
-      loadFingerprintStatus();  // 后端已增量移除，仅刷新状态
     } catch (error: any) {
       message.error(error.response?.data?.detail || '删除失败');
     }
@@ -661,35 +636,6 @@ const Home: React.FC = () => {
       loadRefAudios();
     } catch (error: any) {
       message.error(error.response?.data?.detail || '更新失败');
-    }
-  };
-
-  const handleBuildFingerprint = async () => {
-    setFingerprintBuilding(true);
-    try {
-      const result = await referenceAudioApi.buildFingerprint();
-      message.success(result.message || '指纹数据库建立成功');
-      loadFingerprintStatus();
-    } catch (error: any) {
-      message.error(error.response?.data?.detail || '建立失败');
-    } finally {
-      setFingerprintBuilding(false);
-    }
-  };
-
-  const handleMatchTest = async () => {
-    if (!matchTestTaskId.trim()) {
-      message.warning('请输入MOS评分任务的ID');
-      return;
-    }
-    setMatchTestLoading(true);
-    try {
-      const result = await referenceAudioApi.testMatch(matchTestTaskId.trim());
-      setMatchTestResult(result);
-    } catch (error: any) {
-      message.error(error.response?.data?.detail || '匹配测试失败');
-    } finally {
-      setMatchTestLoading(false);
     }
   };
 
@@ -1066,7 +1012,7 @@ const Home: React.FC = () => {
     <div>
       {/* ── 状态概览卡片 ── */}
       <Row gutter={[24, 24]} style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={8}>
+        <Col xs={24} sm={12}>
           <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
             <Statistic
               title="参考音频总数"
@@ -1076,17 +1022,7 @@ const Home: React.FC = () => {
             />
           </Card>
         </Col>
-        <Col xs={24} sm={8}>
-          <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
-            <Statistic
-              title="指纹数据库"
-              value={fingerprintStatus?.has_database ? '已就绪' : '未建立'}
-              valueStyle={{ color: fingerprintStatus?.has_database ? '#3f8600' : '#cf1322' }}
-              prefix={<DatabaseOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={8}>
+        <Col xs={24} sm={12}>
           <Card className="home-card stat-card" variant="borderless" style={{ borderRadius: 12 }}>
             <Statistic
               title="总占用空间"
@@ -1107,7 +1043,7 @@ const Home: React.FC = () => {
             style={{ borderRadius: 12 }}
           >
             <Text type="secondary" style={{ fontSize: 13, marginBottom: 16, display: 'block' }}>
-              💡 上传的参考音频将用于带参考MOS分计算。系统会自动提取音频指纹，在测试音频中搜索匹配的参考音频内容。支持上传.wav/.mp3格式。
+              💡 上传的参考音频将用于带参考MOS分计算。系统会自动提取参考音频特征，在测试音频中搜索匹配内容。支持上传.wav/.mp3格式。
             </Text>
             <Upload.Dragger
               multiple
@@ -1283,65 +1219,6 @@ const Home: React.FC = () => {
         </Col>
       </Row>
 
-      {/* ── 指纹数据库管理 ── */}
-      <Row gutter={[24, 24]} style={{ marginBottom: 24 }}>
-        <Col span={24}>
-          <Card
-            className="home-card"
-            title={<Space><DatabaseOutlined /><span>音频指纹数据库</span>
-              {fingerprintStatus?.has_database && <Tag color="green">已就绪</Tag>}
-              {fingerprintStatus && !fingerprintStatus.has_database && <Tag color="red">未建立</Tag>}
-            </Space>}
-            variant="borderless"
-            style={{ borderRadius: 12 }}
-          >
-            <Text type="secondary" style={{ fontSize: 13, marginBottom: 16, display: 'block' }}>
-              💡 指纹数据库用于在测试音频中快速搜索匹配的参考音频内容（基于Shazam算法的STFT音频指纹）。上传或删除参考音频后建议重建。
-            </Text>
-
-            {fingerprintStatus?.statistics?.database && (
-              <Descriptions size="small" bordered style={{ marginBottom: 16 }}>
-                <Descriptions.Item label="参考音频数">
-                  {fingerprintStatus.statistics.database.total_references}
-                </Descriptions.Item>
-                <Descriptions.Item label="指纹Hash总数">
-                  {fingerprintStatus.statistics.database.total_hashes}
-                </Descriptions.Item>
-                <Descriptions.Item label="唯一Hash数">
-                  {fingerprintStatus.statistics.database.unique_hashes}
-                </Descriptions.Item>
-                {fingerprintStatus.statistics.database.build_time > 0 && (
-                  <Descriptions.Item label="构建耗时">
-                    {fingerprintStatus.statistics.database.build_time.toFixed(2)}s
-                  </Descriptions.Item>
-                )}
-              </Descriptions>
-            )}
-
-            {fingerprintStatus?.error && (
-              <Alert type="error" message={fingerprintStatus.error} style={{ marginBottom: 16 }} />
-            )}
-
-            <Space>
-              <Button
-                type="primary"
-                icon={<DatabaseOutlined />}
-                onClick={handleBuildFingerprint}
-                loading={fingerprintBuilding}
-              >
-                重建指纹数据库
-              </Button>
-              <Button
-                icon={<SearchOutlined />}
-                onClick={() => setMatchTestModalVisible(true)}
-              >
-                测试内容匹配
-              </Button>
-            </Space>
-          </Card>
-        </Col>
-      </Row>
-
       {/* ── 编辑参考音频信息 Modal ── */}
       <Modal
         title={<Space><EditOutlined /><span>编辑参考音频信息</span></Space>}
@@ -1386,60 +1263,6 @@ const Home: React.FC = () => {
         )}
       </Modal>
 
-      {/* ── 内容匹配测试 Modal ── */}
-      <Modal
-        title={<Space><SearchOutlined /><span>测试音频内容匹配</span></Space>}
-        open={matchTestModalVisible}
-        onCancel={() => { setMatchTestModalVisible(false); setMatchTestResult(null); }}
-        footer={null}
-        width={700}
-      >
-        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-          输入一个MOS评分任务的ID，测试该任务中的音频文件能匹配到哪些参考音频。
-        </Text>
-        <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
-          <Input
-            value={matchTestTaskId}
-            onChange={(e) => setMatchTestTaskId(e.target.value)}
-            placeholder="输入上传任务ID（如: 550e8400-e29b-...）"
-            onPressEnter={handleMatchTest}
-          />
-          <Button type="primary" icon={<SearchOutlined />} onClick={handleMatchTest} loading={matchTestLoading}>
-            测试匹配
-          </Button>
-        </Space.Compact>
-
-        {matchTestResult?.test_files?.map((tf: any, idx: number) => (
-          <Card key={idx} size="small" style={{ marginBottom: 8 }}>
-            <Text strong>{tf.test_file}</Text>
-            <Tag color={tf.match_count > 0 ? 'green' : 'red'} style={{ marginLeft: 8 }}>
-              {tf.match_count} 个匹配
-            </Tag>
-            <Text type="secondary" style={{ marginLeft: 8 }}>耗时 {tf.elapsed_seconds}s</Text>
-            {tf.matches?.length > 0 && (
-              <Table
-                dataSource={tf.matches}
-                rowKey="ref_id"
-                size="small"
-                pagination={false}
-                style={{ marginTop: 8 }}
-                columns={[
-                  { title: '参考音频', dataIndex: 'ref_name', key: 'ref_name' },
-                  { title: '偏移时间', dataIndex: 'offset_in_test', key: 'offset', render: (v: number) => `${v}s` },
-                  { title: '置信度', dataIndex: 'confidence', key: 'conf', render: (v: number) => `${(v*100).toFixed(0)}%` },
-                  { title: 'Hash匹配数', dataIndex: 'hash_matches', key: 'hash' },
-                  { title: 'DTW距离', dataIndex: 'dtw_distance', key: 'dtw', render: (v: number | null) => v !== null ? v.toFixed(0) : '-' },
-                  { title: 'WER文本', dataIndex: 'has_ground_truth', key: 'gt', render: (v: boolean) => v ? <CheckCircleOutlined style={{ color: 'green' }} /> : <CloseCircleOutlined style={{ color: 'red' }} /> },
-                ]}
-              />
-            )}
-          </Card>
-        ))}
-
-        {matchTestResult && (!matchTestResult.test_files || matchTestResult.test_files.length === 0) && (
-          <Empty description="未找到匹配结果" />
-        )}
-      </Modal>
     </div>
   );
 

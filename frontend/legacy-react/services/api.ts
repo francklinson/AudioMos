@@ -375,28 +375,6 @@ export const referenceAudioApi = {
     const response = await api.get('/api/reference-audio/check/status');
     return response.data;
   },
-
-  /** 建立/重建指纹数据库 */
-  buildFingerprint: async () => {
-    const response = await api.post('/api/reference-audio/fingerprint/build');
-    return response.data;
-  },
-
-  /** 获取指纹数据库状态 */
-  getFingerprintStatus: async () => {
-    const response = await api.get('/api/reference-audio/fingerprint/status');
-    return response.data;
-  },
-
-  /** 测试内容匹配 */
-  testMatch: async (testAudioId: string) => {
-    const formData = new FormData();
-    formData.append('test_audio_id', testAudioId);
-    const response = await api.post('/api/reference-audio/fingerprint/match-test', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return response.data;
-  },
 };
 
 export default api;

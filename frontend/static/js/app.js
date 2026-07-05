@@ -247,7 +247,6 @@ function loadAllData() {
   loadRestorationAlgorithms();
   loadRestorationTasks();
   loadRefAudioList();
-  loadFingerprintStatus();
   loadAsrAlgorithms();
   loadAsrDatasets();
 }
@@ -1663,95 +1662,6 @@ async function downloadRefAudio(id) {
     URL.revokeObjectURL(url);
   } catch (err) {
     showToast('下载失败: ' + err.message, 'error');
-  }
-}
-
-// ==================== 指纹数据库 ====================
-async function loadFingerprintStatus() {
-  try {
-    const data = await api(apiUrl('/api/reference-audio/fingerprint/status'));
-    renderFingerprintStatus(data);
-  } catch (_) {
-    $('ref-fingerprint-status').innerHTML = '<div class="text-center text-muted py-3">无法加载指纹状态</div>';
-  }
-}
-
-function renderFingerprintStatus(data) {
-  const container = $('ref-fingerprint-status');
-  if (!data) {
-    container.innerHTML = '<div class="text-center text-muted py-3">暂无数据</div>';
-    return;
-  }
-  const ready = data.is_ready || data.ready || data.status === 'ready';
-  $('ref-stat-fingerprint').innerHTML = ready
-    ? '<span class="text-success">已就绪</span>'
-    : '<span class="text-secondary">未建立</span>';
-  container.innerHTML = `<div class="mb-2">
-    <span class="badge ${ready ? 'bg-success' : 'bg-secondary'}">${ready ? '已就绪' : '未建立'}</span>
-  </div>
-  <div class="row g-2 mb-2">
-    <div class="col-3"><small class="text-muted d-block">参考音频数</small><strong>${data.total_refs || data.ref_count || 0}</strong></div>
-    <div class="col-3"><small class="text-muted d-block">Hash总数</small><strong>${data.total_hashes || data.hash_count || 0}</strong></div>
-    <div class="col-3"><small class="text-muted d-block">唯一Hash</small><strong>${data.unique_hashes || data.unique_hash_count || 0}</strong></div>
-    <div class="col-3"><small class="text-muted d-block">构建耗时</small><strong>${data.build_time ? data.build_time.toFixed(2) + 's' : '-'}</strong></div>
-  </div>
-  <div class="mt-2">
-    <button class="btn btn-sm btn-outline-primary me-2" onclick="buildFingerprint()"><i class="bi bi-arrow-repeat"></i> 重建指纹数据库</button>
-    <button class="btn btn-sm btn-outline-info" onclick="openMatchTest()"><i class="bi bi-search"></i> 测试内容匹配</button>
-  </div>`;
-}
-
-async function buildFingerprint() {
-  try {
-    await api(apiUrl('/api/reference-audio/fingerprint/build'), { method: 'POST' });
-    showToast('指纹数据库重建成功', 'success');
-    loadFingerprintStatus();
-  } catch (err) {
-    showToast('重建失败: ' + err.message, 'error');
-  }
-}
-
-function openMatchTest() {
-  $('ref-match-taskid').value = '';
-  $('ref-match-result').innerHTML = '';
-  new bootstrap.Modal($('ref-match-modal')).show();
-  $('ref-match-test-btn').onclick = testMatch;
-}
-
-async function testMatch() {
-  const taskId = $('ref-match-taskid').value.trim();
-  if (!taskId) { showToast('请输入任务ID', 'warning'); return; }
-  const btn = $('ref-match-test-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<div class="spinner-border spinner-border-sm"></div> 测试中...';
-  try {
-    const fd = new FormData();
-    fd.append('test_audio_id', taskId);
-    const data = await api(apiUrl('/api/reference-audio/fingerprint/match-test'), { method: 'POST', formData: true, body: fd });
-    const results = data.results || data.matches || [data].filter(Boolean);
-    if (!results || results.length === 0) {
-      $('ref-match-result').innerHTML = '<div class="text-muted">无匹配结果</div>';
-      return;
-    }
-    $('ref-match-result').innerHTML = results.map(r => `<div class="card mb-2">
-      <div class="card-body py-2">
-        <div class="row g-2">
-          <div class="col-6"><small class="text-muted">参考音频</small><br>${r.ref_file || r.reference_file || '-'}</div>
-          <div class="col-3"><small class="text-muted">偏移</small><br>${r.offset != null ? r.offset.toFixed(2) + 's' : '-'}</div>
-          <div class="col-3"><small class="text-muted">置信度</small><br>${r.confidence != null ? (r.confidence * 100).toFixed(1) + '%' : '-'}</div>
-        </div>
-        <div class="row g-2 mt-1">
-          <div class="col-4"><small class="text-muted">Hash匹配</small><br>${r.hash_matches ?? '-'}</div>
-          <div class="col-4"><small class="text-muted">DTW距离</small><br>${r.dtw_distance != null ? r.dtw_distance.toFixed(4) : '-'}</div>
-          <div class="col-4"><small class="text-muted">是否匹配</small><br>${r.is_match || r.match_found ? '<span class="text-success">是</span>' : '<span class="text-danger">否</span>'}</div>
-        </div>
-      </div>
-    </div>`).join('');
-  } catch (err) {
-    $('ref-match-result').innerHTML = `<div class="alert alert-danger">测试失败: ${err.message}</div>`;
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-search"></i> 测试匹配';
   }
 }
 
