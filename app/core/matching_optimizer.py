@@ -1415,9 +1415,7 @@ class OptimizedMatcher:
 
         匹配策略层级：
           Level A: WeNet ASR + 文本DTW（语义匹配，含WER副产品）
-          Level B: 全范围DTW扫描（声学匹配，原Level A）
-          Level C: 嵌入向量匹配（SV模型）
-          Level D: 接受低置信度DTW结果
+          Level B: 全范围DTW扫描（声学匹配）
 
         Returns:
             {
@@ -1477,7 +1475,7 @@ class OptimizedMatcher:
         else:
             logger.info(f"[优化匹配] Level A: WeNet不可用，直接降级到Level B")
 
-        # ----- Level B: 全范围DTW扫描（原Level A）-----
+        # ----- Level B: 全范围DTW扫描（回退）-----
         logger.info(f"[优化匹配] Level B: 全范围DTW扫描")
         dtw_start = time.time()
         dtw_results = self._full_range_dtw_sweep(test_audio_path, snr)
@@ -1499,48 +1497,6 @@ class OptimizedMatcher:
                     "detail": {"dtw_results": dtw_results}
                 })
                 return result
-            result["detail"]["dtw_results"] = dtw_results
-
-        # ----- Level C: 嵌入向量匹配（低SNR回退）-----
-        if not self._embedding_initialized:
-            try:
-                self.embedding_matcher.build_reference_embeddings(self.ref_dir)
-                self._embedding_initialized = True
-            except Exception as e:
-                logger.warning(f"[优化匹配] 嵌入初始化失败: {e}")
-
-        if self._embedding_initialized:
-            logger.info(f"[优化匹配] Level C: 嵌入向量匹配")
-            emb_matches = self.embedding_matcher.match_by_embedding(
-                test_audio_path, pre_enhance=(snr < 10)
-            )
-            if emb_matches and emb_matches[0].get('similarity', 0) > 0.5:
-                best = emb_matches[0]
-                logger.info(f"[优化匹配] ✓ 嵌入匹配: {best['ref_name']}")
-                result.update({
-                    "matched": True, "ref_file": best["ref_file"],
-                    "ref_name": best["ref_name"],
-                    "offset": best["offset_in_test"],
-                    "method": "embedding",
-                    "confidence": best["similarity"],
-                    "detail": result.get("detail", {})
-                })
-                return result
-
-        # ----- Level D: 接受低置信度DTW结果 -----
-        if dtw_results and dtw_results[0]['confidence'] >= 0.1:
-            best = dtw_results[0]
-            logger.info(f"[优化匹配] ✓ 接受低置信DTW结果: {best['ref_name']} "
-                        f"@ {best['offset_in_test']:.2f}s")
-            result.update({
-                "matched": True, "ref_file": best["ref_file"],
-                "ref_name": best["ref_name"],
-                "offset": best["offset_in_test"],
-                "method": best["method"] + "_lowconf",
-                "confidence": best["confidence"],
-                "detail": result.get("detail", {})
-            })
-            return result
 
         logger.warning(f"[优化匹配] ✗ 全部策略失败")
         return result

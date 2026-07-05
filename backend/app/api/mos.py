@@ -91,6 +91,33 @@ models = {}
 # 性能统计
 performance_stats = {}
 
+def _precache_ref_matches(aligned_files, ref_dir):
+    """将切分文件的 ref_xxx → 参考音频 映射写入全局缓存，避免评分阶段重复DTW"""
+    import re
+    try:
+        from calculator.mos_calculator import _ref_match_cache, _ref_match_cache_lock
+        if not ref_dir or not os.path.isdir(ref_dir):
+            return
+        for fpath in aligned_files:
+            if not fpath:
+                continue
+            stem = os.path.splitext(os.path.basename(fpath))[0]
+            refs = re.findall(r'ref[_-]?\d+', stem, re.IGNORECASE)
+            if refs:
+                digits = re.findall(r'\d+', refs[-1])
+                if digits:
+                    ref_name = f"ref_{digits[-1]}.wav"
+                    ref_path = os.path.join(ref_dir, ref_name)
+                    if os.path.exists(ref_path):
+                        key = (os.path.abspath(fpath), os.path.abspath(ref_dir))
+                        with _ref_match_cache_lock:
+                            if key not in _ref_match_cache:
+                                _ref_match_cache[key] = (ref_path, {"method": "pre_cache", "ref_name": ref_name})
+        logger.debug(f"[引用缓存] 预加载 {len(aligned_files)} 个文件的参考映射")
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug(f"[引用缓存] 预加载异常: {e}")
 
 def init_models():
     """初始化所有评分模型"""
@@ -464,6 +491,7 @@ async def process_audio_task(queue_task):
                 logger.info("执行无参考MOS计算（所有测试音频均未匹配到参考音频）")
                 await update_task_progress(task_id, 20, "执行无参考MOS计算（未匹配到参考音频）...")
                 aligned_files = input_files
+                _precache_ref_matches(aligned_files, str(ref_dir) if ref_dir.exists() else "")
                 loop = asyncio.get_event_loop()
                 results = await loop.run_in_executor(
                     executor,
@@ -500,6 +528,7 @@ async def process_audio_task(queue_task):
 
                 # 优化版输出已是样本级对齐的12s段，无需二次对齐
                 aligned_files = split_files
+                _precache_ref_matches(aligned_files, str(ref_dir))
 
                 await update_task_progress(task_id, 50, "正在计算MOS得分...")
                 loop = asyncio.get_event_loop()
@@ -539,6 +568,7 @@ async def process_audio_task(queue_task):
                 if not split_files:
                     logger.warning(f"[混合场景] 切分结果为空，全部回退到无参考MOS")
                     aligned_files = input_files
+                    _precache_ref_matches(aligned_files, str(ref_dir) if ref_dir.exists() else "")
                     await update_task_progress(task_id, 20, "执行无参考MOS计算（切分失败回退）...")
                     loop = asyncio.get_event_loop()
                     results = await loop.run_in_executor(
@@ -554,7 +584,8 @@ async def process_audio_task(queue_task):
                     # 切分段通过文件名标记可自动匹配到参考（get_ref_file_by_content）
                     # 未匹配文件会自然得到 ref_scores=0
                     aligned_files = split_files + unmatched_files
-                    logger.info(f"[混合场景] 对齐文件列表: {len(split_files)}个切分段 + "
+                                        _precache_ref_matches(aligned_files, str(ref_dir))
+logger.info(f"[混合场景] 对齐文件列表: {len(split_files)}个切分段 + "
                                 f"{len(unmatched_files)}个未匹配 = {len(aligned_files)}个")
 
                     await update_task_progress(task_id, 50, "正在计算MOS得分...")
@@ -580,6 +611,7 @@ async def process_audio_task(queue_task):
 
             # 直接使用原始文件，不进行切分和对齐
             aligned_files = input_files
+            _precache_ref_matches(aligned_files, str(ref_dir) if ref_dir.exists() else "")
 
             # Step 3: MOS评分计算（无参考）
             await update_task_progress(task_id, 50, "正在计算MOS得分...")
