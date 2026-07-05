@@ -130,7 +130,6 @@ async def process_batch_restoration(
             
             # ── 智能选择推理策略 ──
             algorithm = batch_tasks[batch_id]["algorithm"]
-            restorer = restorers[algorithm]
             
             # 判断是否支持batch推理
             supports_batch = (
