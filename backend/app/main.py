@@ -90,7 +90,6 @@ async def lifespan(app: FastAPI):
     logger.info("[GPU设备配置]")
     try:
         import torch
-        import os
         
         # 从配置读取GPU ID
         gpu_id = settings.cuda.device_id
