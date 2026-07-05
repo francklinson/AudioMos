@@ -1077,30 +1077,22 @@ class OptimizedToneColorFidelityScore:
         # 计算项目根目录: app/algorithms/tcf/ -> 项目根目录
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-        logger.info(f"[TCF] 项目根目录: {project_root}")
-        logger.info(f"[TCF] 配置top-3多模型加权评估 (eres2net/eres2netv2/campplus)...")
+        logger.info(f"[TCF] 使用单模型 CAM++ (轻量高效, VoxCeleb1 EER=0.65%, 7.2M参数, 1.72G FLOPs)")
 
-        # 多模型配置，保留效果最好的3个模型（删除ecapa-tdnn/res2net/resnet34提速）
+        # 3D-Speaker 公开基准 (VoxCeleb1-O EER%):
+        #   ERes2NetV2 (17.8M): 0.61%  ← 精度最高但慢
+        #   CAM++      (7.2M):  0.65%  ← 精度接近、速度最快 ← 选用
+        #   ERes2Net   (6.6M):  0.84%  ← 精度中等
+        #   ECAPA-TDNN (20.8M): 0.86%  ← 已删除
+        #   ResNet34   (6.3M):  1.05%  ← 已删除
+        #   Res2Net    (—):     —      ← 已删除
+        # CAM++ 在 CNCeleb(中文)上 EER=6.78%，速度比 ERes2NetV2 快3倍
         self.sv_model_dict = {
-            "eres2net": {
-                "model_id": "damo/speech_eres2net_sv_zh-cn_16k-common",
-                "project_path": os.path.join(project_root, "models", "tcf", "eres2net"),
-                "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_eres2net_sv_zh-cn_16k-common"),
-                "weight": 7.21,
-                "revision": "v1.0.0"
-            },
-            "eres2netv2": {
-                "model_id": "damo/speech_eres2netv2_sv_zh-cn_16k-common",
-                "project_path": os.path.join(project_root, "models", "tcf", "eres2netv2"),
-                "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_eres2netv2_sv_zh-cn_16k-common"),
-                "weight": 6.19,
-                "revision": "v1.0.0"
-            },
             "campplus": {
                 "model_id": "damo/speech_campplus_sv_zh-cn_16k-common",
                 "project_path": os.path.join(project_root, "models", "tcf", "campplus"),
                 "cache_path": os.path.expanduser("~/.cache/modelscope/hub/damo/speech_campplus_sv_zh-cn_16k-common"),
-                "weight": 5.0,
+                "weight": 9.35,  # 10 - 0.65(EER)
                 "revision": "v1.0.0"
             },
         }
