@@ -1,6 +1,6 @@
 """
 WeNet适配器
-复用项目已有的wenet模块，从本地模型目录加载
+使用wenet.load_model()从本地模型目录加载
 """
 
 import os
@@ -8,13 +8,13 @@ import logging
 from typing import Optional
 import numpy as np
 
-from ..base import BaseASR, ASRResult, ASRSegment
+from ..base import BaseASR, ASRResult
 
 logger = logging.getLogger("audiomos")
 
 
 class WeNetAdapter(BaseASR):
-    """WeNet U2++ 适配器 — 复用项目已有wenet模块"""
+    """WeNet U2++ 适配器 — 使用wenet.load_model()加载"""
 
     def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
         super().__init__(
@@ -29,33 +29,15 @@ class WeNetAdapter(BaseASR):
         try:
             import wenet
 
-            # 查找模型文件
-            model_path = self.model_dir
-            if not model_path or not os.path.exists(model_path):
-                # 尝试项目默认模型路径
-                project_root = os.path.dirname(os.path.dirname(os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )))
-                candidate_paths = [
-                    os.path.join(project_root, "models", "asr", "wenet-u2pp"),
-                    os.path.join(project_root, "models", "asr", "wenet"),
-                ]
-                for p in candidate_paths:
-                    if os.path.exists(p):
-                        model_path = p
-                        break
+            # 查找模型路径
+            model_path = self._find_model_path()
 
-            if not model_path or not os.path.exists(model_path):
-                logger.warning(f"[WeNet] 未找到本地模型，将使用wenet hub下载")
-                self._model = wenet.CLModel(language="zh")
-            else:
+            if model_path:
                 logger.info(f"[WeNet] 从本地加载模型: {model_path}")
-                # 查找zip或目录中的模型文件
-                model_file = self._find_model_file(model_path)
-                if model_file:
-                    self._model = wenet.CLModel(model_path=model_file)
-                else:
-                    self._model = wenet.CLModel(language="zh")
+                self._model = wenet.load_model(model_path, device=self.device)
+            else:
+                logger.warning("[WeNet] 未找到本地模型，尝试使用默认模型")
+                self._model = wenet.load_model("chinese", device=self.device)
 
             self._is_initialized = True
             logger.info(f"[WeNet] 模型初始化成功")
@@ -64,18 +46,36 @@ class WeNetAdapter(BaseASR):
             logger.error(f"[WeNet] 初始化失败: {e}")
             return False
 
+    def _find_model_path(self) -> Optional[str]:
+        """查找本地模型路径"""
+        # 1. 使用配置的model_dir
+        if self.model_dir and os.path.exists(self.model_dir):
+            model_file = self._find_model_file(self.model_dir)
+            if model_file:
+                return model_file
+
+        # 2. 尝试项目默认路径
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )))
+        candidate_paths = [
+            os.path.join(project_root, "models", "asr", "wenet-u2pp"),
+            os.path.join(project_root, "models", "wenet"),
+        ]
+        for p in candidate_paths:
+            if os.path.exists(p):
+                model_file = self._find_model_file(p)
+                if model_file:
+                    return model_file
+
+        return None
+
     def _find_model_file(self, model_dir: str) -> Optional[str]:
         """在模型目录中查找模型文件"""
-        # WeNet模型通常是 final.zip 或 avg_best.pt
-        for name in ["final.zip", "avg_best.pt", "model.zip", "model.pt"]:
-            path = os.path.join(model_dir, name)
-            if os.path.exists(path):
-                return path
-        # 查找子目录
-        for root, dirs, files in os.walk(model_dir):
-            for f in files:
-                if f.endswith(".zip") or f.endswith(".pt"):
-                    return os.path.join(root, f)
+        # wenet.load_model 接受目录路径，目录中应包含 final.pt 和 train.yaml
+        required_files = ["train.yaml"]
+        if all(os.path.exists(os.path.join(model_dir, f)) for f in required_files):
+            return model_dir
         return None
 
     def transcribe(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> ASRResult:
