@@ -115,13 +115,14 @@ async def lifespan(app: FastAPI):
             # 获取设备信息
             device_name = torch.cuda.get_device_name(gpu_id)
             total_memory = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
-            compute_capability = torch.cuda.get_device_properties(gpu_id).major
+            compute_capability_major = torch.cuda.get_device_properties(gpu_id).major
+            compute_capability_minor = torch.cuda.get_device_properties(gpu_id).minor
             
             logger.info(f"  ✅ GPU初始化成功:")
             logger.info(f"     配置GPU ID: {gpu_id}")
             logger.info(f"     设备名称: {device_name}")
             logger.info(f"     显存容量: {total_memory:.1f} GB")
-            logger.info(f"     计算能力: {compute_capability.x}")
+            logger.info(f"     计算能力: {compute_capability_major}.{compute_capability_minor}")
             
             # 显存限制(可选)
             if settings.cuda.memory_fraction is not None:
