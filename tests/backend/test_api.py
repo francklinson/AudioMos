@@ -99,6 +99,84 @@ class TestMosAPI:
         response = client.post("/api/mos/upload")
         assert response.status_code == 401
 
+    def test_upload_audio(self, client, auth_token, sample_audio_bytes):
+        """测试上传音频文件"""
+        response = client.post(
+            "/api/mos/upload",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            files={"files": ("test_audio.wav", sample_audio_bytes, "audio/wav")}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "task_id" in data
+        assert "files" in data
+        assert "message" in data
+
+    def test_upload_multiple_files(self, client, auth_token, sample_audio_bytes):
+        """测试上传多个音频文件"""
+        response = client.post(
+            "/api/mos/upload",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            files=[
+                ("files", ("audio1.wav", sample_audio_bytes, "audio/wav")),
+                ("files", ("audio2.wav", sample_audio_bytes, "audio/wav"))
+            ]
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["files"]) == 2
+
+    def test_get_task_status_not_found(self, client, auth_token):
+        """测试获取不存在的任务状态"""
+        response = client.get(
+            "/api/mos/tasks/nonexistent_task_id",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 404
+
+    def test_download_not_found(self, client, auth_token):
+        """测试下载不存在的任务结果"""
+        response = client.get(
+            "/api/mos/download/nonexistent_task_id",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 404
+
+    def test_get_results_not_found(self, client, auth_token):
+        """测试获取不存在的任务结果JSON"""
+        response = client.get(
+            "/api/mos/results/nonexistent_task_id",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 404
+
+    def test_delete_task_not_found(self, client, auth_token):
+        """测试删除不存在的任务"""
+        response = client.delete(
+            "/api/mos/tasks/nonexistent_task_id",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 404
+
+    def test_get_performance(self, client, auth_token):
+        """测试获取性能统计"""
+        response = client.get(
+            "/api/mos/performance",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        # 验证返回字段存在
+        assert isinstance(data, dict)
+
+    def test_reset_performance(self, client, auth_token):
+        """测试重置性能统计"""
+        response = client.post(
+            "/api/mos/performance/reset",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 200
+
 
 class TestRestorationAPI:
     """音频修复接口测试"""
@@ -181,6 +259,45 @@ class TestRestorationAPI:
         data = response.json()
         assert "task_id" in data
 
+    def test_upload_batch(self, client, auth_token, sample_audio_bytes):
+        """测试批量上传音频文件"""
+        response = client.post(
+            "/api/restoration/upload-batch",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            files=[
+                ("files", ("audio1.wav", sample_audio_bytes, "audio/wav")),
+                ("files", ("audio2.wav", sample_audio_bytes, "audio/wav"))
+            ],
+            data={"algorithm": "spectral_subtraction"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        # 验证批量上传返回结果
+
+    def test_get_task_status_not_found(self, client, auth_token):
+        """测试获取不存在的任务状态"""
+        response = client.get(
+            "/api/restoration/tasks/nonexistent-task-id",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 404
+
+    def test_get_source_not_found(self, client, auth_token):
+        """测试获取不存在的源音频"""
+        response = client.get(
+            "/api/restoration/source/nonexistent-task-id",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 404
+
+    def test_download_not_found(self, client, auth_token):
+        """测试下载不存在的任务结果"""
+        response = client.get(
+            "/api/restoration/download/nonexistent-task-id",
+            headers={"Authorization": f"Bearer {auth_token}"}
+        )
+        assert response.status_code == 404
+
     def test_delete_nonexistent_task(self, client, auth_token):
         """测试删除不存在的任务"""
         response = client.delete(
@@ -188,6 +305,16 @@ class TestRestorationAPI:
             headers={"Authorization": f"Bearer {auth_token}"}
         )
         assert response.status_code == 404
+
+    def test_invalid_algorithm(self, client, auth_token, sample_audio_bytes):
+        """测试使用不支持的算法"""
+        response = client.post(
+            "/api/restoration/upload",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            files={"file": ("test_audio.wav", sample_audio_bytes, "audio/wav")},
+            data={"algorithm": "invalid_algorithm"}
+        )
+        assert response.status_code == 400
 
 
 class TestHealthCheck:
