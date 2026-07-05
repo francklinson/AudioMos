@@ -165,3 +165,74 @@ reference_matching:
     harmonic_separation: true
     # DTW增强: CMVN归一化+Delta特征+余弦距离
     robust_dtw: true
+
+# ASR语音识别评测配置
+asr:
+  # 默认算法
+  default_algorithm: "paraformer-large"
+  # GPU显存限制（MB），超出时不加载大模型
+  max_vram_per_model_mb: 8000
+  # LRU缓存大小（同时加载的大模型数量）
+  lru_cache_size: 3
+  # 支持的语言
+  languages:
+    - "zh"
+    - "en"
+    - "zh_en"
+  # API Key配置（对外接口认证）
+  api_keys:
+    enabled: true
+    # 密钥列表（生产环境通过环境变量 AUDIOMOS_ASR_API_KEYS 注入，逗号分隔）
+    keys: []
+  # 算法配置
+  algorithms:
+    paraformer-large:
+      enabled: true
+      model_dir: "./models/asr/paraformer-large"
+      preload: true
+    sensevoice-small:
+      enabled: true
+      model_dir: "./models/asr/sensevoice-small"
+      preload: true
+    wenet-u2pp:
+      enabled: true
+      model_dir: "./models/asr/wenet-u2pp"
+      preload: true
+    whisper-large-v3-turbo:
+      enabled: true
+      model_dir: "./models/asr/whisper-large-v3-turbo"
+      preload: false
+    firered-asr2:
+      enabled: true
+      model_dir: "./models/asr/firered-asr2"
+      preload: false
+    qwen3-asr:
+      enabled: true
+      model_dir: "./models/asr/qwen3-asr"
+      preload: false
+    funasr-llm:
+      enabled: true
+      model_dir: "./models/asr/funasr-llm"
+      preload: false
+    step-audio-2-mini:
+      enabled: true
+      model_dir: "./models/asr/step-audio-2-mini"
+      preload: false
+    vibevoice-asr:
+      enabled: true
+      model_dir: "./models/asr/vibevoice-asr"
+      preload: false
+    nemo-conformer-transducer:
+      enabled: true
+      model_dir: "./models/asr/nemo-conformer-transducer"
+      preload: false
+  # 数据集配置
+  datasets:
+    aishell1_test:
+      path: "./data/datasets/aishell1"
+    wenetspeech_test:
+      path: "./data/datasets/wenetspeech"
+    thchs30_test:
+      path: "./data/datasets/thchs30"
+    builtin:
+      path: "./data/datasets/asr_builtin"

@@ -248,6 +248,8 @@ function loadAllData() {
   loadRestorationTasks();
   loadRefAudioList();
   loadFingerprintStatus();
+  loadAsrAlgorithms();
+  loadAsrDatasets();
 }
 
 // ==================== MOS 评分 ====================
@@ -1825,6 +1827,301 @@ $('logout-btn').addEventListener('click', handleLogout);
 initMosPage();
 initRestorationPage();
 initReferencePage();
+initAsrPage();
 
 // 启动轮询
 startPolling();
+
+// ==================== ASR 语音识别评测 ====================
+let asrAlgorithms = [];
+let asrSelectedAlgorithm = '';
+let asrFile = null;
+let asrDatasets = [];
+let asrBenchmarkAlgos = new Set();
+
+async function loadAsrAlgorithms() {
+  try {
+    const data = await api(apiUrl('/api/asr/algorithms'));
+    asrAlgorithms = data.algorithms || [];
+    const sel = $('asr-algorithm-select');
+    sel.innerHTML = '';
+    asrAlgorithms.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.name;
+      opt.textContent = `${a.description?.display_name || a.name}${a.initialized ? ' ✅' : ''}`;
+      sel.appendChild(opt);
+    });
+    if (asrAlgorithms.length > 0) {
+      asrSelectedAlgorithm = asrAlgorithms[0].name;
+      updateAsrAlgoInfo();
+    }
+    // 渲染 benchmark 算法多选
+    renderAsrBenchmarkAlgos();
+  } catch (e) {
+    console.error('加载ASR算法列表失败:', e);
+  }
+}
+
+function updateAsrAlgoInfo() {
+  const info = $('asr-algorithm-info');
+  const algo = asrAlgorithms.find(a => a.name === asrSelectedAlgorithm);
+  if (algo && algo.description) {
+    const d = algo.description;
+    info.innerHTML = `<strong>${d.display_name}</strong> | 架构: ${d.architecture || '-'} | 参数: ${d.params || '-'} | AISHELL-1 CER: ${d.cer_aishell1 || '-'} | ${d.streaming ? '支持流式' : '非流式'} | ${d.license || '-'}`;
+  } else {
+    info.textContent = '';
+  }
+}
+
+async function loadAsrDatasets() {
+  try {
+    const data = await api(apiUrl('/api/asr/datasets'));
+    asrDatasets = data.datasets || [];
+    const sel = $('asr-dataset-select');
+    sel.innerHTML = '';
+    asrDatasets.forEach(ds => {
+      const opt = document.createElement('option');
+      opt.value = ds.name;
+      opt.textContent = `${ds.name}${ds.available ? '' : ' (不可用)'} - ${ds.description || ''}`;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('加载ASR数据集失败:', e);
+  }
+}
+
+function renderAsrBenchmarkAlgos() {
+  const container = $('asr-benchmark-algorithms');
+  container.innerHTML = '';
+  asrAlgorithms.forEach(a => {
+    const d = a.description || {};
+    const col = document.createElement('div');
+    col.className = 'col-md-4 col-lg-3';
+    const checked = asrBenchmarkAlgos.has(a.name) ? 'checked' : '';
+    col.innerHTML = `
+      <div class="form-check">
+        <input class="form-check-input asr-bench-algo" type="checkbox" value="${a.name}" id="asr-ba-${a.name}" ${checked}>
+        <label class="form-check-label" for="asr-ba-${a.name}">
+          ${d.display_name || a.name} <small class="text-muted">(${d.params || '?'})</small>
+        </label>
+      </div>`;
+    container.appendChild(col);
+  });
+  // 绑定事件
+  container.querySelectorAll('.asr-bench-algo').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) asrBenchmarkAlgos.add(cb.value);
+      else asrBenchmarkAlgos.delete(cb.value);
+      $('asr-benchmark-btn').disabled = asrBenchmarkAlgos.size === 0;
+    });
+  });
+}
+
+function initAsrPage() {
+  // 算法选择
+  $('asr-algorithm-select').addEventListener('change', e => {
+    asrSelectedAlgorithm = e.target.value;
+    updateAsrAlgoInfo();
+  });
+
+  // 文件上传
+  const zone = $('asr-upload-zone');
+  const input = $('asr-file-input');
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) { asrFile = e.dataTransfer.files[0]; updateAsrFileInfo(); }
+  });
+  input.addEventListener('change', () => { if (input.files.length) { asrFile = input.files[0]; updateAsrFileInfo(); } });
+
+  // 提交识别
+  $('asr-submit-btn').addEventListener('click', submitAsrRecognition);
+
+  // 提交benchmark
+  $('asr-benchmark-btn').addEventListener('click', submitAsrBenchmark);
+}
+
+function updateAsrFileInfo() {
+  if (!asrFile) return;
+  $('asr-file-info').classList.remove('d-none');
+  $('asr-file-name').textContent = asrFile.name;
+  $('asr-file-size').textContent = formatSize(asrFile.size);
+  $('asr-submit-btn').disabled = false;
+}
+
+async function submitAsrRecognition() {
+  if (!asrFile || !asrSelectedAlgorithm) { showToast('请选择算法和音频文件', 'warning'); return; }
+  const btn = $('asr-submit-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 识别中...';
+
+  try {
+    const fd = new FormData();
+    fd.append('audio_file', asrFile);
+    fd.append('algorithm', asrSelectedAlgorithm);
+    fd.append('language', 'zh');
+
+    const refText = $('asr-reference-text').value.trim();
+    if (refText) fd.append('reference_text', refText);
+
+    const data = await api(apiUrl('/api/asr/transcribe'), { method: 'POST', formData: true, body: fd });
+    const taskId = data.task_id;
+
+    // 轮询任务状态
+    pollAsrTask(taskId);
+  } catch (e) {
+    showToast('识别失败: ' + e.message, 'error');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-play-fill"></i> <span>开始识别</span>';
+  }
+}
+
+async function pollAsrTask(taskId) {
+  const poll = async () => {
+    try {
+      const data = await api(apiUrl(`/api/asr/tasks/${taskId}`));
+      if (data.status === 'completed') {
+        showAsrResult(data);
+        $('asr-submit-btn').disabled = false;
+        $('asr-submit-btn').innerHTML = '<i class="bi bi-play-fill"></i> <span>开始识别</span>';
+        return;
+      } else if (data.status === 'failed') {
+        showToast('识别失败: ' + (data.error || '未知错误'), 'error');
+        $('asr-submit-btn').disabled = false;
+        $('asr-submit-btn').innerHTML = '<i class="bi bi-play-fill"></i> <span>开始识别</span>';
+        return;
+      }
+      setTimeout(poll, 2000);
+    } catch (e) {
+      setTimeout(poll, 3000);
+    }
+  };
+  poll();
+}
+
+function showAsrResult(taskData) {
+  const section = $('asr-result-section');
+  const content = $('asr-result-content');
+  section.classList.remove('d-none');
+
+  const r = taskData.result || {};
+  let html = `<div class="mb-3"><strong>识别文本:</strong> <span class="fs-5">${r.text || '-'}</span></div>`;
+  html += `<div class="row g-2 mb-3">`;
+  html += `<div class="col-md-3"><div class="stat-card"><div class="stat-value">${r.rtf?.toFixed(3) || '-'}</div><div class="stat-label">RTF</div></div></div>`;
+  html += `<div class="col-md-3"><div class="stat-card"><div class="stat-value">${r.processing_time?.toFixed(2) || '-'}s</div><div class="stat-label">耗时</div></div></div>`;
+  html += `<div class="col-md-3"><div class="stat-card"><div class="stat-value">${r.confidence ? (r.confidence * 100).toFixed(1) + '%' : '-'}</div><div class="stat-label">置信度</div></div></div>`;
+  html += `<div class="col-md-3"><div class="stat-card"><div class="stat-value">${r.language || '-'}</div><div class="stat-label">语言</div></div></div>`;
+  html += `</div>`;
+
+  if (taskData.cer !== undefined && taskData.cer !== null) {
+    html += `<div class="alert alert-info">CER (字错误率): <strong>${(taskData.cer * 100).toFixed(2)}%</strong></div>`;
+  }
+
+  if (r.segments && r.segments.length > 0) {
+    html += `<h6>分段结果</h6><div class="table-responsive"><table class="table table-sm table-striped"><thead><tr><th>起始</th><th>结束</th><th>文本</th></tr></thead><tbody>`;
+    r.segments.forEach(s => {
+      html += `<tr><td>${s.start?.toFixed(2)}s</td><td>${s.end?.toFixed(2)}s</td><td>${s.text}</td></tr>`;
+    });
+    html += `</tbody></table></div>`;
+  }
+
+  content.innerHTML = html;
+}
+
+async function submitAsrBenchmark() {
+  if (asrBenchmarkAlgos.size === 0) { showToast('请至少选择一个算法', 'warning'); return; }
+  const dataset = $('asr-dataset-select').value;
+  const maxSamples = parseInt($('asr-max-samples').value) || 100;
+
+  const btn = $('asr-benchmark-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 评测中...';
+
+  $('asr-benchmark-progress').classList.remove('d-none');
+  $('asr-benchmark-result').classList.add('d-none');
+
+  try {
+    const data = await api(apiUrl('/api/asr/benchmark/run'), {
+      method: 'POST',
+      body: {
+        algorithms: Array.from(asrBenchmarkAlgos),
+        dataset: dataset,
+        max_samples: maxSamples,
+      },
+    });
+
+    const benchId = data.bench_id;
+    pollAsrBenchmark(benchId);
+  } catch (e) {
+    showToast('启动评测失败: ' + e.message, 'error');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-speedometer2"></i> <span>开始评测</span>';
+  }
+}
+
+async function pollAsrBenchmark(benchId) {
+  const poll = async () => {
+    try {
+      const data = await api(apiUrl(`/api/asr/benchmark/${benchId}`));
+      $('asr-bench-bar').style.width = data.progress + '%';
+      $('asr-bench-progress-text').textContent = data.progress.toFixed(0) + '%';
+      $('asr-bench-status').textContent = data.status === 'running' ? '评测中...' : data.status;
+
+      if (data.status === 'completed') {
+        $('asr-benchmark-progress').classList.add('d-none');
+        showAsrBenchmarkResult(data);
+        $('asr-benchmark-btn').disabled = false;
+        $('asr-benchmark-btn').innerHTML = '<i class="bi bi-speedometer2"></i> <span>开始评测</span>';
+        return;
+      } else if (data.status === 'failed') {
+        showToast('评测失败', 'error');
+        $('asr-benchmark-btn').disabled = false;
+        $('asr-benchmark-btn').innerHTML = '<i class="bi bi-speedometer2"></i> <span>开始评测</span>';
+        return;
+      }
+      setTimeout(poll, 3000);
+    } catch (e) {
+      setTimeout(poll, 5000);
+    }
+  };
+  poll();
+}
+
+function showAsrBenchmarkResult(benchData) {
+  $('asr-benchmark-result').classList.remove('d-none');
+
+  // 排名表
+  const ranking = [];
+  for (const [name, result] of Object.entries(benchData.results || {})) {
+    ranking.push({ name, ...result.metrics });
+  }
+  ranking.sort((a, b) => (a.cer ?? 999) - (b.cer ?? 999));
+
+  let rankHtml = '<table class="table table-striped table-hover"><thead><tr><th>排名</th><th>算法</th><th>CER</th><th>WER</th><th>RTF</th><th>评测句数</th></tr></thead><tbody>';
+  ranking.forEach((r, i) => {
+    const cls = i === 0 ? 'table-warning' : i === 1 ? 'table-light' : '';
+    rankHtml += `<tr class="${cls}"><td>${i + 1}</td><td>${r.name || '-'}</td><td>${(r.cer * 100).toFixed(2)}%</td><td>${(r.wer * 100).toFixed(2)}%</td><td>${r.rtf?.toFixed(3) || '-'}</td><td>${r.num_utterances || '-'}</td></tr>`;
+  });
+  rankHtml += '</tbody></table>';
+  $('asr-ranking-table').innerHTML = rankHtml;
+
+  // 详细指标
+  let detailHtml = '';
+  for (const [name, result] of Object.entries(benchData.results || {})) {
+    const m = result.metrics || {};
+    detailHtml += `<div class="card mb-2"><div class="card-body"><h6>${name}</h6>`;
+    detailHtml += `<div class="row g-2">`;
+    detailHtml += `<div class="col"><div class="stat-card"><div class="stat-value">${(m.cer * 100).toFixed(2)}%</div><div class="stat-label">CER</div></div></div>`;
+    detailHtml += `<div class="col"><div class="stat-card"><div class="stat-value">${(m.wer * 100).toFixed(2)}%</div><div class="stat-label">WER</div></div></div>`;
+    detailHtml += `<div class="col"><div class="stat-card"><div class="stat-value">${m.rtf?.toFixed(3) || '-'}</div><div class="stat-label">RTF</div></div></div>`;
+    detailHtml += `<div class="col"><div class="stat-card"><div class="stat-value">${m.processing_time?.toFixed(1) || '-'}s</div><div class="stat-label">总耗时</div></div></div>`;
+    detailHtml += `</div>`;
+    if (result.errors && result.errors.length > 0) {
+      detailHtml += `<div class="text-danger small mt-2">错误: ${result.errors.slice(0, 3).join('; ')}</div>`;
+    }
+    detailHtml += `</div></div>`;
+  }
+  $('asr-detail-metrics').innerHTML = detailHtml;
+}

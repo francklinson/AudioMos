@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.logging_config import logger, log_request
-from app.api import auth, mos, restoration, reference_audio, restoration_batch
+from app.api import auth, mos, restoration, reference_audio, restoration_batch, asr
 
 
 @asynccontextmanager
@@ -70,6 +70,17 @@ async def lifespan(app: FastAPI):
         logger.info("  ✅ 音频修复算法初始化成功")
     except Exception as e:
         logger.error(f"  ❌ 音频修复算法初始化失败: {e}")
+        import traceback
+        logger.error(f"  错误详情: {traceback.format_exc()}")
+    
+    # 初始化ASR语音识别算法
+    logger.info("[ASR语音识别算法初始化]")
+    try:
+        logger.info("  正在初始化ASR语音识别算法...")
+        asr.init_asr()
+        logger.info("  ✅ ASR语音识别算法初始化成功")
+    except Exception as e:
+        logger.error(f"  ❌ ASR语音识别算法初始化失败: {e}")
         import traceback
         logger.error(f"  错误详情: {traceback.format_exc()}")
     
@@ -165,6 +176,18 @@ async def lifespan(app: FastAPI):
         import traceback
         logger.error(f"  错误详情: {traceback.format_exc()}")
 
+    # 启动ASR语音识别任务队列
+    logger.info("[ASR语音识别任务队列]")
+    try:
+        logger.info("  正在启动ASR语音识别任务队列...")
+        from app.api.asr import asr_task_queue, process_asr_task
+        await asr_task_queue.start(process_asr_task)
+        logger.info("  ✅ ASR语音识别任务队列启动成功")
+    except Exception as e:
+        logger.error(f"  ❌ ASR语音识别任务队列启动失败: {e}")
+        import traceback
+        logger.error(f"  错误详情: {traceback.format_exc()}")
+
     # 启动GPU显存监控守护线程
     logger.info("[GPU显存监控]")
     try:
@@ -219,6 +242,13 @@ async def lifespan(app: FastAPI):
         logger.info("  ✅ 音频修复任务队列已停止")
     except Exception as e:
         logger.error(f"  ❌ 音频修复任务队列停止失败: {e}")
+
+    try:
+        from app.api.asr import asr_task_queue
+        await asr_task_queue.stop()
+        logger.info("  ✅ ASR语音识别任务队列已停止")
+    except Exception as e:
+        logger.error(f"  ❌ ASR语音识别任务队列停止失败: {e}")
 
     try:
         if hasattr(app.state, "gpu_monitor"):
@@ -290,6 +320,7 @@ app.include_router(mos.router, prefix="/api")
 app.include_router(restoration.router, prefix="/api")
 app.include_router(restoration_batch.router, prefix="/api")  # 批量处理路由
 app.include_router(reference_audio.router, prefix="/api")
+app.include_router(asr.router, prefix="/api")
 
 
 # ========== 前后端一体模式：托管前端静态文件 ==========

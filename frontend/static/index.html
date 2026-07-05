@@ -123,6 +123,11 @@
           <i class="bi bi-database-fill"></i> 参考音频
         </button>
       </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tab-asr" data-bs-toggle="tab" data-bs-target="#pane-asr" type="button" role="tab">
+          <i class="bi bi-mic-fill"></i> ASR评测
+        </button>
+      </li>
     </ul>
 
     <div class="tab-content">
@@ -320,6 +325,185 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- ==================== ASR评测 Tab ==================== -->
+      <div class="tab-pane fade" id="pane-asr" role="tabpanel">
+        <div class="container-fluid py-3">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4 class="mb-0"><i class="bi bi-mic-fill"></i> ASR语音识别评测</h4>
+            <small class="text-muted">前沿中文ASR算法对比评测</small>
+          </div>
+
+          <!-- ASR 子Tab -->
+          <ul class="nav nav-pills mb-3" id="asr-tabs" role="tablist">
+            <li class="nav-item"><button class="nav-link active" id="asr-tab-recognize" data-bs-toggle="pill" data-bs-target="#asr-pane-recognize">语音识别</button></li>
+            <li class="nav-item"><button class="nav-link" id="asr-tab-benchmark" data-bs-toggle="pill" data-bs-target="#asr-pane-benchmark">Benchmark</button></li>
+            <li class="nav-item"><button class="nav-link" id="asr-tab-api" data-bs-toggle="pill" data-bs-target="#asr-pane-api">API文档</button></li>
+          </ul>
+
+          <div class="tab-content">
+
+            <!-- 语音识别子Tab -->
+            <div class="tab-pane fade show active" id="asr-pane-recognize">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-cpu"></i> 选择算法</h5>
+                  <select class="form-select" id="asr-algorithm-select">
+                    <option value="">加载中...</option>
+                  </select>
+                  <div id="asr-algorithm-info" class="mt-2 text-muted small"></div>
+                </div>
+              </div>
+
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-upload"></i> 上传音频</h5>
+                  <div class="upload-zone" id="asr-upload-zone">
+                    <i class="bi bi-cloud-arrow-up-fill upload-icon"></i>
+                    <p class="mb-1">点击或拖拽音频文件到此区域</p>
+                    <small class="text-muted">支持 .wav / .mp3 格式</small>
+                    <input type="file" class="upload-input" id="asr-file-input" accept=".wav,.mp3">
+                  </div>
+                  <div id="asr-file-info" class="mt-2 d-none">
+                    <span class="badge bg-info" id="asr-file-name"></span>
+                    <span class="badge bg-secondary" id="asr-file-size"></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-input-cursor-text"></i> 参考文本（可选，用于计算CER）</h5>
+                  <textarea class="form-control" id="asr-reference-text" rows="2" placeholder="输入参考文本，留空则仅做识别"></textarea>
+                </div>
+              </div>
+
+              <button class="btn btn-submit mb-3" id="asr-submit-btn" disabled>
+                <i class="bi bi-play-fill"></i> <span>开始识别</span>
+              </button>
+
+              <!-- 识别结果 -->
+              <div id="asr-result-section" class="d-none">
+                <div class="card">
+                  <div class="card-body">
+                    <h5 class="card-title"><i class="bi bi-chat-square-text"></i> 识别结果</h5>
+                    <div id="asr-result-content"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Benchmark子Tab -->
+            <div class="tab-pane fade" id="asr-pane-benchmark">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-cpu"></i> 选择算法（多选）</h5>
+                  <div id="asr-benchmark-algorithms" class="row g-2"></div>
+                </div>
+              </div>
+
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-database"></i> 选择数据集</h5>
+                  <select class="form-select" id="asr-dataset-select">
+                    <option value="">加载数据集列表...</option>
+                  </select>
+                  <div class="row g-2 mt-2">
+                    <div class="col-md-6">
+                      <label class="form-label">最大样本数</label>
+                      <input type="number" class="form-control" id="asr-max-samples" value="100" min="1" max="10000">
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <button class="btn btn-submit mb-3" id="asr-benchmark-btn" disabled>
+                <i class="bi bi-speedometer2"></i> <span>开始评测</span>
+              </button>
+
+              <!-- Benchmark进度 -->
+              <div id="asr-benchmark-progress" class="d-none mb-3">
+                <div class="card">
+                  <div class="card-body">
+                    <div class="d-flex justify-content-between">
+                      <span id="asr-bench-status">评测中...</span>
+                      <span id="asr-bench-progress-text">0%</span>
+                    </div>
+                    <div class="progress mt-2" style="height: 8px;">
+                      <div class="progress-bar progress-bar-striped progress-bar-animated" id="asr-bench-bar" style="width: 0%"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Benchmark结果 -->
+              <div id="asr-benchmark-result" class="d-none">
+                <div class="card mb-3">
+                  <div class="card-body">
+                    <h5 class="card-title"><i class="bi bi-trophy"></i> 排名</h5>
+                    <div class="table-responsive" id="asr-ranking-table"></div>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card-body">
+                    <h5 class="card-title"><i class="bi bi-bar-chart"></i> 详细指标</h5>
+                    <div id="asr-detail-metrics"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- API文档子Tab -->
+            <div class="tab-pane fade" id="asr-pane-api">
+              <div class="card">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-code-slash"></i> ASR API 接口文档</h5>
+                  <div id="asr-api-doc">
+                    <h6 class="mt-3">1. 语音识别接口</h6>
+                    <div class="alert alert-secondary">
+                      <code>POST /api/asr/v1/recognize</code>
+                      <br><small>支持 X-API-Key 头认证 或 JWT Bearer Token</small>
+                    </div>
+                    <table class="table table-sm">
+                      <thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                      <tbody>
+                        <tr><td>audio_file</td><td>File</td><td>是</td><td>音频文件(.wav/.mp3)</td></tr>
+                        <tr><td>algorithm</td><td>String</td><td>否</td><td>算法名称，默认 paraformer-large</td></tr>
+                        <tr><td>language</td><td>String</td><td>否</td><td>语言代码，默认 zh</td></tr>
+                      </tbody>
+                    </table>
+
+                    <h6 class="mt-4">2. 算法列表接口</h6>
+                    <div class="alert alert-secondary">
+                      <code>GET /api/asr/v1/algorithms</code>
+                      <br><small>无需认证</small>
+                    </div>
+
+                    <h6 class="mt-4">3. 请求示例</h6>
+                    <pre class="bg-dark text-light p-3 rounded"><code>curl -X POST http://HOST:PORT/api/asr/v1/recognize \
+  -H "X-API-Key: your-api-key" \
+  -F "audio_file=@test.wav" \
+  -F "algorithm=paraformer-large"</code></pre>
+
+                    <h6 class="mt-4">4. 响应示例</h6>
+                    <pre class="bg-dark text-light p-3 rounded"><code>{
+  "text": "今天天气真好",
+  "language": "zh",
+  "rtf": 0.03,
+  "processing_time": 0.42,
+  "segments": [
+    {"start": 0.0, "end": 0.8, "text": "今天"},
+    {"start": 0.8, "end": 1.5, "text": "天气真好"}
+  ]
+}</code></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div><!-- /asr tab-content -->
         </div>
       </div>
 

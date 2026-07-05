@@ -37,6 +37,11 @@ timm
 # WeNet 需从本地安装: pip install -e app/algorithms/wenet
 jieba
 
+# ===== 语音识别 (ASR Benchmark) =====
+funasr
+openai-whisper
+wenet
+
 # ===== 模型框架 =====
 modelscope
 speechbrain

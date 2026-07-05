@@ -59,6 +59,31 @@ class AudioConfig(BaseSettings):
     max_file_size: int = 100
 
 
+class ASRAlgorithmConfig(BaseSettings):
+    """单个ASR算法配置"""
+    model_config = {"protected_namespaces": ("settings_",)}
+    enabled: bool = True
+    model_dir: str = ""
+    preload: bool = False
+
+
+class ASRAPIKeysConfig(BaseSettings):
+    """ASR API Key配置"""
+    enabled: bool = True
+    keys: List[str] = []
+
+
+class ASRConfig(BaseSettings):
+    """ASR语音识别评测配置"""
+    default_algorithm: str = "paraformer-large"
+    max_vram_per_model_mb: int = 8000
+    lru_cache_size: int = 3
+    languages: List[str] = [".wav", ".mp3"]
+    api_keys: ASRAPIKeysConfig = ASRAPIKeysConfig()
+    algorithms: dict = {}
+    datasets: dict = {}
+
+
 class Config(BaseSettings):
     """全局配置"""
     server: ServerConfig = ServerConfig()
@@ -67,6 +92,7 @@ class Config(BaseSettings):
     cuda: CUDAConfig = CUDAConfig()
     logging: LoggingConfig = LoggingConfig()
     audio: AudioConfig = AudioConfig()
+    asr: ASRConfig = ASRConfig()
 
 
 def load_config(config_path: str = None) -> Config:
@@ -130,6 +156,17 @@ def load_config(config_path: str = None) -> Config:
                 config.logging = LoggingConfig(**yaml_config["logging"])
             if "audio" in yaml_config:
                 config.audio = AudioConfig(**yaml_config["audio"])
+            if "asr" in yaml_config:
+                asr_data = yaml_config["asr"]
+                config.asr = ASRConfig(
+                    default_algorithm=asr_data.get("default_algorithm", "paraformer-large"),
+                    max_vram_per_model_mb=asr_data.get("max_vram_per_model_mb", 8000),
+                    lru_cache_size=asr_data.get("lru_cache_size", 3),
+                    languages=asr_data.get("languages", ["zh", "en"]),
+                    api_keys=ASRAPIKeysConfig(**asr_data.get("api_keys", {})),
+                    algorithms=asr_data.get("algorithms", {}),
+                    datasets=asr_data.get("datasets", {}),
+                )
     
     # 将相对路径转换为基于项目根目录的绝对路径
     def resolve_path(path_str: str) -> str:
@@ -169,6 +206,9 @@ def load_config(config_path: str = None) -> Config:
         config.cuda.enabled = os.getenv("AUDIOMOS_CUDA_ENABLED").lower() == "true"
     if os.getenv("AUDIOMOS_LOG_LEVEL"):
         config.logging.level = os.getenv("AUDIOMOS_LOG_LEVEL")
+    if os.getenv("AUDIOMOS_ASR_API_KEYS"):
+        keys_str = os.getenv("AUDIOMOS_ASR_API_KEYS")
+        config.asr.api_keys.keys = [k.strip() for k in keys_str.split(",") if k.strip()]
     
     return config
 
