@@ -1,7 +1,8 @@
 """
 FunASR适配器
 支持 Paraformer-large 和 SenseVoice-Small
-模型文件从项目本地 models/asr/ 目录加载
+FunASR新版本(1.3+)使用注册名: Paraformer, SenseVoiceSmall
+模型文件优先从项目本地 models/asr/ 目录加载，否则自动从ModelScope/HuggingFace下载
 """
 
 import os
@@ -12,6 +13,13 @@ import numpy as np
 from ..base import BaseASR, ASRResult, ASRSegment
 
 logger = logging.getLogger("audiomos")
+
+# 设置模型缓存到项目本地目录
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)))
+_LOCAL_CACHE = os.path.join(_PROJECT_ROOT, "models", "asr", "modelscope_cache")
+os.environ.setdefault("MODELSCOPE_CACHE", _LOCAL_CACHE)
 
 
 class ParaformerAdapter(BaseASR):
@@ -30,17 +38,21 @@ class ParaformerAdapter(BaseASR):
         try:
             from funasr import AutoModel
 
-            model_path = self.model_dir or "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
-            # 优先使用本地模型
-            if self.model_dir and os.path.exists(self.model_dir):
+            # FunASR 1.3+ 注册名
+            model_name = "Paraformer"
+            hub = "ms"
+
+            # 优先使用本地模型目录
+            if self.model_dir and os.path.exists(self.model_dir) and os.listdir(self.model_dir):
                 logger.info(f"[Paraformer] 从本地加载模型: {self.model_dir}")
-                model_path = self.model_dir
+                model_name = self.model_dir
+                hub = "local"
 
             self._model = AutoModel(
-                model=model_path,
+                model=model_name,
                 device=self.device,
                 disable_update=True,
-                hub="local" if (self.model_dir and os.path.exists(self.model_dir)) else "ms",
+                hub=hub,
             )
             self._is_initialized = True
             logger.info(f"[Paraformer] 模型初始化成功")
@@ -64,14 +76,14 @@ class ParaformerAdapter(BaseASR):
             item = result[0]
             if isinstance(item, dict):
                 text = item.get("text", "")
-                # 提取时间戳
                 timestamp = item.get("timestamp", [])
                 for ts in timestamp:
-                    segments.append(ASRSegment(
-                        start=ts[0] / 1000.0 if len(ts) > 0 else 0,
-                        end=ts[1] / 1000.0 if len(ts) > 1 else 0,
-                        text=ts[2] if len(ts) > 2 else "",
-                    ))
+                    if isinstance(ts, (list, tuple)) and len(ts) >= 2:
+                        segments.append(ASRSegment(
+                            start=ts[0] / 1000.0,
+                            end=ts[1] / 1000.0,
+                            text=ts[2] if len(ts) > 2 else "",
+                        ))
             else:
                 text = str(item)
 
@@ -99,16 +111,20 @@ class SenseVoiceAdapter(BaseASR):
         try:
             from funasr import AutoModel
 
-            model_path = self.model_dir or "iic/SenseVoiceSmall"
-            if self.model_dir and os.path.exists(self.model_dir):
+            # FunASR 1.3+ 注册名
+            model_name = "SenseVoiceSmall"
+            hub = "ms"
+
+            if self.model_dir and os.path.exists(self.model_dir) and os.listdir(self.model_dir):
                 logger.info(f"[SenseVoice] 从本地加载模型: {self.model_dir}")
-                model_path = self.model_dir
+                model_name = self.model_dir
+                hub = "local"
 
             self._model = AutoModel(
-                model=model_path,
+                model=model_name,
                 device=self.device,
                 disable_update=True,
-                hub="local" if (self.model_dir and os.path.exists(self.model_dir)) else "ms",
+                hub=hub,
             )
             self._is_initialized = True
             logger.info(f"[SenseVoice] 模型初始化成功")

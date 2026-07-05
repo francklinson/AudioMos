@@ -9,10 +9,10 @@ ASR 模型下载脚本
     python download_asr_models.py --list           # 查看已下载的模型
 
 支持的模型:
-    paraformer-large       - Paraformer-large (ModelScope)
-    sensevoice-small       - SenseVoice-Small  (ModelScope)
-    wenet-u2pp             - WeNet U2++        (ModelScope Dataset)
-    whisper-large-v3-turbo - Whisper large-v3-turbo (HuggingFace)
+    paraformer-large       - Paraformer-large (HuggingFace: FunASR/paraformer-zh)
+    sensevoice-small       - SenseVoice-Small  (HuggingFace: FunAudioLLM/SenseVoiceSmall)
+    wenet-u2pp             - WeNet U2++        (本地复制: models/wenet/)
+    whisper-large-v3-turbo - Whisper large-v3-turbo (HuggingFace: openai/whisper-large-v3-turbo)
 """
 
 import argparse
@@ -47,22 +47,22 @@ logger = logging.getLogger("download_asr_models")
 MODEL_DEFS = {
     "paraformer-large": {
         "display_name": "Paraformer-Large",
-        "source": "modelscope",
-        "model_id": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        "source": "huggingface",
+        "repo_id": "FunASR/paraformer-zh",
         "local_dir": ASR_MODELS_DIR / "paraformer-large",
         "marker_files": ["model.pt", "configuration.json"],
     },
     "sensevoice-small": {
         "display_name": "SenseVoice-Small",
-        "source": "modelscope",
-        "model_id": "iic/SenseVoiceSmall",
+        "source": "huggingface",
+        "repo_id": "FunAudioLLM/SenseVoiceSmall",
         "local_dir": ASR_MODELS_DIR / "sensevoice-small",
         "marker_files": ["model.pt", "configuration.json"],
     },
     "wenet-u2pp": {
         "display_name": "WeNet U2++",
-        "source": "wenet_hub",
-        "dataset_model": "sos4232_aishell_u2pp_conformer_exp",
+        "source": "local_copy",
+        "src_dir": PROJECT_ROOT / "models" / "wenet",
         "local_dir": ASR_MODELS_DIR / "wenet-u2pp",
         "marker_files": ["final.pt", "train.yaml"],
     },
@@ -268,13 +268,51 @@ def download_huggingface_model(model_name: str):
 
 
 # ---------------------------------------------------------------------------
+# 本地复制 (WeNet — 从项目已有 models/wenet/ 复制)
+# ---------------------------------------------------------------------------
+
+def download_local_copy_model(model_name: str):
+    """从项目已有目录复制模型到ASR模型目录"""
+    import shutil
+
+    model_def = MODEL_DEFS[model_name]
+    src_dir = model_def.get("src_dir")
+    local_dir = model_def["local_dir"]
+
+    if not src_dir or not src_dir.exists():
+        logger.error("[%s] 源目录不存在: %s", model_def["display_name"], src_dir)
+        return False
+
+    logger.info("[%s] 从本地复制模型: %s → %s", model_def["display_name"], src_dir, local_dir)
+    os.makedirs(local_dir, exist_ok=True)
+
+    try:
+        for item in os.listdir(src_dir):
+            src = src_dir / item
+            dst = local_dir / item
+            if dst.exists():
+                if dst.is_dir():
+                    shutil.rmtree(dst)
+                else:
+                    dst.unlink()
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        logger.info("[%s] 复制完成: %s", model_def["display_name"], local_dir)
+        return True
+    except Exception as e:
+        logger.error("[%s] 复制失败: %s", model_def["display_name"], e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # 下载调度
 # ---------------------------------------------------------------------------
 
 DOWNLOAD_HANDLERS = {
-    "modelscope": download_modelscope_model,
-    "wenet_hub": download_wenet_model,
     "huggingface": download_huggingface_model,
+    "local_copy": download_local_copy_model,
 }
 
 
