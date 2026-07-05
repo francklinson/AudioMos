@@ -360,55 +360,45 @@ check_models() {
 
     local all_ready=true
 
-    # 1. 检查TCF模型 (音色还原度) - 多模型检查
+    # 1. 检查TCF模型 (音色还原度) - CAM++单模型
     echo "🔍 检查 TCF (音色还原度) 模型..."
-    echo "   说明: 使用多模型加权评估音色还原度"
-    echo "   模型列表: eres2net/campplus/ecapa-tdnn/res2net/resnet34"
+    echo "   模型: CAM++ (轻量高效, 7.2M参数)"
     echo ""
     echo "   检查路径:"
     echo "      项目路径: $SCRIPT_DIR/models/tcf/"
     echo "      缓存路径: $HOME/.cache/modelscope/hub/"
     echo ""
 
-    local tcf_models=("eres2net" "campplus" "ecapa-tdnn" "res2net" "resnet34")
-    local tcf_model_ids=("damo/speech_eres2net_sv_zh-cn_16k-common" "damo/speech_campplus_sv_zh-cn_16k-common" "damo/speech_ecapa-tdnn_sv_zh-cn_cnceleb_16k" "damo/speech_res2net_sv_zh-cn_3dspeaker_16k" "damo/speech_resnet34_sv_zh-cn_3dspeaker_16k")
     local tcf_available=0
-    local tcf_total=${#tcf_models[@]}
+    local model_name="campplus"
+    local model_id="damo/speech_campplus_sv_zh-cn_16k-common"
+    local project_path="$SCRIPT_DIR/models/tcf/$model_name/configuration.json"
+    local cache_path="$HOME/.cache/modelscope/hub/$model_id/configuration.json"
 
-    for i in "${!tcf_models[@]}"; do
-        local model_name="${tcf_models[$i]}"
-        local model_id="${tcf_model_ids[$i]}"
-        local project_path="$SCRIPT_DIR/models/tcf/$model_name/configuration.json"
-        local cache_path="$HOME/.cache/modelscope/hub/$model_id/configuration.json"
-
-        if [ -f "$project_path" ]; then
-            echo "   ✅ $model_name"
-            echo "      来源: 项目路径"
-            echo "      位置: $SCRIPT_DIR/models/tcf/$model_name/"
-            ((tcf_available++))
-        elif [ -f "$cache_path" ]; then
-            echo "   ✅ $model_name"
-            echo "      来源: 本地缓存"
-            echo "      位置: $HOME/.cache/modelscope/hub/$model_id/"
-            ((tcf_available++))
-        else
-            echo "   ❌ $model_name"
-            echo "      状态: 缺失"
-            echo "      期望路径: $SCRIPT_DIR/models/tcf/$model_name/"
-            echo "      模型ID: $model_id"
-        fi
-    done
+    if [ -f "$project_path" ]; then
+        echo "   ✅ $model_name"
+        echo "      来源: 项目路径"
+        echo "      位置: $SCRIPT_DIR/models/tcf/$model_name/"
+        tcf_available=1
+    elif [ -f "$cache_path" ]; then
+        echo "   ✅ $model_name"
+        echo "      来源: 本地缓存"
+        echo "      位置: $HOME/.cache/modelscope/hub/$model_id/"
+        tcf_available=1
+    else
+        echo "   ❌ $model_name"
+        echo "      状态: 缺失"
+        echo "      期望路径: $SCRIPT_DIR/models/tcf/$model_name/"
+        echo "      模型ID: $model_id"
+    fi
 
     echo ""
     echo "   汇总:"
     if [ $tcf_available -eq 0 ]; then
-        echo "      ⚠️  所有TCF模型都缺失"
+        echo "      ⚠️  TCF模型缺失，音色还原度评分将不可用"
         all_ready=false
-    elif [ $tcf_available -lt $tcf_total ]; then
-        echo "      ⚠️  TCF模型部分可用 ($tcf_available/$tcf_total)"
-        echo "      说明: 将使用可用模型进行加权评估"
     else
-        echo "      ✅ 所有TCF模型已就绪 ($tcf_available/$tcf_total)"
+        echo "      ✅ TCF模型已就绪"
     fi
     echo ""
 
