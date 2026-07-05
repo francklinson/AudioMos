@@ -1922,10 +1922,9 @@ function initAsrPage() {
     updateAsrAlgoInfo();
   });
 
-  // 文件上传
+  // 文件上传（input 已通过 CSS 透明覆盖 zone，用户直接点 input，禁止重复触发）
   const zone = $('asr-upload-zone');
   const input = $('asr-file-input');
-  zone.addEventListener('click', () => input.click());
   zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
   zone.addEventListener('drop', e => {
