@@ -4,9 +4,9 @@ FunASR适配器
 模型文件从项目本地 models/asr/ 目录加载
 
 FunASR 1.3+ 本地加载方式:
-  1. 将HuggingFace下载的模型放入MODELSCOPE_CACHE/hub/<model_id>/目录
-  2. 使用注册名+hub='local'加载
-  3. 如果网络可用，可直接用注册名+hub='ms'自动下载到本地缓存
+  1. 设置 MODELSCOPE_CACHE 环境变量指向 models/asr/modelscope_cache
+  2. 使用注册名 + hub='ms' 加载
+  3. FunASR会自动从 MODELSCOPE_CACHE 目录查找已下载的模型
 """
 
 import os
@@ -23,19 +23,17 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )))
 _LOCAL_CACHE = os.path.join(_PROJECT_ROOT, "models", "asr", "modelscope_cache")
-os.environ.setdefault("MODELSCOPE_CACHE", _LOCAL_CACHE)
+os.environ["MODELSCOPE_CACHE"] = _LOCAL_CACHE
 
 # ModelScope模型ID到FunASR注册名的映射
 _MODEL_ID_MAP = {
     "paraformer-large": {
         "model_id": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        "register_name": "Paraformer",
-        "local_dir_name": "paraformer-large",
+        "register_name": "Paraformer",  # FunASR注册名
     },
     "sensevoice-small": {
         "model_id": "iic/SenseVoiceSmall",
-        "register_name": "SenseVoiceSmall",
-        "local_dir_name": "sensevoice-small",
+        "register_name": "SenseVoiceSmall",  # FunASR注册名
     },
 }
 
@@ -86,35 +84,21 @@ class ParaformerAdapter(BaseASR):
         try:
             from funasr import AutoModel
 
-            # 优先使用本地模型目录（绝对路径）
-            if self.model_dir and os.path.exists(self.model_dir):
-                model_path = os.path.abspath(self.model_dir)
-                logger.info(f"[Paraformer] 从本地加载模型: {model_path}")
-                self._model = AutoModel(
-                    model=model_path,
-                    hub="ms",
-                    device=self.device,
-                    disable_update=True,
-                )
-                self._is_initialized = True
-                logger.info(f"[Paraformer] 模型初始化成功 (local: {model_path})")
-                return True
-
-            # 回退：使用注册名从ModelScope下载
+            # 使用ModelScope模型ID加载（不是FunASR注册名）
             info = _MODEL_ID_MAP["paraformer-large"]
-            try:
-                self._model = AutoModel(
-                    model=info["register_name"],
-                    hub="ms",
-                    device=self.device,
-                    disable_update=True,
-                )
-                self._is_initialized = True
-                logger.info(f"[Paraformer] 模型初始化成功 (ModelScope)")
-                return True
-            except Exception as e:
-                logger.error(f"[Paraformer] ModelScope加载失败: {e}")
-                return False
+            logger.info(f"[Paraformer] 从ModelScope缓存加载: {info['model_id']}")
+            logger.info(f"[Paraformer] MODELSCOPE_CACHE: {_LOCAL_CACHE}")
+            
+            # 直接使用ModelScope模型ID
+            self._model = AutoModel(
+                model=info["model_id"],  # 使用完整的ModelScope ID
+                hub="ms",
+                device=self.device,
+                disable_update=True,
+            )
+            self._is_initialized = True
+            logger.info(f"[Paraformer] 模型初始化成功")
+            return True
 
         except Exception as e:
             logger.error(f"[Paraformer] 初始化失败: {e}")
@@ -170,35 +154,21 @@ class SenseVoiceAdapter(BaseASR):
         try:
             from funasr import AutoModel
 
-            # 优先使用本地模型目录（绝对路径）
-            if self.model_dir and os.path.exists(self.model_dir):
-                model_path = os.path.abspath(self.model_dir)
-                logger.info(f"[SenseVoice] 从本地加载模型: {model_path}")
-                self._model = AutoModel(
-                    model=model_path,
-                    hub="ms",
-                    device=self.device,
-                    disable_update=True,
-                )
-                self._is_initialized = True
-                logger.info(f"[SenseVoice] 模型初始化成功 (local: {model_path})")
-                return True
-
-            # 回退：使用注册名从ModelScope下载
+            # 使用ModelScope模型ID加载（不是FunASR注册名）
             info = _MODEL_ID_MAP["sensevoice-small"]
-            try:
-                self._model = AutoModel(
-                    model=info["register_name"],
-                    hub="ms",
-                    device=self.device,
-                    disable_update=True,
-                )
-                self._is_initialized = True
-                logger.info(f"[SenseVoice] 模型初始化成功 (ModelScope)")
-                return True
-            except Exception as e:
-                logger.error(f"[SenseVoice] ModelScope加载失败: {e}")
-                return False
+            logger.info(f"[SenseVoice] 从ModelScope缓存加载: {info['model_id']}")
+            logger.info(f"[SenseVoice] MODELSCOPE_CACHE: {_LOCAL_CACHE}")
+            
+            # 直接使用ModelScope模型ID
+            self._model = AutoModel(
+                model=info["model_id"],  # 使用完整的ModelScope ID
+                hub="ms",
+                device=self.device,
+                disable_update=True,
+            )
+            self._is_initialized = True
+            logger.info(f"[SenseVoice] 模型初始化成功")
+            return True
 
         except Exception as e:
             logger.error(f"[SenseVoice] 初始化失败: {e}")

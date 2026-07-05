@@ -1,8 +1,9 @@
 """
-FunASR-LLM (7.7B) 适配器
-通过FunASR AutoModel加载LLM-based ASR模型
+Fun-ASR-Nano (800M) 适配器
+通过FunASR AutoModel加载，支持31种语言+7种中文方言
+替代原FunASR-LLM 7.7B，更轻量适合3090部署
 
-ModelScope: iic/speech_seallm_asr_nat-zh-cn-16k
+HuggingFace: FunAudioLLM/Fun-ASR-Nano-2512
 依赖: pip install funasr
 """
 
@@ -18,7 +19,7 @@ logger = logging.getLogger("audiomos")
 
 
 class FunASRLLMAdapter(BaseASR):
-    """FunASR-LLM 7.7B 适配器 — LLM-based ASR with VAD+Punc+Speaker"""
+    """Fun-ASR-Nano 800M 适配器 — 轻量LLM-based ASR，支持31种语言"""
 
     def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
         super().__init__(
@@ -36,7 +37,7 @@ class FunASRLLMAdapter(BaseASR):
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )))
-        for dirname in ["funasr-llm", "speech_seallm_asr_nat-zh-cn-16k", "funasr-llm-7.7b"]:
+        for dirname in ["funasr-llm", "Fun-ASR-Nano-2512", "fun-asr-nano"]:
             candidate = os.path.join(project_root, "models", "asr", dirname)
             if os.path.exists(candidate) and os.listdir(candidate):
                 return candidate
@@ -50,34 +51,40 @@ class FunASRLLMAdapter(BaseASR):
 
             if model_dir:
                 model_path = os.path.abspath(model_dir)
-                logger.info(f"[FunASR-LLM] 从本地加载模型: {model_path}")
+                logger.info(f"[Fun-ASR-Nano] 从本地加载模型: {model_path}")
                 self._model = AutoModel(
                     model=model_path,
-                    hub="ms",
+                    trust_remote_code=True,
+                    remote_code="./model.py",
+                    vad_model="fsmn-vad",
+                    vad_kwargs={"max_single_segment_time": 30000},
                     device=self.device,
                     disable_update=True,
                 )
             else:
-                # 使用FunASR注册名从ModelScope加载
-                logger.info("[FunASR-LLM] 从ModelScope加载: iic/speech_seallm_asr_nat-zh-cn-16k")
+                # 使用HuggingFace模型名加载
+                logger.info("[Fun-ASR-Nano] 从HuggingFace加载: FunAudioLLM/Fun-ASR-Nano-2512")
                 self._model = AutoModel(
-                    model="iic/speech_seallm_asr_nat-zh-cn-16k",
-                    hub="ms",
+                    model="FunAudioLLM/Fun-ASR-Nano-2512",
+                    trust_remote_code=True,
+                    remote_code="./model.py",
+                    vad_model="fsmn-vad",
+                    vad_kwargs={"max_single_segment_time": 30000},
                     device=self.device,
                     disable_update=True,
                 )
 
             self._is_initialized = True
-            logger.info("[FunASR-LLM] 模型初始化成功")
+            logger.info("[Fun-ASR-Nano] 模型初始化成功")
             return True
 
         except Exception as e:
-            logger.error(f"[FunASR-LLM] 初始化失败: {e}")
+            logger.error(f"[Fun-ASR-Nano] 初始化失败: {e}")
             return False
 
     def transcribe(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> ASRResult:
         if not self._is_initialized:
-            raise RuntimeError("FunASR-LLM模型未初始化")
+            raise RuntimeError("Fun-ASR-Nano模型未初始化")
 
         result = self._model.generate(
             input=audio,

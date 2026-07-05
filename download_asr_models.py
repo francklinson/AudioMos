@@ -13,9 +13,9 @@ ASR 模型下载脚本
     sensevoice-small       - SenseVoice-Small  (HuggingFace: FunAudioLLM/SenseVoiceSmall)
     wenet-u2pp             - WeNet U2++        (本地复制: models/wenet/)
     whisper-large-v3-turbo - Whisper large-v3-turbo (HuggingFace: openai/whisper-large-v3-turbo)
-    firered-asr2           - FireRedASR2-LLM   (HuggingFace: FireRedTeam/FireRedASR2-LLM)
+    firered-asr2           - FireRedASR2-AED   (HuggingFace: FireRedTeam/FireRedASR2-AED)
     qwen3-asr              - Qwen3-ASR-1.7B    (HuggingFace: Qwen/Qwen3-ASR-1.7B)
-    funasr-llm             - FunASR-LLM 7.7B   (HuggingFace: iic/speech_seallm_asr_nat-zh-cn-16k)
+    funasr-llm             - Fun-ASR-Nano 800M (HuggingFace: FunAudioLLM/Fun-ASR-Nano-2512)
     step-audio-2-mini      - Step-Audio-2-mini  (HuggingFace: stepfun-ai/Step-Audio-2-mini)
     vibevoice-asr          - VibeVoice-ASR-7B   (HuggingFace: microsoft/VibeVoice-ASR-HF)
 """
@@ -79,11 +79,11 @@ MODEL_DEFS = {
         "marker_files": ["model.safetensors", "config.json"],
     },
     "firered-asr2": {
-        "display_name": "FireRedASR2-LLM",
+        "display_name": "FireRedASR2-AED (1.1B)",
         "source": "huggingface",
-        "repo_id": "FireRedTeam/FireRedASR2-LLM",
+        "repo_id": "FireRedTeam/FireRedASR2-AED",
         "local_dir": ASR_MODELS_DIR / "firered-asr2",
-        "marker_files": ["config.json", "model.safetensors"],
+        "marker_files": ["config.yaml", "model.pth.tar"],
     },
     "qwen3-asr": {
         "display_name": "Qwen3-ASR-1.7B",
@@ -93,11 +93,11 @@ MODEL_DEFS = {
         "marker_files": ["config.json", "model.safetensors"],
     },
     "funasr-llm": {
-        "display_name": "FunASR-LLM 7.7B",
+        "display_name": "Fun-ASR-Nano (800M)",
         "source": "huggingface",
-        "repo_id": "iic/speech_seallm_asr_nat-zh-cn-16k",
+        "repo_id": "FunAudioLLM/Fun-ASR-Nano-2512",
         "local_dir": ASR_MODELS_DIR / "funasr-llm",
-        "marker_files": ["configuration.json", "model.pt"],
+        "marker_files": ["config.yaml", "model.pt"],
     },
     "step-audio-2-mini": {
         "display_name": "Step-Audio-2-mini",
@@ -111,7 +111,7 @@ MODEL_DEFS = {
         "source": "huggingface",
         "repo_id": "microsoft/VibeVoice-ASR-HF",
         "local_dir": ASR_MODELS_DIR / "vibevoice-asr",
-        "marker_files": ["config.json", "model.safetensors"],
+        "marker_files": ["config.json", "model.safetensors.index.json"],
     },
 }
 
@@ -347,12 +347,43 @@ def download_local_copy_model(model_name: str):
 
 
 # ---------------------------------------------------------------------------
+# ModelScope 下载 (FunASR-LLM 等阿里系模型)
+# ---------------------------------------------------------------------------
+
+def download_modelscope_model(model_name: str):
+    """通过 modelscope.snapshot_download 下载到指定本地目录"""
+    model_def = MODEL_DEFS[model_name]
+    repo_id = model_def["repo_id"]
+    local_dir = str(model_def["local_dir"])
+
+    logger.info("[%s] 开始从 ModelScope 下载: %s → %s", model_def["display_name"], repo_id, local_dir)
+
+    try:
+        from modelscope import snapshot_download
+    except ImportError:
+        logger.error("[%s] modelscope 未安装，请执行: pip install modelscope", model_def["display_name"])
+        return False
+
+    try:
+        snapshot_download(
+            model_id=repo_id,
+            local_dir=local_dir,
+        )
+        logger.info("[%s] 下载完成: %s", model_def["display_name"], local_dir)
+        return True
+    except Exception as e:
+        logger.error("[%s] 下载失败: %s", model_def["display_name"], e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # 下载调度
 # ---------------------------------------------------------------------------
 
 DOWNLOAD_HANDLERS = {
     "huggingface": download_huggingface_model,
     "local_copy": download_local_copy_model,
+    "modelscope": download_modelscope_model,
 }
 
 

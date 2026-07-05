@@ -428,6 +428,39 @@
     - 生成工作记录: records/work_record_2026-06-30_ui_optimization.md
 
 已完成:
+[21] ASR语音识别能力集成 (2026-07-05完成)
+    - 集成9个前沿中文ASR开源SOTA算法:
+      * Paraformer-Large (220M, CER 1.95%)
+      * SenseVoice-Small (234M, 多任务)
+      * WeNet U2++ (~100M, 流式)
+      * Whisper Large-v3 Turbo (809M, 99种语言)
+      * FireRedASR2-AED (1.1B, CER 3.05%)
+      * Qwen3-ASR-1.7B (1.7B, 52种语言)
+      * Fun-ASR-Nano (800M, 31种语言)
+      * Step-Audio-2-mini (8.32B, 端到端)
+      * VibeVoice-ASR-7B (7B, ICLR 2026 Oral)
+    - 实现后端API接口 (backend/app/api/asr.py):
+      * GET /api/asr/algorithms - 获取算法列表
+      * POST /api/asr/transcribe - 单文件识别
+      * POST /api/asr/transcribe/batch - 批量识别
+      * POST /api/asr/benchmark/run - Benchmark评测
+      * GET /api/asr/benchmark/{id}/report - 下载报告
+      * POST /api/asr/v1/recognize - 外部API
+      * WebSocket /api/asr/ws/{task_id} - 实时进度
+    - 实现前端ASR评测页面 (frontend/static/index.html):
+      * 语音识别Tab: 选择算法→上传音频→查看结果
+      * BenchmarkTab: 多算法对比评测→排名→报告下载
+      * API文档Tab: 接口说明和调用示例
+    - 模型下载状态:
+      * 已完整下载: whisper-large-v3-turbo, wenet-u2pp, qwen3-asr, step-audio-2-mini
+      * 需手动下载: paraformer-large, sensevoice-small, funasr-llm, firered-asr2, vibevoice-asr
+    - 下载脚本: download_asr_models.py
+    - 模型目录: models/asr/
+    - 注意: 服务器无法访问外网，需在有网络机器上下载模型后拷贝
+    - 生成工作记录: records/work_record_2026-07-05_asr_integration.md
+
+
+已完成:
 [5] 切分对齐流程性能优化 (2026-06-30完成)
     - P0: 消除 RefScore 内部 DTW 重复匹配
       * 正则扩展: ref_\d+ → ref[_-]?\d+（支持ref_001/ref001/ref-001）

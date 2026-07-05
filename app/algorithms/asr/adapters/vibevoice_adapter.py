@@ -1,12 +1,11 @@
 """
-VibeVoice-ASR-7B 适配器
+VibeVoice-ASR 适配器
 超低帧率分词器+LLM，单次处理60分钟长音频
 ICLR 2026 Oral
 
+默认使用4-bit在线量化加载FP16模型(~8GB VRAM)，适合3090部署
 HuggingFace: microsoft/VibeVoice-ASR-HF
-GitHub: https://github.com/microsoft/VibeVoice
-依赖: pip install transformers torch soundfile
-  需要transformers版本支持VibeVoiceAsrForConditionalGeneration
+依赖: pip install transformers torch soundfile bitsandbytes
 """
 
 import os
@@ -21,7 +20,7 @@ logger = logging.getLogger("audiomos")
 
 
 class VibeVoiceAdapter(BaseASR):
-    """VibeVoice-ASR-7B 适配器 — 超低帧率分词器 + LLM"""
+    """VibeVoice-ASR 适配器 — 超低帧率分词器 + LLM (4-bit在线量化)"""
 
     def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
         super().__init__(
@@ -32,6 +31,8 @@ class VibeVoiceAdapter(BaseASR):
             model_dir=model_dir,
         )
         self._processor = None
+        # 默认使用4-bit量化以适配3090 (24GB VRAM)
+        self._use_4bit = kwargs.get("use_4bit", True)
 
     def _find_model_dir(self) -> Optional[str]:
         """查找本地模型目录"""
@@ -40,7 +41,7 @@ class VibeVoiceAdapter(BaseASR):
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )))
-        for dirname in ["vibevoice-asr", "VibeVoice-ASR-HF", "VibeVoice-ASR-7B"]:
+        for dirname in ["vibevoice-asr", "VibeVoice-ASR-HF", "VibeVoice-ASR-7B", "VibeVoice-ASR-4bit"]:
             candidate = os.path.join(project_root, "models", "asr", dirname)
             if os.path.exists(candidate) and os.listdir(candidate):
                 return candidate
@@ -64,25 +65,41 @@ class VibeVoiceAdapter(BaseASR):
                     logger.info("[VibeVoice] 从HuggingFace下载: microsoft/VibeVoice-ASR-HF")
                     model_path = "microsoft/VibeVoice-ASR-HF"
 
-                torch_dtype = torch.float16 if self.device != "cpu" else torch.float32
-
                 self._processor = AutoProcessor.from_pretrained(
                     model_path,
                     local_files_only=bool(model_dir),
+                    trust_remote_code=True,
                 )
-                self._model = VibeVoiceAsrForConditionalGeneration.from_pretrained(
-                    model_path,
-                    device_map="auto",
-                    torch_dtype=torch_dtype,
-                    local_files_only=bool(model_dir),
-                )
+
+                if self._use_4bit:
+                    # 4-bit在线量化加载（FP16模型→4-bit运行，约8GB VRAM）
+                    from transformers import BitsAndBytesConfig
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                    )
+                    self._model = VibeVoiceAsrForConditionalGeneration.from_pretrained(
+                        model_path,
+                        quantization_config=quantization_config,
+                        local_files_only=bool(model_dir),
+                        trust_remote_code=True,
+                    )
+                else:
+                    torch_dtype = torch.float16 if self.device != "cpu" else torch.float32
+                    self._model = VibeVoiceAsrForConditionalGeneration.from_pretrained(
+                        model_path,
+                        device_map="auto",
+                        torch_dtype=torch_dtype,
+                        local_files_only=bool(model_dir),
+                        trust_remote_code=True,
+                    )
+
                 self._load_mode = "vibevoice"
                 self._is_initialized = True
-                logger.info("[VibeVoice] 模型初始化成功 (VibeVoiceAsrForConditionalGeneration)")
+                logger.info(f"[VibeVoice] 模型初始化成功 ({'4-bit量化' if self._use_4bit else 'FP16'})")
                 return True
 
             except (ImportError, AttributeError):
-                # VibeVoiceAsrForConditionalGeneration不可用，尝试vibevoice包
                 pass
 
             # 回退: 使用vibevoice社区包
@@ -104,7 +121,7 @@ class VibeVoiceAdapter(BaseASR):
             except ImportError:
                 raise ImportError(
                     "VibeVoice未安装。请执行:\n"
-                    "  pip install transformers>=4.51.0 (支持VibeVoiceAsrForConditionalGeneration)\n"
+                    "  pip install transformers>=4.51.0 bitsandbytes\n"
                     "  或 pip install vibevoice"
                 )
 
@@ -118,7 +135,6 @@ class VibeVoiceAdapter(BaseASR):
 
         sr = sample_rate or self.sample_rate
 
-        # VibeVoice需要文件路径输入
         import soundfile as sf
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             temp_path = f.name
@@ -140,15 +156,13 @@ class VibeVoiceAdapter(BaseASR):
         inputs = self._processor.apply_transcription_request(
             audio=audio_path,
             prompt=None,
-        ).to(self._model.device, self._model.dtype)
+        ).to(self._model.device, torch.float16 if self.device != "cpu" else torch.float32)
 
         output_ids = self._model.generate(**inputs)
         generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
 
-        # 尝试解析格式
         try:
             result = self._processor.decode(generated_ids, return_format="parsed")[0]
-            # 返回的是分段列表
             text_parts = []
             segments = []
             for seg in result:
@@ -162,7 +176,6 @@ class VibeVoiceAdapter(BaseASR):
                     ))
             text = "".join(text_parts).strip()
         except Exception:
-            # 回退到纯文本解码
             text = self._processor.decode(generated_ids[0], skip_special_tokens=True).strip()
             segments = None
 
