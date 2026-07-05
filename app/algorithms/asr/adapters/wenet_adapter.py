@@ -94,7 +94,19 @@ class WeNetAdapter(BaseASR):
 
         try:
             result = self._model.transcribe(temp_path)
-            text = result.strip() if isinstance(result, str) else str(result)
+            # WeNet返回DecodeResult对象或字符串
+            if isinstance(result, str):
+                text = result.strip()
+            elif hasattr(result, 'text'):
+                text = result.text.strip()
+            elif isinstance(result, (list, tuple)) and len(result) > 0:
+                first = result[0]
+                if hasattr(first, 'text'):
+                    text = first.text.strip()
+                else:
+                    text = str(first).strip()
+            else:
+                text = str(result).strip()
         finally:
             os.unlink(temp_path)
 
