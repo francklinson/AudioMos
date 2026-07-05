@@ -1,12 +1,7 @@
 """
 FunASR适配器
 支持 Paraformer-large 和 SenseVoice-Small
-模型文件从项目本地 models/asr/ 目录加载
-
-FunASR 1.3+ 本地加载方式:
-  1. 设置 MODELSCOPE_CACHE 环境变量指向 models/asr/modelscope_cache
-  2. 使用注册名 + hub='ms' 加载
-  3. FunASR会自动从 MODELSCOPE_CACHE 目录查找已下载的模型
+直接从 models/asr/ 本地目录加载，无需 ModelScope 缓存
 """
 
 import os
@@ -17,55 +12,6 @@ import numpy as np
 from ..base import BaseASR, ASRResult, ASRSegment
 
 logger = logging.getLogger("audiomos")
-
-# 设置模型缓存到项目本地目录
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-)))
-_LOCAL_CACHE = os.path.join(_PROJECT_ROOT, "models", "asr", "modelscope_cache")
-os.environ["MODELSCOPE_CACHE"] = _LOCAL_CACHE
-
-# ModelScope模型ID到FunASR注册名的映射
-_MODEL_ID_MAP = {
-    "paraformer-large": {
-        "model_id": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        "register_name": "Paraformer",  # FunASR注册名
-    },
-    "sensevoice-small": {
-        "model_id": "iic/SenseVoiceSmall",
-        "register_name": "SenseVoiceSmall",  # FunASR注册名
-    },
-}
-
-
-def _setup_local_model_cache(algo_name: str, model_dir: str):
-    """
-    将本地模型目录链接到MODELSCOPE_CACHE/hub/<model_id>/，
-    使FunASR AutoModel可以用hub='local'加载
-    """
-    info = _MODEL_ID_MAP.get(algo_name)
-    if not info:
-        return model_dir
-
-    model_id = info["model_id"]
-    cache_model_dir = os.path.join(_LOCAL_CACHE, "hub", model_id)
-
-    if os.path.exists(cache_model_dir) and os.listdir(cache_model_dir):
-        return model_dir  # 缓存目录已有模型
-
-    # 从model_dir创建软链接到缓存目录
-    os.makedirs(os.path.dirname(cache_model_dir), exist_ok=True)
-
-    if model_dir and os.path.exists(model_dir) and os.listdir(model_dir):
-        if os.path.islink(cache_model_dir):
-            os.unlink(cache_model_dir)
-        elif os.path.exists(cache_model_dir):
-            import shutil
-            shutil.rmtree(cache_model_dir)
-        os.symlink(os.path.abspath(model_dir), cache_model_dir)
-        logger.info(f"[FunASR] 已链接本地模型: {model_dir} → {cache_model_dir}")
-
-    return model_dir
 
 
 class ParaformerAdapter(BaseASR):
@@ -84,22 +30,20 @@ class ParaformerAdapter(BaseASR):
         try:
             from funasr import AutoModel
 
-            # 使用本地缓存路径直接加载（避免ModelScope SSL连接失败）
-            info = _MODEL_ID_MAP["paraformer-large"]
-            cache_dir = os.path.join(_LOCAL_CACHE, "hub", info["model_id"])
-            if os.path.exists(cache_dir) and os.path.isfile(os.path.join(cache_dir, "model.pt")):
-                logger.info(f"[Paraformer] 从本地缓存加载: {cache_dir}")
+            # 直接从本地模型目录加载（绕开 modelscope 缓存）
+            model_dir = self.model_dir
+            if model_dir and os.path.isdir(model_dir) and os.path.isfile(os.path.join(model_dir, "model.pt")):
+                logger.info(f"[Paraformer] 从本地模型目录加载: {model_dir}")
                 self._model = AutoModel(
-                    model=cache_dir,
+                    model=model_dir,
                     device=self.device,
                     disable_update=True,
                 )
             else:
-                # 兜底：尝试从ModelScope加载
-                logger.info(f"[Paraformer] 从ModelScope加载: {info['model_id']}")
+                # 兜底：从 HuggingFace 加载
+                logger.info("[Paraformer] 从 HuggingFace 加载: FunAudioLLM/paraformer-large")
                 self._model = AutoModel(
-                    model=info["model_id"],
-                    hub="ms",
+                    model="FunAudioLLM/paraformer-large",
                     device=self.device,
                     disable_update=True,
                 )
@@ -161,22 +105,20 @@ class SenseVoiceAdapter(BaseASR):
         try:
             from funasr import AutoModel
 
-            # 使用本地缓存路径直接加载（避免ModelScope SSL连接失败）
-            info = _MODEL_ID_MAP["sensevoice-small"]
-            cache_dir = os.path.join(_LOCAL_CACHE, "hub", info["model_id"])
-            if os.path.exists(cache_dir) and os.path.isfile(os.path.join(cache_dir, "model.pt")):
-                logger.info(f"[SenseVoice] 从本地缓存加载: {cache_dir}")
+            # 直接从本地模型目录加载（绕开 modelscope 缓存）
+            model_dir = self.model_dir
+            if model_dir and os.path.isdir(model_dir) and os.path.isfile(os.path.join(model_dir, "model.pt")):
+                logger.info(f"[SenseVoice] 从本地模型目录加载: {model_dir}")
                 self._model = AutoModel(
-                    model=cache_dir,
+                    model=model_dir,
                     device=self.device,
                     disable_update=True,
                 )
             else:
-                # 兜底：尝试从ModelScope加载
-                logger.info(f"[SenseVoice] 从ModelScope加载: {info['model_id']}")
+                # 兜底：从 HuggingFace 加载
+                logger.info("[SenseVoice] 从 HuggingFace 加载: FunAudioLLM/SenseVoiceSmall")
                 self._model = AutoModel(
-                    model=info["model_id"],
-                    hub="ms",
+                    model="FunAudioLLM/SenseVoiceSmall",
                     device=self.device,
                     disable_update=True,
                 )
