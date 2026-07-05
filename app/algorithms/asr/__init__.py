@@ -8,7 +8,7 @@ from .registry import ASRRegistry, ASR_ALGORITHM_DESCRIPTIONS
 from .evaluator import ASRMetrics, compute_cer, compute_wer, evaluate_asr
 from .adapters import (
     ParaformerAdapter, SenseVoiceAdapter, WeNetAdapter, WhisperAdapter,
-    FireRedASR2Adapter, Qwen3ASRAdapter,
+    FireRedASR2Adapter, Qwen3ASRAdapter, FunASRLLMAdapter,
 )
 
 
@@ -29,6 +29,7 @@ def _get_adapter_class(name: str):
         "whisper-large-v3-turbo": WhisperAdapter,
         "firered-asr2": FireRedASR2Adapter,
         "qwen3-asr": Qwen3ASRAdapter,
+        "funasr-llm": FunASRLLMAdapter,
     }
     return adapter_map.get(name)
 

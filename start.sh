@@ -866,6 +866,53 @@ print(f'{torch.cuda.get_device_name(0)} (CUDA {torch.version.cuda})')
     echo ""
 
     # ========================
+    # 11. 检查ASR语音识别模型
+    # ========================
+    echo "🔍 检查 ASR (语音识别) 模型..."
+    echo "   说明: 7个轻量化中文ASR开源模型，支持GPU加速推理"
+    echo ""
+    echo "   检查路径:"
+    echo "      项目路径: $SCRIPT_DIR/models/asr/"
+    echo ""
+
+    local asr_all_ok=true
+    local asr_models=(
+        "paraformer-large/model.pt:Paraformer-Large (840MB)"
+        "sensevoice-small/model.pt:SenseVoice-Small (893MB)"
+        "wenet-u2pp/final.pt:WeNet U2++ (468MB)"
+        "whisper-large-v3-turbo/model.safetensors:Whisper Large-v3 Turbo (1.6GB)"
+        "firered-asr2/model.pth.tar:FireRedASR2-AED (4.5GB)"
+        "qwen3-asr/model.safetensors.index.json:Qwen3-ASR-1.7B (4.5GB)"
+        "funasr-llm/model.pt:Fun-ASR-Nano 800M (2.0GB)"
+    )
+
+    for model_entry in "${asr_models[@]}"; do
+        local model_file="${model_entry%%:*}"
+        local model_desc="${model_entry##*:}"
+        local full_path="$SCRIPT_DIR/models/asr/$model_file"
+        if [ -f "$full_path" ]; then
+            local file_size=$(du -sh "$full_path" 2>/dev/null | cut -f1)
+            echo "      ✅ $model_desc ($file_size)"
+        else
+            echo "      ❌ $model_desc — 缺失"
+            echo "         期望路径: $full_path"
+            asr_all_ok=false
+            all_ready=false
+        fi
+    done
+
+    echo ""
+    if $asr_all_ok; then
+        echo "      ✅ ASR模型已全部就绪 (7/7)"
+        local asr_total=$(du -sh "$SCRIPT_DIR/models/asr/" 2>/dev/null | cut -f1)
+        echo "      总大小: $asr_total"
+    else
+        echo "      ⚠️ ASR模型不完整，请重新下载缺失的模型"
+    fi
+    echo ""
+    echo ""
+
+    # ========================
     # 汇总
     # ========================
     echo "================================"

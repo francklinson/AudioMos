@@ -211,7 +211,7 @@ asr:
       model_dir: "./models/asr/qwen3-asr"
       preload: false
     funasr-llm:
-      enabled: false
+      enabled: true
       model_dir: "./models/asr/funasr-llm"
       preload: false
     step-audio-2-mini:

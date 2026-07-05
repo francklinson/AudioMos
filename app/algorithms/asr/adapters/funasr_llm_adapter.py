@@ -55,8 +55,6 @@ class FunASRLLMAdapter(BaseASR):
                 self._model = AutoModel(
                     model=model_path,
                     trust_remote_code=True,
-                    vad_model="fsmn-vad",
-                    vad_kwargs={"max_single_segment_time": 30000},
                     device=self.device,
                     disable_update=True,
                 )
@@ -66,8 +64,6 @@ class FunASRLLMAdapter(BaseASR):
                 self._model = AutoModel(
                     model="FunAudioLLM/Fun-ASR-Nano-2512",
                     trust_remote_code=True,
-                    vad_model="fsmn-vad",
-                    vad_kwargs={"max_single_segment_time": 30000},
                     device=self.device,
                     disable_update=True,
                 )
@@ -84,10 +80,21 @@ class FunASRLLMAdapter(BaseASR):
         if not self._is_initialized:
             raise RuntimeError("Fun-ASR-Nano模型未初始化")
 
-        result = self._model.generate(
-            input=audio,
-            batch_size_s=300,
-        )
+        import soundfile as sf
+        import tempfile
+
+        sr = sample_rate or self.sample_rate
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            temp_path = f.name
+        try:
+            sf.write(temp_path, audio, sr)
+            result = self._model.generate(
+                input=temp_path,
+                batch_size_s=300,
+            )
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
         text = ""
         if result and len(result) > 0:
