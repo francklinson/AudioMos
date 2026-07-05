@@ -84,18 +84,25 @@ class ParaformerAdapter(BaseASR):
         try:
             from funasr import AutoModel
 
-            # 使用ModelScope模型ID加载（不是FunASR注册名）
+            # 使用本地缓存路径直接加载（避免ModelScope SSL连接失败）
             info = _MODEL_ID_MAP["paraformer-large"]
-            logger.info(f"[Paraformer] 从ModelScope缓存加载: {info['model_id']}")
-            logger.info(f"[Paraformer] MODELSCOPE_CACHE: {_LOCAL_CACHE}")
-            
-            # 直接使用ModelScope模型ID
-            self._model = AutoModel(
-                model=info["model_id"],  # 使用完整的ModelScope ID
-                hub="ms",
-                device=self.device,
-                disable_update=True,
-            )
+            cache_dir = os.path.join(_LOCAL_CACHE, "hub", info["model_id"])
+            if os.path.exists(cache_dir) and os.path.isfile(os.path.join(cache_dir, "model.pt")):
+                logger.info(f"[Paraformer] 从本地缓存加载: {cache_dir}")
+                self._model = AutoModel(
+                    model=cache_dir,
+                    device=self.device,
+                    disable_update=True,
+                )
+            else:
+                # 兜底：尝试从ModelScope加载
+                logger.info(f"[Paraformer] 从ModelScope加载: {info['model_id']}")
+                self._model = AutoModel(
+                    model=info["model_id"],
+                    hub="ms",
+                    device=self.device,
+                    disable_update=True,
+                )
             self._is_initialized = True
             logger.info(f"[Paraformer] 模型初始化成功")
             return True
@@ -154,18 +161,25 @@ class SenseVoiceAdapter(BaseASR):
         try:
             from funasr import AutoModel
 
-            # 使用ModelScope模型ID加载（不是FunASR注册名）
+            # 使用本地缓存路径直接加载（避免ModelScope SSL连接失败）
             info = _MODEL_ID_MAP["sensevoice-small"]
-            logger.info(f"[SenseVoice] 从ModelScope缓存加载: {info['model_id']}")
-            logger.info(f"[SenseVoice] MODELSCOPE_CACHE: {_LOCAL_CACHE}")
-            
-            # 直接使用ModelScope模型ID
-            self._model = AutoModel(
-                model=info["model_id"],  # 使用完整的ModelScope ID
-                hub="ms",
-                device=self.device,
-                disable_update=True,
-            )
+            cache_dir = os.path.join(_LOCAL_CACHE, "hub", info["model_id"])
+            if os.path.exists(cache_dir) and os.path.isfile(os.path.join(cache_dir, "model.pt")):
+                logger.info(f"[SenseVoice] 从本地缓存加载: {cache_dir}")
+                self._model = AutoModel(
+                    model=cache_dir,
+                    device=self.device,
+                    disable_update=True,
+                )
+            else:
+                # 兜底：尝试从ModelScope加载
+                logger.info(f"[SenseVoice] 从ModelScope加载: {info['model_id']}")
+                self._model = AutoModel(
+                    model=info["model_id"],
+                    hub="ms",
+                    device=self.device,
+                    disable_update=True,
+                )
             self._is_initialized = True
             logger.info(f"[SenseVoice] 模型初始化成功")
             return True

@@ -1,9 +1,9 @@
 """
 Qwen3-ASR-1.7B 适配器
-使用 HuggingFace Transformers 加载
+使用 qwen-asr 包加载（支持 transformers 和 vLLM 两种后端）
 
 HuggingFace: Qwen/Qwen3-ASR-1.7B
-依赖: pip install transformers torch soundfile librosa
+依赖: pip install qwen-asr
 """
 
 import os
@@ -44,7 +44,7 @@ class Qwen3ASRAdapter(BaseASR):
 
     def initialize(self) -> bool:
         try:
-            from transformers import AutoModel, AutoProcessor
+            from qwen_asr import Qwen3ASRModel
             import torch
 
             model_dir = self._find_model_dir()
@@ -56,22 +56,19 @@ class Qwen3ASRAdapter(BaseASR):
                 logger.info("[Qwen3-ASR] 从HuggingFace下载模型: Qwen/Qwen3-ASR-1.7B")
                 model_path = "Qwen/Qwen3-ASR-1.7B"
 
-            torch_dtype = torch.float16 if self.device != "cpu" else torch.float32
-
-            # 使用trust_remote_code=True支持自定义模型架构
-            self._processor = AutoProcessor.from_pretrained(
-                model_path,
+            # 使用 qwen-asr 的 from_pretrained 加载模型
+            # device_map 确保模型加载到 GPU；fp16 加速推理
+            model_kwargs = dict(
                 trust_remote_code=True,
-            )
-            self._model = AutoModel.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-                torch_dtype=torch_dtype,
                 low_cpu_mem_usage=True,
                 use_safetensors=True,
+                max_new_tokens=512,
             )
-            self._model.to(self.device)
-            self._model.eval()
+            if self.device != "cpu":
+                model_kwargs["torch_dtype"] = torch.float16
+                model_kwargs["device_map"] = "cuda:0"
+
+            self._model = Qwen3ASRModel.from_pretrained(model_path, **model_kwargs)
 
             self._is_initialized = True
             logger.info("[Qwen3-ASR] 模型初始化成功")
@@ -85,27 +82,30 @@ class Qwen3ASRAdapter(BaseASR):
         if not self._is_initialized:
             raise RuntimeError("Qwen3-ASR模型未初始化")
 
-        import torch
-
         sr = sample_rate or self.sample_rate
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
 
-        # 预处理
-        inputs = self._processor(
-            audio=audio,
-            sampling_rate=sr,
-            return_tensors="pt",
-            padding=True,
+        # 语言映射：ISO代码 -> Qwen3-ASR 全称
+        lang_map = {
+            "zh": "Chinese", "en": "English", "ja": "Japanese",
+            "ko": "Korean", "yue": "Cantonese", "ar": "Arabic",
+            "de": "German", "fr": "French", "es": "Spanish",
+            "pt": "Portuguese", "id": "Indonesian", "it": "Italian",
+            "ru": "Russian", "th": "Thai", "vi": "Vietnamese",
+        }
+        qwen_lang = lang_map.get(self.language, "Chinese")
+
+        # qwen-asr 的 transcribe 接受 (np.ndarray, sr) 元组
+        results = self._model.transcribe(
+            (audio, sr),
+            language=qwen_lang,
+            return_time_stamps=False,
         )
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-        # 推理
-        with torch.no_grad():
-            outputs = self._model.generate(**inputs)
-
-        # 解码
-        text = self._processor.batch_decode(outputs, skip_special_tokens=True)[0].strip()
+        text = ""
+        if results and len(results) > 0:
+            text = (results[0].text or "").strip()
 
         return ASRResult(
             text=text,

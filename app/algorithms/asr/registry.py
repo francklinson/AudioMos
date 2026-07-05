@@ -191,16 +191,4 @@ ASR_ALGORITHM_DESCRIPTIONS = {
         "preload": False,
         "tags": ["方言", "流式", "千问"],
     },
-    "funasr-llm": {
-        "display_name": "Fun-ASR-Nano (800M)",
-        "description": "轻量LLM-based ASR，支持31种语言+7种中文方言，低计算资源友好",
-        "architecture": "音频编码器(0.2B) + Qwen3 LLM解码器(0.6B)",
-        "params": "800M",
-        "cer_aishell1": "~4.16%",
-        "streaming": True,
-        "languages": ["zh", "en", "31种语言"],
-        "license": "MIT",
-        "preload": False,
-        "tags": ["轻量", "LLM", "多语言", "方言"],
-    },
 }

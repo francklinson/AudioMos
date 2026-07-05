@@ -178,42 +178,43 @@ class FireRedASR2Adapter(BaseASR):
         )
 
     def _transcribe_fasr(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> ASRResult:
-        """使用fasr库推理 - 通过临时文件"""
-        from fasr import Audio
-        import soundfile as sf
-        import tempfile
-        import os
+        """使用fasr库推理 - 创建AudioSpan对象传递给模型"""
+        from fasr.data.audio import AudioSpan
+        from fasr.data.waveform import Waveform
 
         sr = sample_rate or self.sample_rate
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
 
-        # 创建临时文件，fasr从文件加载
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_path = f.name
-        try:
-            sf.write(temp_path, audio, sr)
-            audio_obj = Audio(url=temp_path)
-            audio_obj.load()
+        # 确保二维 (channels, samples)
+        if audio.ndim == 1:
+            audio = audio[np.newaxis, :]
 
-            # 调用transcribe
-            result = self._model.transcribe([audio_obj])
+        duration_ms = int(audio.shape[1] / sr * 1000)
+        waveform = Waveform(data=audio, sample_rate=sr)
+        span = AudioSpan(
+            waveform=waveform,
+            start_ms=0,
+            end_ms=duration_ms,
+        )
 
-            text = ""
-            if result and len(result) > 0:
-                audio_result = result[0]
-                if hasattr(audio_result, 'text') and audio_result.text:
-                    text = audio_result.text
-                elif isinstance(audio_result, dict):
-                    text = audio_result.get('text', '')
-                else:
-                    text = str(audio_result)
+        # 调用transcribe，模型接受 List[AudioSpan]
+        result = self._model.transcribe([span])
 
-            return ASRResult(
-                text=text.strip(),
-                language=self.language,
-                algorithm_name=self.name,
-            )
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+        text = ""
+        if result and len(result) > 0:
+            audio_result = result[0]
+            if hasattr(audio_result, 'raw_text') and audio_result.raw_text:
+                text = audio_result.raw_text
+            elif hasattr(audio_result, 'text') and audio_result.text:
+                text = audio_result.text
+            elif isinstance(audio_result, dict):
+                text = audio_result.get('text', '') or audio_result.get('raw_text', '')
+            else:
+                text = str(audio_result)
+
+        return ASRResult(
+            text=text.strip(),
+            language=self.language,
+            algorithm_name=self.name,
+        )
