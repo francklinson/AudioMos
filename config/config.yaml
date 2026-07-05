@@ -100,6 +100,7 @@ audio:
   supported_formats:
     - ".wav"
     - ".mp3"
+    - ".flac"
   # 最大文件大小(MB)
   max_file_size: 100
 

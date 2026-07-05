@@ -217,7 +217,6 @@ function handleLogout() {
 const state = {
   user: null,
   mosPollTimer: null,
-  restorationPollTimer: null,
   mosPrevStats: { total: -1, completed: -1, processing: -1 },
   mosWsConnections: {},       // { taskId: WebSocket }
   mosStepNames: {             // 进度步骤名称映射
@@ -229,6 +228,16 @@ const state = {
     'done': '处理完成',
   },
   mosStepOrder: ['uploading', 'matching', 'splitting', 'computing', 'generating', 'done'],
+  restorationWsConnections: {},   // { taskId: WebSocket }
+  restorationStepNames: {
+    'queued': '排队等待',
+    'loading': '加载模型',
+    'reading': '读取音频',
+    'processing': '执行修复',
+    'saving': '保存结果',
+    'done': '处理完成',
+  },
+  restorationStepOrder: ['queued', 'loading', 'reading', 'processing', 'saving', 'done'],
   _pollInterval: 5000,        // 默认轮询间隔
 };
 
@@ -879,8 +888,29 @@ function selectRestorationAlgorithm(name) {
 }
 
 function initRestorationPage() {
-  $('restoration-file-input').addEventListener('change', () => {
-    const files = $('restoration-file-input').files;
+  const zone = $('restoration-upload-zone');
+  const input = $('restoration-file-input');
+
+  // 拖拽上传
+  if (zone) {
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('dragover');
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        restorationFile = files[0];
+        $('restoration-file-info').classList.remove('d-none');
+        $('restoration-file-name').textContent = restorationFile.name;
+        $('restoration-file-size').textContent = formatSize(restorationFile.size);
+        updateRestorationSubmitBtn();
+      }
+    });
+  }
+
+  input.addEventListener('change', () => {
+    const files = input.files;
     restorationFile = files.length > 0 ? files[0] : null;
     if (restorationFile) {
       $('restoration-file-info').classList.remove('d-none');
@@ -897,6 +927,19 @@ function initRestorationPage() {
 function updateRestorationSubmitBtn() {
   const btn = $('restoration-submit-btn');
   btn.disabled = !restorationSelectedAlg || !restorationFile;
+}
+
+function showRestorationAlert(type, msg) {
+  const errorEl = $('restoration-error');
+  const successEl = $('restoration-success');
+  if (errorEl) { errorEl.classList.add('d-none'); errorEl.textContent = ''; }
+  if (successEl) { successEl.classList.add('d-none'); successEl.textContent = ''; }
+  const target = type === 'success' ? successEl : errorEl;
+  if (target) {
+    target.textContent = msg;
+    target.classList.remove('d-none');
+    setTimeout(() => { target.classList.add('d-none'); target.textContent = ''; }, 4000);
+  }
 }
 
 async function submitRestorationTask() {
@@ -917,10 +960,16 @@ async function submitRestorationTask() {
     loadRestorationTasks();
     $('restoration-tab-tasks').click();
   } catch (err) {
+    showRestorationAlert('error', '提交失败: ' + err.message);
     showToast('提交失败: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-play-fill"></i> 开始修复';
+    // 清空文件选择，允许立即选择新文件
+    $('restoration-file-input').value = '';
+    restorationFile = null;
+    $('restoration-file-info').classList.add('d-none');
+    updateRestorationSubmitBtn();
   }
 }
 
@@ -932,66 +981,193 @@ async function loadRestorationTasks() {
   } catch (_) {}
 }
 
-function renderRestorationTasks(tasks) {
-  // 保存已展开的对比面板状态，避免轮询刷新时被销毁
-  const expandedPanels = new Map();
-  const classPrefix = 'restoration-compare-';
-  document.querySelectorAll('[class*="restoration-compare-"]').forEach(el => {
-    const taskId = Array.from(el.classList).find(c => c.startsWith(classPrefix))?.replace(classPrefix, '');
-    if (taskId && !el.classList.contains('d-none')) {
-      expandedPanels.set(taskId, {
-        loaded: el.dataset.loaded === 'true',
-        html: el.innerHTML
-      });
+function _isRestorationActive(t) {
+  const s = t.status;
+  return s === 'processing' || s === 'pending' || s === 'queued';
+}
+
+function _restorationActionsHtml(t) {
+  const status = t.status || 'pending';
+  return `${statusBadge(status)}
+    ${status === 'completed' ? `
+      <button class="btn btn-sm btn-outline-info" onclick="toggleRestorationCompare('${t.task_id}', this)"><i class="bi bi-play-circle"></i> 试听对比</button>
+      <button class="btn btn-sm btn-outline-success" onclick="downloadRestorationResult('${t.task_id}')"><i class="bi bi-download"></i></button>
+    ` : ''}
+    <button class="btn btn-sm btn-outline-danger" onclick="deleteRestorationTask('${t.task_id}')"><i class="bi bi-trash"></i></button>`;
+}
+
+function _buildRestorationTaskHtml(t) {
+  const status = t.status || 'pending';
+  const progress = t.progress || 0;
+  const fileName = t.filename || t.file_name || shortId(t.task_id);
+  const algName = t.algorithm || '';
+  const isActive = _isRestorationActive(t);
+  return `<div class="task-item" id="restoration-task-${t.task_id}">
+    <div class="task-header">
+      <div>
+        <span class="task-file">${_escapeHtml(fileName)}</span>
+        ${algName ? `<span class="badge bg-info ms-2">${_escapeHtml(algName)}</span>` : ''}
+        <span class="task-id ms-2">${shortId(t.task_id)}</span>
+      </div>
+      <div class="task-actions">
+        ${_restorationActionsHtml(t)}
+      </div>
+    </div>
+    <div class="restoration-progress-wrap mt-2" ${isActive ? '' : 'style="display:none"'}>
+      <div class="progress" style="height:6px"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width:${progress}%"></div></div>
+      <div id="restoration-progress-${shortId(t.task_id)}" class="progress-detail"></div>
+    </div>
+    <div class="task-detail">创建: ${formatDate(t.created_at || t.create_time)}${t.duration ? ` | 耗时: ${t.duration.toFixed(1)}s` : ''}</div>
+    <div class="restoration-compare-${t.task_id} d-none mt-2"></div>
+  </div>`;
+}
+
+function _updateRestorationTaskElement(el, t) {
+  const isActive = _isRestorationActive(t);
+  // 重建 actions（状态徽章 + 按钮，处理 active→completed 转换）
+  const actionsEl = el.querySelector('.task-actions');
+  if (actionsEl) actionsEl.innerHTML = _restorationActionsHtml(t);
+  // 进度区显隐 + 进度条宽度
+  const wrap = el.querySelector('.restoration-progress-wrap');
+  if (wrap) {
+    wrap.style.display = isActive ? '' : 'none';
+    if (isActive) {
+      const bar = wrap.querySelector('.progress-bar');
+      if (bar) bar.style.width = (t.progress || 0) + '%';
     }
-  });
-  // 重渲染任务列表
-  $('restoration-task-count').textContent = tasks.length;
+  }
+}
+
+function renderRestorationTasks(tasks) {
+  $('restoration-task-count').textContent = tasks ? tasks.length : 0;
   const container = $('restoration-task-list');
   if (!tasks || tasks.length === 0) {
+    // 清空时断开所有 WS
+    Object.keys(state.restorationWsConnections).forEach(id => disconnectRestorationWs(id));
     container.innerHTML = '<div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无任务 <button class="btn btn-sm btn-primary ms-2" onclick="document.getElementById(\'restoration-tab-upload\').click()">创建第一个修复任务</button></div>';
     return;
   }
-  container.innerHTML = tasks.map(t => {
-    const status = t.status || 'pending';
-    const progress = t.progress || 0;
-    const fileName = t.file_name || t.message || shortId(t.task_id);
-    const algName = t.algorithm || '';
-    return `<div class="task-item">
-      <div class="task-header">
-        <div>
-          <span class="task-file">${fileName}</span>
-          ${algName ? `<span class="badge bg-info ms-2">${algName}</span>` : ''}
-          <span class="task-id ms-2">${shortId(t.task_id)}</span>
-        </div>
-        <div class="task-actions">
-          ${statusBadge(status)}
-          ${status === 'completed' ? `
-            <button class="btn btn-sm btn-outline-info" onclick="toggleRestorationCompare('${t.task_id}', this)"><i class="bi bi-play-circle"></i> 试听对比</button>
-            <button class="btn btn-sm btn-outline-success" onclick="downloadRestorationResult('${t.task_id}')"><i class="bi bi-download"></i></button>
-          ` : ''}
-          <button class="btn btn-sm btn-outline-danger" onclick="deleteRestorationTask('${t.task_id}')"><i class="bi bi-trash"></i></button>
-        </div>
-      </div>
-      ${(status === 'processing' || status === 'pending') ? `<div class="mt-2"><div class="progress" style="height:6px"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width:${progress}%"></div></div></div>` : ''}
-      <div class="task-detail">创建: ${formatDate(t.created_at || t.create_time)}${t.duration ? ` | 耗时: ${t.duration.toFixed(1)}s` : ''}</div>
-      <div class="restoration-compare-${t.task_id} d-none mt-2"></div>
-    </div>`;
-  }).join('');
-  // 恢复已展开的对比面板
-  container.querySelectorAll('[class*="restoration-compare-"]').forEach(el => {
-    const taskId = Array.from(el.classList).find(c => c.startsWith(classPrefix))?.replace(classPrefix, '');
-    if (!taskId) return;
-    const saved = expandedPanels.get(taskId);
-    if (saved) {
-      el.classList.remove('d-none');
-      if (saved.loaded) {
-        el.dataset.loaded = 'true';
-        el.innerHTML = saved.html;
-      }
+
+  // 判断是否需要全量渲染（首次或所有卡片都被移除）
+  const needsFullRender = !container.querySelector('.task-item');
+  if (needsFullRender) {
+    container.innerHTML = tasks.map(t => _buildRestorationTaskHtml(t)).join('');
+    tasks.forEach(t => { if (_isRestorationActive(t)) connectRestorationWs(t.task_id); });
+    return;
+  }
+
+  // 增量更新（避免全量 innerHTML 替换破坏 WS 实时更新的 DOM 与已展开的对比面板）
+  const existingIds = new Set();
+  tasks.forEach(t => {
+    existingIds.add(t.task_id);
+    const el = $(`restoration-task-${t.task_id}`);
+    if (el) {
+      _updateRestorationTaskElement(el, t);
+    } else {
+      // 新任务 → 插入到列表顶部
+      container.insertAdjacentHTML('afterbegin', _buildRestorationTaskHtml(t));
+      if (_isRestorationActive(t)) connectRestorationWs(t.task_id);
+    }
+  });
+
+  // 移除已删除的任务（本地删除或别的客户端删除）
+  container.querySelectorAll('.task-item[id^="restoration-task-"]').forEach(el => {
+    const id = el.id.replace('restoration-task-', '');
+    if (!existingIds.has(id)) {
+      disconnectRestorationWs(id);
+      el.remove();
     }
   });
 }
+
+/** WebSocket推送的处理进度步骤 — 根据后端报告的步骤名确定完成状态 */
+function renderRestorationProgressSteps(taskId, progress, message) {
+  const container = $(`restoration-progress-${shortId(taskId)}`);
+  if (!container) return;
+  const stepMatch = message ? message.match(/^\[(\w+)\](.+)/) : null;
+  if (!stepMatch) {
+    container.innerHTML = `<div class="progress-step active"><span class="step-icon"><div class="spinner-border spinner-sm" role="status"></div></span><span>${_escapeHtml(message || '处理中...')}</span></div>`;
+    return;
+  }
+  const currentStep = stepMatch[1].toLowerCase();
+  const stepDesc = stepMatch[2].trim();
+  const order = state.restorationStepOrder;
+  const currentIdx = order.indexOf(currentStep);
+  const hasCurrent = currentIdx >= 0;
+  let html = '';
+  order.forEach(step => {
+    const stepLabel = state.restorationStepNames[step] || step;
+    const idx = order.indexOf(step);
+    const isCompleted = hasCurrent && idx < currentIdx;
+    const isActive = step === currentStep;
+    let iconHtml;
+    if (isActive) iconHtml = '<div class="spinner-border spinner-sm" role="status"></div>';
+    else if (isCompleted) iconHtml = '<i class="bi bi-check-circle-fill text-success" style="font-size:.85rem"></i>';
+    else iconHtml = '<i class="bi bi-circle" style="font-size:.85rem;color:#ddd"></i>';
+    html += `<div class="progress-step ${isActive ? 'active' : ''} ${isCompleted ? 'completed' : ''}">
+      <span class="step-icon">${iconHtml}</span>
+      <span>${stepLabel}</span>
+      ${isActive ? `<span class="ms-1 small text-muted">— ${_escapeHtml(stepDesc)}</span>` : ''}
+    </div>`;
+  });
+  container.innerHTML = html;
+}
+
+/** 连接到WebSocket获取实时进度 */
+function connectRestorationWs(taskId) {
+  if (state.restorationWsConnections[taskId]) return;
+  try {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/restoration/ws/${taskId}`;
+    const ws = new WebSocket(wsUrl);
+    state.restorationWsConnections[taskId] = ws;
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.status && data.progress !== undefined) {
+          const el = $(`restoration-task-${taskId}`);
+          if (el) {
+            const bar = el.querySelector('.progress-bar');
+            if (bar) bar.style.width = data.progress + '%';
+            renderRestorationProgressSteps(taskId, data.progress, data.message || '');
+          }
+          if (data.status === 'completed') {
+            disconnectRestorationWs(taskId);
+            // 拉取终态（result_file 等仅在后端 tasks dict 中）
+            loadRestorationTasks();
+          } else if (data.status === 'failed') {
+            disconnectRestorationWs(taskId);
+            showRestorationAlert('error', data.message || '修复失败');
+            loadRestorationTasks();
+          }
+        }
+      } catch (_) {}
+    };
+
+    ws.onerror = () => { disconnectRestorationWs(taskId); };
+    ws.onclose = () => { disconnectRestorationWs(taskId); };
+
+    // 5分钟超时自动断开（防止残留连接）
+    setTimeout(() => {
+      if (state.restorationWsConnections[taskId]) {
+        disconnectRestorationWs(taskId);
+      }
+    }, 300000);
+  } catch (_) {
+    // WebSocket不可用时静默失败
+  }
+}
+
+function disconnectRestorationWs(taskId) {
+  if (state.restorationWsConnections[taskId]) {
+    try { state.restorationWsConnections[taskId].close(); } catch (_) {}
+    delete state.restorationWsConnections[taskId];
+  }
+}
+
+// WaveSurfer 实例缓存（避免重复创建）
+const _wavesurferInstances = {};
 
 async function toggleRestorationCompare(taskId, btn) {
   const container = qs(`.restoration-compare-${taskId}`);
@@ -999,6 +1175,11 @@ async function toggleRestorationCompare(taskId, btn) {
   if (!container.classList.contains('d-none')) {
     container.classList.add('d-none');
     if (btn) btn.innerHTML = '<i class="bi bi-play-circle"></i> 试听对比';
+    // 暂停所有相关波形播放
+    const origKey = `orig-${taskId}`;
+    const procKey = `proc-${taskId}`;
+    if (_wavesurferInstances[origKey]) _wavesurferInstances[origKey].pause();
+    if (_wavesurferInstances[procKey]) _wavesurferInstances[procKey].pause();
     return;
   }
   container.classList.remove('d-none');
@@ -1008,31 +1189,177 @@ async function toggleRestorationCompare(taskId, btn) {
     const token = getToken();
     const srcUrl = apiUrl(`/api/restoration/source/${taskId}?token=${token}`);
     const resultUrl = apiUrl(`/api/restoration/download/${taskId}?token=${token}`);
+    const origWaveId = `wave-original-${shortId(taskId)}`;
+    const procWaveId = `wave-processed-${shortId(taskId)}`;
+    
     container.innerHTML = `<div class="audio-compare">
-      <div class="audio-side"><div class="audio-side-header original"><i class="bi bi-soundwave"></i> 原始音频</div>
-        <canvas class="waveform-canvas" id="wave-original-${shortId(taskId)}"></canvas>
-        <div class="audio-controls" data-url="${srcUrl}">
-          <button class="play-btn original-btn" onclick="toggleAudioPlay(this)"><i class="bi bi-play-fill"></i></button>
-          <span class="time-display">00:00</span>
-          <div class="progress-bar-custom" onclick="seekAudio(this, event)"><div class="progress-fill original-fill"></div></div>
-          <span class="time-display duration">00:00</span>
+      <div class="audio-side">
+        <div class="audio-side-header original"><i class="bi bi-soundwave"></i> 原始音频</div>
+        <div class="waveform-controls">
+          <button class="waveform-play-btn original-btn" data-wave-id="${origWaveId}" onclick="toggleWaveformPlay('${taskId}', 'orig')">
+            <i class="bi bi-play-fill"></i>
+          </button>
+          <span class="waveform-time" id="time-${origWaveId}">00:00 / 00:00</span>
         </div>
+        <div id="${origWaveId}" class="waveform-container"></div>
       </div>
       <div class="arrow-indicator"><i class="bi bi-arrow-right"></i></div>
-      <div class="audio-side"><div class="audio-side-header processed"><i class="bi bi-soundwave"></i> 修复后音频</div>
-        <canvas class="waveform-canvas" id="wave-processed-${shortId(taskId)}"></canvas>
-        <div class="audio-controls" data-url="${resultUrl}">
-          <button class="play-btn processed-btn" onclick="toggleAudioPlay(this)"><i class="bi bi-play-fill"></i></button>
-          <span class="time-display">00:00</span>
-          <div class="progress-bar-custom" onclick="seekAudio(this, event)"><div class="progress-fill processed-fill"></div></div>
-          <span class="time-display duration">00:00</span>
+      <div class="audio-side">
+        <div class="audio-side-header processed"><i class="bi bi-soundwave"></i> 修复后音频</div>
+        <div class="waveform-controls">
+          <button class="waveform-play-btn processed-btn" data-wave-id="${procWaveId}" onclick="toggleWaveformPlay('${taskId}', 'proc')">
+            <i class="bi bi-play-fill"></i>
+          </button>
+          <span class="waveform-time" id="time-${procWaveId}">00:00 / 00:00</span>
         </div>
+        <div id="${procWaveId}" class="waveform-container"></div>
       </div>
     </div>`;
-    // 绘制波形
-    drawWaveform(`wave-original-${shortId(taskId)}`, srcUrl, '#d46b08');
-    drawWaveform(`wave-processed-${shortId(taskId)}`, resultUrl, '#389e0d');
+    
+    // 创建 WaveSurfer 实例
+    createWaveSurfer(origWaveId, srcUrl, '#fa8c16', '#d46b08', taskId, 'orig');
+    createWaveSurfer(procWaveId, resultUrl, '#73d13d', '#389e0d', taskId, 'proc');
   }
+}
+
+/**
+ * 切换波形播放/暂停
+ */
+function toggleWaveformPlay(taskId, type) {
+  const key = `${type}-${taskId}`;
+  const ws = _wavesurferInstances[key];
+  if (!ws) return;
+  
+  if (ws.isPlaying()) {
+    ws.pause();
+  } else {
+    // 播放前暂停另一侧
+    const otherKey = type === 'orig' ? `proc-${taskId}` : `orig-${taskId}`;
+    if (_wavesurferInstances[otherKey]) {
+      _wavesurferInstances[otherKey].pause();
+    }
+    ws.play();
+  }
+}
+
+/**
+ * 格式化时间 mm:ss
+ */
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+/**
+ * 创建 WaveSurfer 波形控件
+ * @param {string} containerId - 容器元素 ID
+ * @param {string} audioUrl - 音频 URL
+ * @param {string} waveColor - 波形颜色（未播放部分）
+ * @param {string} progressColor - 进度颜色（已播放部分）
+ * @param {string} taskId - 任务 ID
+ * @param {string} type - 类型标识 ('orig' 或 'proc')
+ */
+function createWaveSurfer(containerId, audioUrl, waveColor, progressColor, taskId, type) {
+  const container = document.getElementById(containerId);
+  if (!container || typeof WaveSurfer === 'undefined') {
+    // WaveSurfer 未加载，回退到简单提示
+    if (container) container.innerHTML = '<div class="waveform-fallback"><i class="bi bi-hourglass-split"></i> 波形加载中...</div>';
+    return;
+  }
+  
+  const key = `${type}-${taskId}`;
+  const timeEl = document.getElementById(`time-${containerId}`);
+  const playBtn = document.querySelector(`button[data-wave-id="${containerId}"]`);
+  
+  // 清理旧实例（如有）
+  if (_wavesurferInstances[key]) {
+    _wavesurferInstances[key].destroy();
+    delete _wavesurferInstances[key];
+  }
+  
+  // 创建新实例
+  const wavesurfer = WaveSurfer.create({
+    container: `#${containerId}`,
+    waveColor: waveColor,
+    progressColor: progressColor,
+    cursorColor: progressColor,
+    cursorWidth: 2,
+    barWidth: 2,
+    barGap: 1,
+    barRadius: 2,
+    height: 64,
+    normalize: true,
+    hideScrollbar: true,
+    fillParent: true,
+    responsive: true,
+    backend: 'WebAudio',
+    url: audioUrl,
+  });
+  
+  _wavesurferInstances[key] = wavesurfer;
+  
+  // 播放/暂停事件 - 更新按钮图标
+  wavesurfer.on('play', () => {
+    if (playBtn) playBtn.innerHTML = '<i class="bi bi-pause-fill"></i>';
+    // 同步暂停另一侧波形（避免同时播放）
+    const otherKey = type === 'orig' ? `proc-${taskId}` : `orig-${taskId}`;
+    if (_wavesurferInstances[otherKey]) {
+      _wavesurferInstances[otherKey].pause();
+      const otherBtn = document.querySelector(`button[data-wave-id="${otherKey.replace(type === 'orig' ? 'proc' : 'orig', type)}"]`);
+      // 更新另一侧按钮图标
+      const otherContainerId = type === 'orig' 
+        ? `wave-processed-${shortId(taskId)}` 
+        : `wave-original-${shortId(taskId)}`;
+      const otherPlayBtn = document.querySelector(`button[data-wave-id="${otherContainerId}"]`);
+      if (otherPlayBtn) otherPlayBtn.innerHTML = '<i class="bi bi-play-fill"></i>';
+    }
+  });
+  
+  wavesurfer.on('pause', () => {
+    if (playBtn) playBtn.innerHTML = '<i class="bi bi-play-fill"></i>';
+  });
+  
+  wavesurfer.on('finish', () => {
+    if (playBtn) playBtn.innerHTML = '<i class="bi bi-play-fill"></i>';
+  });
+  
+  // 时间更新
+  wavesurfer.on('ready', () => {
+    container.classList.add('waveform-ready');
+    const duration = wavesurfer.getDuration();
+    if (timeEl) timeEl.textContent = `00:00 / ${formatTime(duration)}`;
+  });
+  
+  wavesurfer.on('audioprocess', (currentTime) => {
+    const duration = wavesurfer.getDuration();
+    if (timeEl) timeEl.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+  });
+  
+  wavesurfer.on('seeking', (currentTime) => {
+    const duration = wavesurfer.getDuration();
+    if (timeEl) timeEl.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+  });
+  
+  // 加载错误处理
+  wavesurfer.on('error', (err) => {
+    console.warn(`WaveSurfer 加载失败 (${type}):`, err);
+    container.innerHTML = `<div class="waveform-error">
+      <i class="bi bi-exclamation-triangle"></i> 波形加载失败
+      <button class="btn btn-sm btn-outline-secondary ms-2" onclick="retryWaveform('${containerId}','${audioUrl}','${waveColor}','${progressColor}','${taskId}','${type}')">
+        <i class="bi bi-arrow-clockwise"></i> 重试
+      </button>
+    </div>`;
+  });
+}
+
+/**
+ * 重试加载波形
+ */
+function retryWaveform(containerId, audioUrl, waveColor, progressColor, taskId, type) {
+  const container = document.getElementById(containerId);
+  if (container) container.innerHTML = '<div class="waveform-fallback"><i class="bi bi-hourglass-split"></i> 加载中...</div>';
+  createWaveSurfer(containerId, audioUrl, waveColor, progressColor, taskId, type);
 }
 
 async function downloadRestorationResult(taskId) {
@@ -1057,10 +1384,12 @@ async function downloadRestorationResult(taskId) {
 async function deleteRestorationTask(taskId) {
   showConfirm('确定要删除此任务吗？', async () => {
     try {
+      disconnectRestorationWs(taskId);
       await api(apiUrl(`/api/restoration/tasks/${taskId}`), { method: 'DELETE' });
       showToast('删除成功', 'success');
       loadRestorationTasks();
     } catch (err) {
+      showRestorationAlert('error', '删除失败: ' + err.message);
       showToast('删除失败: ' + err.message, 'error');
     }
   });
@@ -1117,6 +1446,9 @@ function seekAudio(bar, e) {
   audioEl.currentTime = pct * audioEl.duration;
 }
 
+// 波形绘制共用一个 AudioContext（浏览器限制约 6 个，避免泄漏）
+let _waveformAudioCtx = null;
+
 async function drawWaveform(canvasId, url, color) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
@@ -1124,8 +1456,10 @@ async function drawWaveform(canvasId, url, color) {
     const resp = await fetch(url);
     if (!resp.ok) return;
     const blob = await resp.blob();
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    if (!_waveformAudioCtx) {
+      _waveformAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    const buf = await _waveformAudioCtx.decodeAudioData(await blob.arrayBuffer());
     const data = buf.getChannelData(0);
     const w = canvas.clientWidth || canvas.width || 300;
     const h = canvas.clientHeight || canvas.height || 60;
@@ -1161,7 +1495,6 @@ async function drawWaveform(canvasId, url, color) {
       cctx.lineTo(i, mid + max * mid * 0.8);
     }
     cctx.stroke();
-    ctx.close();
   } catch (_) {}
 }
 

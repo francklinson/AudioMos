@@ -14,13 +14,14 @@ from .base import BaseRestorer, RestorationResult, RestorationRegistry
 
 # ── 原有修复算法 ──
 try:
-    from .dereverberation import DereverbRestorer
+    from .dereverberation import DereverbRestorer, DereverbWienerRestorer
     DEREVERB_AVAILABLE = True
     import logging
-    logging.getLogger('audiomos').info("[音频修复模块] DereverbRestorer 加载成功")
+    logging.getLogger('audiomos').info("[音频修复模块] DereverbRestorer / DereverbWienerRestorer 加载成功")
 except ImportError as e:
     DEREVERB_AVAILABLE = False
     DereverbRestorer = None
+    DereverbWienerRestorer = None
     import logging
     import traceback
     logging.getLogger('audiomos').warning(f"[音频修复模块] DereverbRestorer 加载失败: {e}")
@@ -72,18 +73,30 @@ def _make_denoise_restorer_class(denoiser_name: str, default_sr: int = 16000):
 
 
 # ── 降噪算法采样率配置 (名称 → {sample_rate}) ──
-# 算法描述信息从 denoise/registry.DENOISER_DESCRIPTIONS 获取，避免重复
+# ClearVoice 模型采样率从 CLEARVOICE_MODEL_SPECS 动态读取（单一数据源）
+# 注意: clearvoice_mossformer2_sr_48k 是超分辨率模型，不作为降噪器暴露
+#       超分能力通过原生 super_resolution 算法提供
 _DENOISER_SR_CONFIG = {
-    "clearvoice_frcrn_se_16k": 16000,
-    "clearvoice_mossformer2_se_48k": 48000,
-    "clearvoice_mossformer_gan_se_16k": 16000,
-    "clearvoice_mossformer2_ss_16k": 16000,
-    "clearvoice_mossformer2_sr_48k": 48000,
     "speechbrain_metricgan": 16000,
     "speechbrain_sepformer": 16000,
     "spectral_subtraction": 16000,
     "wiener_filtering": 16000,
 }
+
+# 动态注入 ClearVoice 降噪模型（排除 SR 超分模型）
+def _inject_clearvoice_models():
+    try:
+        from denoise.clearervoice_denoiser import CLEARVOICE_MODEL_SPECS
+        for key, spec in CLEARVOICE_MODEL_SPECS.items():
+            # 跳过超分辨率模型（通过原生 super_resolution 暴露）
+            if spec.get("task") == "speech_super_resolution":
+                continue
+            _DENOISER_SR_CONFIG[key] = spec["sample_rate"]
+    except ImportError:
+        import logging
+        logging.getLogger('audiomos').warning("[音频修复] 无法导入 CLEARVOICE_MODEL_SPECS，ClearVoice 降噪模型不可用")
+
+_inject_clearvoice_models()
 
 
 def get_available_restorers() -> dict:
@@ -97,12 +110,17 @@ def get_available_restorers() -> dict:
             "class": DereverbRestorer,
             "description": "使用深度学习模型去除音频中的混响效果",
         }
+        available["dereverberation_wiener"] = {
+            "name": "去混响（传统）",
+            "class": DereverbWienerRestorer,
+            "description": "基于晚期混响抑制的传统信号处理方法，无模型加载，快速处理",
+        }
 
     if SUPERRES_AVAILABLE:
         available["super_resolution"] = {
             "name": "音频超分辨率",
             "class": SuperResolutionRestorer,
-            "description": "将低采样率音频重建为高采样率（带宽扩展）",
+            "description": "使用 MossFormer2_SR_48K 模型将低采样率音频重建为高采样率（带宽扩展）",
         }
 
     # ── 降噪算法（通过适配器，描述从 denoise 模块获取避免重复）──
@@ -142,21 +160,37 @@ RESTORATION_DESCRIPTIONS: dict = {
             "需重采样到 8kHz",
         ],
     },
+    "dereverberation_wiener": {
+        "name": "去混响-传统 (Wiener-style)",
+        "description": "基于晚期混响抑制的传统信号处理方法，通过 STFT 时间平滑估计并减去晚期混响分量，无模型加载，快速处理",
+        "type": "传统方法",
+        "advantages": [
+            "无需模型加载",
+            "处理速度极快",
+            "无采样率限制",
+            "适合轻度混响场景",
+        ],
+        "limitations": [
+            "对重度混响效果有限",
+            "可能损伤早期反射",
+            "非端到端学习",
+        ],
+    },
     "super_resolution": {
         "name": "音频超分辨率 (Bandwidth Extension)",
-        "description": "使用 MossFormer2 语音超分辨率模型，将低采样率 (16kHz) 音频重建为高采样率 (48kHz)，恢复高频细节",
+        "description": "使用 ClearVoice MossFormer2_SR_48K 模型（MossFormer2 + HiFiGAN 架构），将低采样率音频 (8k/16k/24k/32k) 重建为 48kHz 高保真音频，恢复高频细节",
         "type": "深度学习",
         "paper": "ClearerVoice-Studio: Bridging Advanced Speech Processing Research and Practical Deployment (INTERSPEECH 2025)",
         "advantages": [
-            "MossFormer2 架构",
-            "16k→48k 超分",
+            "MossFormer2 + HiFiGAN 架构",
+            "支持 8k/16k/24k/32k → 48k 超分",
             "恢复高频细节",
             "提升听感质量",
         ],
         "limitations": [
-            "模型巨大 (2.1GB)",
+            "模型较大",
             "推理时间较长",
-            "需 16kHz 以上输入",
+            "需低于 48kHz 输入",
         ],
     },
 }
@@ -194,6 +228,7 @@ __all__ = [
     "get_restoration_description",
     "RESTORATION_DESCRIPTIONS",
     "DereverbRestorer",
+    "DereverbWienerRestorer",
     "SuperResolutionRestorer",
     "DenoiseRestorerAdapter",
     "DENOISE_ADAPTER_AVAILABLE",

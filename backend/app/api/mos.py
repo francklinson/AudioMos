@@ -1399,27 +1399,8 @@ async def delete_task(
     return {"message": "任务已删除", "task_id": task_id}
 
 
-# WebSocket连接管理
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: dict = {}
-    
-    async def connect(self, websocket: WebSocket, task_id: str):
-        await websocket.accept()
-        self.active_connections[task_id] = websocket
-    
-    def disconnect(self, task_id: str):
-        if task_id in self.active_connections:
-            del self.active_connections[task_id]
-    
-    async def send_progress(self, task_id: str, data: dict):
-        if task_id in self.active_connections:
-            try:
-                await self.active_connections[task_id].send_json(data)
-            except Exception:
-                # 连接已关闭，移除连接
-                self.disconnect(task_id)
-
+# WebSocket 连接管理（使用共享模块的 ConnectionManager）
+from app.core.websocket import ConnectionManager
 
 manager = ConnectionManager()
 

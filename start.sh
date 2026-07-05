@@ -1,21 +1,16 @@
 #!/bin/bash
-
 # AudioMOS 服务管理脚本
 # 2026-05-12
-
 # 获取脚本所在目录的绝对路径
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$SCRIPT_DIR"
-
 # 读取配置文件中的端口
 CONFIG_FILE="$SCRIPT_DIR/config/config.yaml"
-
 # 从 YAML 文件读取端口的函数
 read_yaml_value() {
     local file="$1"
     local key="$2"
     local default="$3"
-    
     if [ -f "$file" ]; then
         # 使用 grep 和 sed 提取 YAML 值
         local value=$(grep -E "^\s*$key:" "$file" | head -1 | sed 's/.*:\s*//' | sed 's/"//g' | tr -d ' ')
@@ -26,7 +21,6 @@ read_yaml_value() {
     fi
     echo "$default"
 }
-
 # 读取嵌套 YAML 值 (如 server.backend.port)
 read_nested_yaml() {
     local file="$1"
@@ -34,7 +28,6 @@ read_nested_yaml() {
     local subsection="$3"
     local key="$4"
     local default="$5"
-    
     if [ -f "$file" ]; then
         # 找到 section 下的 subsection 下的 key
         local in_section=false

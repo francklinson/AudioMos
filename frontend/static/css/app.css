@@ -1148,6 +1148,102 @@ body::after {
   background: rgba(0,0,0,.03);
 }
 
+/* WaveSurfer.js 波形容器 */
+.waveform-container {
+  width: 100%;
+  height: 64px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(255,255,255,.9), rgba(250,250,255,.9));
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.05);
+  cursor: pointer;
+  transition: box-shadow .2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.waveform-container:hover {
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.08), 0 2px 8px rgba(102,126,234,.1);
+}
+
+/* 波形播放控制区 */
+.waveform-controls {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: .5rem;
+  padding: .4rem .6rem;
+  background: rgba(255,255,255,.6);
+  border-radius: 6px;
+}
+
+.waveform-play-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  color: #fff;
+  transition: var(--transition);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.waveform-play-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 12px rgba(0,0,0,.2);
+}
+
+.waveform-play-btn.original-btn {
+  background: linear-gradient(135deg, #fa8c16, #d46b08);
+}
+
+.waveform-play-btn.processed-btn {
+  background: linear-gradient(135deg, #73d13d, #389e0d);
+}
+
+.waveform-time {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: .85rem;
+  color: #666;
+  font-weight: 500;
+}
+
+/* WaveSurfer 内部样式覆盖 */
+.waveform-container > div {
+  width: 100% !important;
+}
+
+.waveform-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  color: #999;
+  font-size: .85rem;
+  background: linear-gradient(135deg, #fafafa, #f5f7fa);
+  border-radius: 8px;
+}
+
+.waveform-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  color: #cf1322;
+  font-size: .85rem;
+  background: rgba(255,77,79,.05);
+  border-radius: 8px;
+  border: 1px solid rgba(255,77,79,.15);
+}
+
+/* 音频对比面板简化（去除旧播放控件） */
+.audio-compare .audio-side {
+  padding: .75rem;
+}
+
 /* ===================== 参考音频列表 ===================== */
 .ref-audio-item {
   display: flex;

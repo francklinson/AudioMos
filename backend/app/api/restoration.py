@@ -7,10 +7,12 @@ import os
 import shutil
 import uuid
 import time
+import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status, Form
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -18,6 +20,8 @@ from app.api.auth import get_current_active_user, get_current_user_optional
 from app.core.security import User
 from app.core.config import settings
 from app.core.logging_config import logger
+from app.core.task_queue import TaskQueue, Task, TaskStatus
+from app.core.websocket import ConnectionManager
 
 # 导入修复模块
 import sys
@@ -42,11 +46,175 @@ router = APIRouter(prefix="/restoration", tags=["音频修复"])
 Path(settings.paths.upload_dir).mkdir(parents=True, exist_ok=True)
 Path(settings.paths.result_dir).mkdir(parents=True, exist_ok=True)
 
-# 任务存储
+# 任务存储（API 层状态源，对齐 MOS 模式）
 restoration_tasks: Dict[str, Dict[str, Any]] = {}
 
 # 修复算法实例缓存（预加载）
 _restorer_instances: Dict[str, Any] = {}
+
+# 音频修复独立任务队列（与 MOS 队列隔离，避免互相阻塞）
+restoration_task_queue = TaskQueue(max_workers=1)
+
+# WebSocket 连接管理器（restoration 专属实例）
+restoration_manager = ConnectionManager()
+
+# 进度步骤映射（与前端 restorationStepNames 对应）
+RESTORATION_PROGRESS_STEPS = {
+    0: 'queued',
+    10: 'loading',
+    30: 'reading',
+    50: 'processing',
+    80: 'saving',
+    100: 'done',
+}
+
+
+def _get_step_name(progress: int) -> str:
+    """根据进度值推断当前步骤名"""
+    step = 'processing'
+    for p, s in sorted(RESTORATION_PROGRESS_STEPS.items()):
+        if progress >= p:
+            step = s
+    return step
+
+
+async def update_restoration_progress(task_id: str, progress: int, message: str):
+    """更新修复任务进度（同步本地 dict + task_queue + WebSocket 推送）"""
+    if task_id not in restoration_tasks:
+        return
+
+    # 首次进度更新时将状态从 queued → processing
+    if restoration_tasks[task_id].get("status") == "queued":
+        restoration_tasks[task_id]["status"] = "processing"
+
+    restoration_tasks[task_id]["progress"] = progress
+    step_name = _get_step_name(progress)
+    structured_msg = f"[{step_name}]{message}"
+    restoration_tasks[task_id]["message"] = structured_msg
+    restoration_tasks[task_id]["updated_at"] = datetime.now().isoformat()
+
+    # 同步到 task_queue
+    await restoration_task_queue.update_task(task_id, progress=progress, message=structured_msg)
+
+    logger.info(f"[音频修复] 任务进度 {task_id}: [{step_name}] {progress}% - {message}")
+
+    # WebSocket 推送
+    asyncio.ensure_future(restoration_manager.send_progress(task_id, {
+        "status": restoration_tasks[task_id]["status"],
+        "progress": progress,
+        "message": structured_msg,
+        "step": step_name,
+    }))
+
+
+async def process_restoration_task(queue_task: Task):
+    """
+    音频修复任务处理器（由 restoration_task_queue 调度执行）
+
+    从 queue_task.data 取业务参数，用 run_in_executor 跑同步 restorer.restore，
+    各阶段更新进度（本地 dict + task_queue + WebSocket）。
+    """
+    task_id = queue_task.task_id
+    task_data = queue_task.data
+
+    algorithm = task_data.get("algorithm")
+    filename = task_data.get("filename")
+    file_path = task_data.get("file_path")
+
+    logger.info(f"[音频修复] 开始处理任务: {task_id}, 算法: {algorithm}, 文件: {filename}")
+
+    try:
+        # 步骤1: 加载算法模型
+        await update_restoration_progress(task_id, 10, "正在加载算法模型...")
+        loop = asyncio.get_event_loop()
+
+        def _get_restorer_sync():
+            return _get_restorer(algorithm)
+
+        restorer = await loop.run_in_executor(None, _get_restorer_sync)
+        logger.info(f"[音频修复] ✓ 算法实例已获取: {algorithm}")
+
+        # 步骤2: 读取音频
+        await update_restoration_progress(task_id, 30, "正在读取音频文件...")
+
+        def _read_audio():
+            import soundfile as sf
+            import numpy as np
+            audio, sr = sf.read(file_path)
+            logger.info(f"[音频修复] 音频读取完成 - 形状: {audio.shape}, 采样率: {sr}")
+            logger.info(f"[音频修复] 音频范围: [{audio.min():.4f}, {audio.max():.4f}], RMS: {np.sqrt(np.mean(audio**2)):.4f}")
+            return audio, sr
+
+        audio, sr = await loop.run_in_executor(None, _read_audio)
+
+        # 步骤3: 执行修复
+        await update_restoration_progress(task_id, 50, "正在执行音频修复...")
+
+        def _restore():
+            return restorer.restore(audio, sr)
+
+        result = await loop.run_in_executor(None, _restore)
+        logger.info(f"[音频修复] 修复完成 - 输出形状: {result.audio.shape}, 采样率: {result.sample_rate}")
+        logger.info(f"[音频修复] 处理时间: {result.processing_time:.3f}s")
+        logger.info(f"[音频修复] 元数据: {result.metadata}")
+
+        # 步骤4: 保存结果
+        await update_restoration_progress(task_id, 80, "正在保存修复结果...")
+
+        def _save_result():
+            result_dir = os.path.join(settings.paths.result_dir, task_id)
+            os.makedirs(result_dir, exist_ok=True)
+            result_path = os.path.join(result_dir, f"restored_{filename}")
+            import soundfile as sf
+            sf.write(result_path, result.audio, result.sample_rate)
+            # 验证保存
+            saved_audio, saved_sr = sf.read(result_path)
+            logger.info(f"[音频修复] 验证保存文件 - 形状: {saved_audio.shape}, 采样率: {saved_sr}")
+            return result_path
+
+        result_path = await loop.run_in_executor(None, _save_result)
+
+        # 完成
+        restoration_tasks[task_id]["status"] = "completed"
+        restoration_tasks[task_id]["progress"] = 100
+        restoration_tasks[task_id]["message"] = "[done]处理完成"
+        restoration_tasks[task_id]["result_file"] = result_path
+        restoration_tasks[task_id]["processing_time"] = result.processing_time
+        restoration_tasks[task_id]["metadata"] = result.metadata
+        restoration_tasks[task_id]["updated_at"] = datetime.now().isoformat()
+
+        await restoration_task_queue.update_task(task_id, progress=100, message="[done]处理完成")
+
+        logger.info(f"[音频修复] 任务完成: {task_id}")
+
+        # 清理显存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info(f"[音频修复] 显存已清理")
+
+        # 推送完成状态
+        asyncio.ensure_future(restoration_manager.send_progress(task_id, {
+            "status": "completed",
+            "progress": 100,
+            "message": "[done]处理完成",
+            "step": "done",
+        }))
+
+    except Exception as e:
+        restoration_tasks[task_id]["status"] = "failed"
+        restoration_tasks[task_id]["message"] = str(e)
+        restoration_tasks[task_id]["updated_at"] = datetime.now().isoformat()
+
+        logger.error(f"[音频修复] 任务失败: {task_id}, 错误: {e}")
+        import traceback
+        logger.error(f"[音频修复] 错误堆栈: {traceback.format_exc()}")
+
+        asyncio.ensure_future(restoration_manager.send_progress(task_id, {
+            "status": "failed",
+            "progress": restoration_tasks[task_id].get("progress", 0),
+            "message": str(e),
+            "step": "error",
+        }))
 
 
 def init_restoration():
@@ -421,7 +589,9 @@ async def upload_audio_batch(
             status="pending",
             created_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         )
-        restoration_tasks[task_id] = task_info.dict()
+        task_dict = task_info.dict()
+        task_dict["user"] = current_user.username
+        restoration_tasks[task_id] = task_dict
         task_ids.append(task_id)
         filenames.append(file.filename)
 
@@ -439,7 +609,7 @@ async def process_restoration(
     task_id: str,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
-    """提交音频修复任务"""
+    """提交音频修复任务到队列"""
     logger.info(f"[音频修复] 收到处理请求 - task_id: {task_id}, user: {current_user.username}")
 
     if task_id not in restoration_tasks:
@@ -447,10 +617,9 @@ async def process_restoration(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
     task_info = restoration_tasks[task_id]
-    logger.info(f"[音频修复] 任务信息: {task_info}")
 
-    if task_info["status"] == "processing":
-        logger.warning(f"[音频修复] 任务正在处理中: {task_id}")
+    if task_info["status"] in ("processing", "queued"):
+        logger.warning(f"[音频修复] 任务已在队列或处理中: {task_id}, 状态: {task_info['status']}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="任务正在处理中")
 
     algorithm = task_info["algorithm"]
@@ -458,94 +627,36 @@ async def process_restoration(
     filename = task_info["filename"]
     file_path = os.path.join(upload_dir, filename)
 
-    logger.info(f"[音频修复] 算法: {algorithm}, 文件名: {filename}")
-    logger.info(f"[音频修复] 文件路径: {file_path}")
+    logger.info(f"[音频修复] 算法: {algorithm}, 文件名: {filename}, 文件路径: {file_path}")
 
     if not os.path.exists(file_path):
         logger.error(f"[音频修复] 文件不存在: {file_path}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
 
-    # 更新状态
-    task_info["status"] = "processing"
-    task_info["message"] = "正在处理..."
-    logger.info(f"[音频修复] 任务状态已更新为 processing")
+    # 更新本地状态为 queued
+    task_info["status"] = "queued"
+    task_info["progress"] = 0
+    task_info["message"] = "[queued]等待处理..."
+    task_info["updated_at"] = datetime.now().isoformat()
 
-    # 在子线程中处理
-    import threading
+    # 构造队列任务并提交
+    queue_task = Task(
+        task_id=task_id,
+        user=current_user.username,
+        data={
+            "algorithm": algorithm,
+            "filename": filename,
+            "file_path": file_path,
+        },
+    )
 
-    def process():
-        try:
-            logger.info(f"[音频修复] 开始处理任务: {task_id}")
-            logger.info(f"[音频修复] 算法: {algorithm}, 文件: {filename}")
-            logger.info(f"[音频修复] 文件路径: {file_path}")
+    submitted = await restoration_task_queue.submit(queue_task)
+    if not submitted:
+        # 任务已存在（可能是重复提交）
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="任务已存在于队列中")
 
-            task_info["progress"] = 0.1
-
-            # 获取算法实例（使用预加载或延迟加载）
-            logger.info(f"[音频修复] 获取算法实例: {algorithm}")
-            restorer = _get_restorer(algorithm)
-            logger.info(f"[音频修复] ✓ 算法实例已获取 (预加载或延迟加载)")
-
-            task_info["progress"] = 0.3
-
-            # 读取音频
-            import soundfile as sf
-            import numpy as np
-
-            logger.info(f"[音频修复] 读取音频文件: {file_path}")
-            audio, sr = sf.read(file_path)
-            logger.info(f"[音频修复] 音频读取完成 - 形状: {audio.shape}, 采样率: {sr}, 数据类型: {audio.dtype}")
-            logger.info(f"[音频修复] 音频范围: [{audio.min():.4f}, {audio.max():.4f}], RMS: {np.sqrt(np.mean(audio**2)):.4f}")
-
-            task_info["progress"] = 0.5
-
-            # 执行修复
-            logger.info(f"[音频修复] 开始执行修复...")
-            result = restorer.restore(audio, sr)
-            logger.info(f"[音频修复] 修复完成 - 输出形状: {result.audio.shape}, 采样率: {result.sample_rate}")
-            logger.info(f"[音频修复] 输出范围: [{result.audio.min():.4f}, {result.audio.max():.4f}]")
-            logger.info(f"[音频修复] 处理时间: {result.processing_time:.3f}s")
-            logger.info(f"[音频修复] 元数据: {result.metadata}")
-
-            task_info["progress"] = 0.8
-
-            # 保存结果
-            result_dir = os.path.join(settings.paths.result_dir, task_id)
-            os.makedirs(result_dir, exist_ok=True)
-            result_path = os.path.join(result_dir, f"restored_{filename}")
-
-            logger.info(f"[音频修复] 保存结果到: {result_path}")
-            sf.write(result_path, result.audio, result.sample_rate)
-            logger.info(f"[音频修复] 结果保存完成")
-
-            # 验证保存的文件
-            saved_audio, saved_sr = sf.read(result_path)
-            logger.info(f"[音频修复] 验证保存文件 - 形状: {saved_audio.shape}, 采样率: {saved_sr}")
-
-            task_info["status"] = "completed"
-            task_info["progress"] = 1.0
-            task_info["message"] = "处理完成"
-            task_info["result_file"] = result_path
-            task_info["processing_time"] = result.processing_time
-            task_info["metadata"] = result.metadata
-
-            logger.info(f"[音频修复] 任务完成: {task_id}")
-
-            # 清理显存，防止OOM
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                logger.info(f"[音频修复] 显存已清理")
-
-        except Exception as e:
-            task_info["status"] = "failed"
-            task_info["message"] = str(e)
-            logger.error(f"[音频修复] 任务失败: {task_id}, 错误: {e}")
-            import traceback
-            logger.error(f"[音频修复] 错误堆栈: {traceback.format_exc()}")
-
-    threading.Thread(target=process, daemon=True).start()
-
-    return {"task_id": task_id, "message": "任务已提交"}
+    logger.info(f"[音频修复] 任务已提交到队列: {task_id}")
+    return {"task_id": task_id, "message": "任务已提交到队列"}
 
 
 @router.get("/tasks/{task_id}")
@@ -677,3 +788,42 @@ async def delete_task(task_id: str, current_user: User = Depends(get_current_act
     del restoration_tasks[task_id]
 
     return {"message": "任务已删除"}
+
+
+@router.websocket("/ws/{task_id}")
+async def restoration_ws_endpoint(websocket: WebSocket, task_id: str):
+    """音频修复任务实时进度推送
+
+    连接时立即推送一次当前状态（解决前端 WS 连接晚于后端首次推送的时序问题）；
+    之后每 2s 心跳推送；任务进入终态（completed/failed）后主动断开。
+    """
+    await restoration_manager.connect(websocket, task_id)
+    try:
+        # 立即推送一次当前状态
+        if task_id in restoration_tasks:
+            t = restoration_tasks[task_id]
+            await websocket.send_json({
+                "status": t.get("status"),
+                "progress": t.get("progress", 0),
+                "message": t.get("message", ""),
+                "step": _get_step_name(t.get("progress", 0)),
+            })
+        while True:
+            if task_id in restoration_tasks:
+                t = restoration_tasks[task_id]
+                await websocket.send_json({
+                    "status": t.get("status"),
+                    "progress": t.get("progress", 0),
+                    "message": t.get("message", ""),
+                    "step": _get_step_name(t.get("progress", 0)),
+                })
+                # 终态 → 推送后断开
+                if t.get("status") in ("completed", "failed"):
+                    break
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        restoration_manager.disconnect(task_id)

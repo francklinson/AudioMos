@@ -85,7 +85,19 @@ async def lifespan(app: FastAPI):
         logger.error(f"  ❌ 任务队列启动失败: {e}")
         import traceback
         logger.error(f"  错误详情: {traceback.format_exc()}")
-    
+
+    # 启动音频修复任务队列（与 MOS 队列隔离，避免互相阻塞）
+    logger.info("[音频修复任务队列]")
+    try:
+        logger.info("  正在启动音频修复任务队列...")
+        from app.api.restoration import restoration_task_queue, process_restoration_task
+        await restoration_task_queue.start(process_restoration_task)
+        logger.info("  ✅ 音频修复任务队列启动成功")
+    except Exception as e:
+        logger.error(f"  ❌ 音频修复任务队列启动失败: {e}")
+        import traceback
+        logger.error(f"  错误详情: {traceback.format_exc()}")
+
     elapsed_time = time.time() - start_time
     logger.info("=" * 60)
     logger.info(f"系统启动完成 (耗时: {elapsed_time:.2f}s)")
@@ -104,7 +116,14 @@ async def lifespan(app: FastAPI):
         logger.info("  ✅ 任务队列已停止")
     except Exception as e:
         logger.error(f"  ❌ 任务队列停止失败: {e}")
-    
+
+    try:
+        from app.api.restoration import restoration_task_queue
+        await restoration_task_queue.stop()
+        logger.info("  ✅ 音频修复任务队列已停止")
+    except Exception as e:
+        logger.error(f"  ❌ 音频修复任务队列停止失败: {e}")
+
     logger.info("=" * 60)
     logger.info("AudioMOS 系统已关闭")
     logger.info("=" * 60)
