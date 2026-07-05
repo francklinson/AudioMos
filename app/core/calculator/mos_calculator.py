@@ -308,33 +308,33 @@ def get_ref_file_by_content(input_wav_file, ref_dir, use_cache=True):
                              f"{os.path.basename(cached[0]) if cached[0] else 'None'}")
                 return cached
 
-    # 从切分文件名中提取 ref_tag（如 dut_ref_001_001.wav → ref_001.wav）
-    # 这是 DTW 匹配结果的持久化映射，非文件名匹配（零成本的快速路径）
-    import re
-    # 支持 ref_001、ref001、ref-001 三种命名模式
-    ref_matches = re.findall(r'ref[_-]?\d+', input_stem, re.IGNORECASE)
-    if ref_matches:
-        # 取最后一个 ref_tag
-        raw_tag = ref_matches[-1]
-        # 标准化为 ref_xxx 格式
-        digits = re.findall(r'\d+', raw_tag)
-        if digits:
-            ref_tag = f"ref_{digits[-1]}"
-            ref_candidate = os.path.join(ref_dir, ref_tag + '.wav')
-            if os.path.exists(ref_candidate):
-                logger.info(f"[参考匹配-切分映射] {input_basename} -> {ref_tag}.wav")
-                with _ref_match_stats_lock:
-                    _ref_match_stats['regex_hit'] += 1
-                result = (ref_candidate, {"method": "split_mapping", "ref_name": ref_tag})
-                if use_cache and cache_key:
-                    with _ref_match_cache_lock:
-                        _ref_match_cache[cache_key] = result
-                return result
+    # 从切分文件名尾部匹配参考音频名（支持任意参考文件命名）
+    # 如 dut_2m_降噪开_我的录音.wav → 查找 ref_dir/我的录音.wav
+    # 如 dut_2m_降噪开_ref_001.wav → 查找 ref_dir/ref_001.wav
+    if ref_dir and os.path.isdir(ref_dir):
+        try:
+            ref_files = [f for f in os.listdir(ref_dir)
+                        if f.endswith(('.wav', '.mp3', '.flac'))]
+            for ref_filename in ref_files:
+                ref_stem = os.path.splitext(ref_filename)[0]
+                if input_stem.endswith('_' + ref_stem) or input_stem.endswith('-' + ref_stem) or input_stem == ref_stem:
+                    ref_candidate = os.path.join(ref_dir, ref_filename)
+                    if os.path.exists(ref_candidate):
+                        logger.info(f"[参考匹配-切分映射] {input_basename} -> {ref_filename}")
+                        with _ref_match_stats_lock:
+                            _ref_match_stats['regex_hit'] += 1
+                        result = (ref_candidate, {"method": "split_mapping", "ref_name": ref_filename})
+                        if use_cache and cache_key:
+                            with _ref_match_cache_lock:
+                                _ref_match_cache[cache_key] = result
+                        return result
+        except Exception as e:
+            logger.debug(f"[参考匹配] 扫描参考目录异常: {e}")
 
-    # 正则快速路径未命中 → 记录统计，准备回退到DTW
+    # 文件名后缀匹配未命中 → 记录统计，准备回退到DTW
     with _ref_match_stats_lock:
         _ref_match_stats['regex_miss'] += 1
-    logger.warning(f"[参考匹配] 文件名 '{input_basename}' 未匹配到 ref_xxx 模式，"
+    logger.warning(f"[参考匹配] 文件名 '{input_basename}' 未匹配到参考目录中的任何文件，"
                    f"即将回退到全范围DTW扫描（耗时操作）")
 
     # 优化版多级回退匹配（DTW全范围扫描，耗时操作）
@@ -1007,18 +1007,24 @@ class OptimizedWerScore:
                 # 先检查是否已有预计算的WER（ASR语义匹配的副产品）
                 if _precomputed_wer is not None:
                     file_basename = os.path.basename(file)
-                    # 从文件名提取 ref_name（如 split_001_ref_001_002.wav → ref_001.wav）
-                    import re
-                    ref_matches = re.findall(r'ref[_-]?\d+', file_basename, re.IGNORECASE)
-                    if ref_matches:
-                        digits = re.findall(r'\d+', ref_matches[-1])
-                        if digits:
-                            ref_tag = f"ref_{digits[-1]}.wav"
-                            cached = _precomputed_wer(ref_tag)
-                            if cached is not None:
-                                logger.debug(f"[WER-缓存] {file_basename} -> {ref_tag}: "
-                                            f"WER={cached[0]:.3f}, WCorr={cached[1]:.3f}")
-                                return file_index, cached[0], cached[1]
+                    file_stem = os.path.splitext(file_basename)[0]
+                    # 用文件名后缀匹配WER缓存键（支持任意参考文件命名）
+                    cached_keys = None
+                    try:
+                        from segmentation_optimizer import _wer_cache as _wc, _wer_cache_lock
+                        with _wer_cache_lock:
+                            cached_keys = list(_wc.keys())
+                    except Exception:
+                        pass
+                    if cached_keys:
+                        for ref_name in cached_keys:
+                            ref_stem = os.path.splitext(ref_name)[0]
+                            if file_stem.endswith('_' + ref_stem) or file_stem.endswith('-' + ref_stem) or file_stem == ref_stem:
+                                cached = _precomputed_wer(ref_name)
+                                if cached is not None:
+                                    logger.debug(f"[WER-缓存] {file_basename} -> {ref_name}: "
+                                                f"WER={cached[0]:.3f}, WCorr={cached[1]:.3f}")
+                                    return file_index, cached[0], cached[1]
 
                 # 缓存未命中，执行ASR转写
                 result = self.model.transcribe(file)

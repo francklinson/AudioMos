@@ -92,27 +92,28 @@ models = {}
 performance_stats = {}
 
 def _precache_ref_matches(aligned_files, ref_dir):
-    """将切分文件的 ref_xxx → 参考音频 映射写入全局缓存，避免评分阶段重复DTW"""
-    import re
+    """将切分文件名 → 参考音频 映射写入全局缓存，避免评分阶段重复DTW"""
     try:
         from calculator.mos_calculator import _ref_match_cache, _ref_match_cache_lock
         if not ref_dir or not os.path.isdir(ref_dir):
             return
+        # 预读参考目录中的所有音频文件
+        ref_entries = {}  # stem → full_path
+        for fn in os.listdir(ref_dir):
+            if fn.endswith(('.wav', '.mp3', '.flac')):
+                ref_entries[os.path.splitext(fn)[0]] = os.path.join(ref_dir, fn)
+
         for fpath in aligned_files:
             if not fpath:
                 continue
             stem = os.path.splitext(os.path.basename(fpath))[0]
-            refs = re.findall(r'ref[_-]?\d+', stem, re.IGNORECASE)
-            if refs:
-                digits = re.findall(r'\d+', refs[-1])
-                if digits:
-                    ref_name = f"ref_{digits[-1]}.wav"
-                    ref_path = os.path.join(ref_dir, ref_name)
-                    if os.path.exists(ref_path):
-                        key = (os.path.abspath(fpath), os.path.abspath(ref_dir))
-                        with _ref_match_cache_lock:
-                            if key not in _ref_match_cache:
-                                _ref_match_cache[key] = (ref_path, {"method": "pre_cache", "ref_name": ref_name})
+            for ref_stem, ref_path in ref_entries.items():
+                if stem.endswith('_' + ref_stem) or stem.endswith('-' + ref_stem) or stem == ref_stem:
+                    key = (os.path.abspath(fpath), os.path.abspath(ref_dir))
+                    with _ref_match_cache_lock:
+                        if key not in _ref_match_cache:
+                            _ref_match_cache[key] = (ref_path, {"method": "pre_cache", "ref_name": os.path.basename(ref_path)})
+                    break
         logger.debug(f"[引用缓存] 预加载 {len(aligned_files)} 个文件的参考映射")
     except ImportError:
         pass
