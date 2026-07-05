@@ -141,8 +141,9 @@ async def process_asr_task(queue_task: Task):
     file_path = task_data.get("file_path")
     filename = task_data.get("filename")
     language = task_data.get("language", "zh")
+    reference_text = task_data.get("reference_text")
 
-    logger.info(f"[ASR] 开始处理任务: {task_id}, 算法: {algorithm}, 文件: {filename}")
+    logger.info(f"[ASR] 开始处理任务: {task_id}, 算法: {algorithm}, 文件: {filename}, reference_text={'有' if reference_text else '无'}")
 
     try:
         # 步骤1: 加载算法模型
@@ -187,12 +188,36 @@ async def process_asr_task(queue_task: Task):
 
         result_path = await loop.run_in_executor(None, _save_result)
 
+        # 步骤5: 如果有参考文本，计算CER
+        if reference_text:
+            from asr.evaluator import compute_cer
+            cer, cer_del, cer_ins, cer_sub = compute_cer(reference_text, result.text)
+            asr_tasks[task_id]["cer"] = round(cer, 4)
+            asr_tasks[task_id]["cer_detail"] = {
+                "delete": round(cer_del, 4),
+                "insert": round(cer_ins, 4),
+                "substitute": round(cer_sub, 4),
+            }
+            asr_tasks[task_id]["reference_text"] = reference_text
+            result_dict = result.to_dict()
+            result_dict["cer"] = round(cer, 4)
+            result_dict["cer_detail"] = asr_tasks[task_id]["cer_detail"]
+            result_dict["reference_text"] = reference_text
+            asr_tasks[task_id]["result"] = result_dict
+            logger.info(f"[ASR] CER: {cer:.4f} (del={cer_del:.4f}, ins={cer_ins:.4f}, sub={cer_sub:.4f})")
+
         # 完成
         asr_tasks[task_id]["status"] = "completed"
         asr_tasks[task_id]["progress"] = 100
         asr_tasks[task_id]["message"] = "[done]转写完成"
         asr_tasks[task_id]["result_file"] = result_path
-        asr_tasks[task_id]["result"] = result.to_dict()
+        # 合并结果（如果有CER，保留CER信息）
+        final_result = result.to_dict()
+        if reference_text:
+            final_result["cer"] = asr_tasks[task_id].get("cer")
+            final_result["cer_detail"] = asr_tasks[task_id].get("cer_detail")
+            final_result["reference_text"] = reference_text
+        asr_tasks[task_id]["result"] = final_result
         asr_tasks[task_id]["processing_time"] = result.processing_time
         asr_tasks[task_id]["updated_at"] = datetime.now().isoformat()
 
@@ -477,6 +502,7 @@ async def transcribe_audio(
     audio_file: UploadFile = File(...),
     algorithm: str = Form("paraformer-large"),
     language: str = Form("zh"),
+    reference_text: Optional[str] = Form(None),
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """上传单个音频文件进行转写"""
@@ -537,6 +563,7 @@ async def transcribe_audio(
             "filename": audio_file.filename,
             "file_path": file_path,
             "language": language,
+            "reference_text": reference_text,
         },
     )
     submitted = await asr_task_queue.submit(queue_task)
