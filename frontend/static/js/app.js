@@ -597,7 +597,8 @@ function renderMosTasks(tasks) {
 }
 
 function _buildPaginationHtml() {
-  const historyCount = Math.max(0, _mosAllTasks.length - MOS_MAX_VISIBLE_TASKS);
+  const totalCount = _mosAllTasks.length;
+  const historyCount = Math.max(0, totalCount - MOS_MAX_VISIBLE_TASKS);
   const totalPages = Math.ceil(historyCount / MOS_HISTORY_PAGE_SIZE) || 1;
   if (totalPages <= 1 && historyCount === 0) return '';
 
@@ -606,7 +607,7 @@ function _buildPaginationHtml() {
 
   let html = '<div class="d-flex justify-content-center align-items-center gap-2 py-2" id="mos-pagination">';
   html += `<button class="btn btn-sm btn-outline-secondary" onclick="_changeMosHistoryPage(-1)" ${_mosHistoryPage <= 1 ? 'disabled' : ''}><i class="bi bi-chevron-left"></i> 上一页</button>`;
-  html += `<span class="text-muted small">第 ${_mosHistoryPage}/${totalPages} 页（共${historyCount}条）</span>`;
+  html += `<span class="text-muted small">第 ${_mosHistoryPage}/${totalPages} 页（共${totalCount}条）</span>`;
   html += `<button class="btn btn-sm btn-outline-secondary" onclick="_changeMosHistoryPage(1)" ${_mosHistoryPage >= totalPages ? 'disabled' : ''}>下一页 <i class="bi bi-chevron-right"></i></button>`;
   html += '</div>';
   return html;
