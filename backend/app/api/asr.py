@@ -2,7 +2,6 @@
 ASR语音识别API路由
 提供语音识别、Benchmark评测等功能的RESTful API接口
 """
-
 import os
 import sys
 import json
@@ -45,7 +44,33 @@ except ImportError as e:
     ASR_AVAILABLE = False
     logger.warning(f"ASR语音识别模块加载失败: {e}")
 
-router = APIRouter(prefix="/asr", tags=["ASR语音识别"])
+# ── 全局依赖 ──
+
+
+def _ensure_asr_available():
+    """依赖项：确保ASR模块可用"""
+    if not ASR_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ASR模块不可用",
+        )
+
+
+def _safe_create_task(coro, log_prefix="[ASR]"):
+    """创建异步task并确保异常被记录"""
+    task = asyncio.ensure_future(coro)
+    task.add_done_callback(
+        lambda t: logger.error(f"{log_prefix} 异步任务异常: {t.exception()}")
+        if t.exception() else None
+    )
+    return task
+
+
+router = APIRouter(
+    prefix="/asr",
+    tags=["ASR语音识别"],
+    dependencies=[Depends(_ensure_asr_available)],
+)
 
 # 确保目录存在
 asr_upload_dir = os.path.join(settings.paths.upload_dir, "asr")
@@ -56,11 +81,11 @@ asr_model_dir = os.path.join(project_root, "models", "asr")
 for d in [asr_upload_dir, asr_result_dir, asr_report_dir, asr_model_dir]:
     os.makedirs(d, exist_ok=True)
 
-# 任务存储
-asr_tasks: Dict[str, Dict[str, Any]] = {}
-
-# ASR独立任务队列
-asr_task_queue = TaskQueue(max_workers=1)
+# ASR独立任务队列（带JSON持久化）
+asr_task_queue = TaskQueue(
+    max_workers=1,
+    persistence_dir=os.path.join(asr_result_dir, "_tasks"),
+)
 
 # WebSocket连接管理器
 asr_manager = ConnectionManager()
@@ -104,26 +129,52 @@ def _get_device() -> str:
     return "cuda" if (settings.cuda.enabled and torch.cuda.is_available()) else "cpu"
 
 
-async def update_asr_progress(task_id: str, progress: int, message: str):
-    """更新ASR任务进度"""
-    if task_id not in asr_tasks:
-        return
+def _task_to_response(task: Task) -> dict:
+    """Task → API返回格式（兼容旧版dict字段）"""
+    return {
+        "task_id": task.task_id,
+        "algorithm": task.data.get("algorithm"),
+        "filename": task.data.get("filename"),
+        "language": task.data.get("language"),
+        "type": task.data.get("type", "single"),
+        "total_files": task.data.get("total_files"),
+        "status": task.status.value,
+        "progress": task.progress,
+        "message": task.message,
+        "result_file": task.result_file,
+        "result": task.data.get("result"),
+        "results": task.data.get("results"),
+        "processing_time": task.data.get("processing_time"),
+        "cer": task.data.get("cer"),
+        "cer_detail": task.data.get("cer_detail"),
+        "reference_text": task.data.get("reference_text"),
+        "created_at": task.created_at.isoformat(),
+        "updated_at": task.updated_at.isoformat(),
+        "user": task.user,
+    }
 
-    if asr_tasks[task_id].get("status") == "queued":
-        asr_tasks[task_id]["status"] = "processing"
 
-    asr_tasks[task_id]["progress"] = progress
+async def update_asr_progress(
+    task_id: str, progress: int, message: str,
+    status: Optional[TaskStatus] = None,
+):
+    """更新ASR任务进度（单数据源：只写TaskQueue）"""
+    kwargs = {"progress": progress, "message": f"[{_get_step_name(progress)}]{message}"}
+    if status:
+        kwargs["status"] = status
+
+    await asr_task_queue.update_task(task_id, **kwargs)
+
     step_name = _get_step_name(progress)
     structured_msg = f"[{step_name}]{message}"
-    asr_tasks[task_id]["message"] = structured_msg
-    asr_tasks[task_id]["updated_at"] = datetime.now().isoformat()
-
-    await asr_task_queue.update_task(task_id, progress=progress, message=structured_msg)
-
     logger.info(f"[ASR] 任务进度 {task_id}: [{step_name}] {progress}% - {message}")
 
-    asyncio.ensure_future(asr_manager.send_progress(task_id, {
-        "status": asr_tasks[task_id]["status"],
+    # 从TaskQueue重新读取以获取最新状态
+    task = await asr_task_queue.get_task(task_id)
+    current_status = task.status.value if task else "unknown"
+
+    _safe_create_task(asr_manager.send_progress(task_id, {
+        "status": current_status,
         "progress": progress,
         "message": structured_msg,
         "step": step_name,
@@ -133,6 +184,7 @@ async def update_asr_progress(task_id: str, progress: int, message: str):
 async def process_asr_task(queue_task: Task):
     """
     ASR转写任务处理器（由 asr_task_queue 调度执行）
+    所有运行态数据写入 queue_task.data，通过 TaskQueue.update_task 持久化
     """
     task_id = queue_task.task_id
     task_data = queue_task.data
@@ -143,17 +195,21 @@ async def process_asr_task(queue_task: Task):
     language = task_data.get("language", "zh")
     reference_text = task_data.get("reference_text")
 
-    logger.info(f"[ASR] 开始处理任务: {task_id}, 算法: {algorithm}, 文件: {filename}, reference_text={'有' if reference_text else '无'}")
+    logger.info(f"[ASR] 开始处理任务: {task_id}, 算法: {algorithm}, 文件: {filename}, "
+                f"reference_text={'有' if reference_text else '无'}")
 
     try:
         # 步骤1: 加载算法模型
-        await update_asr_progress(task_id, 10, "正在加载ASR算法模型...")
+        await update_asr_progress(task_id, 10, "正在加载ASR算法模型...",
+                                  status=TaskStatus.PROCESSING)
         loop = asyncio.get_event_loop()
 
         def _get_asr_instance():
             if not ASR_AVAILABLE:
                 raise RuntimeError("ASR模块不可用")
-            instance = ASRRegistry.get(algorithm, device=_get_device(), model_dir=os.path.join(asr_model_dir, algorithm))
+            instance = ASRRegistry.get(
+                algorithm, device=_get_device(),
+                model_dir=os.path.join(asr_model_dir, algorithm))
             if not instance:
                 raise ValueError(f"未知的ASR算法: {algorithm}")
             if not instance.is_initialized():
@@ -163,19 +219,18 @@ async def process_asr_task(queue_task: Task):
         asr_instance = await loop.run_in_executor(None, _get_asr_instance)
         logger.info(f"[ASR] ✓ 算法实例已获取: {algorithm}")
 
-        # 步骤2: 读取音频
+        # 步骤2: 读取音频 + 步骤3: 执行转写
         await update_asr_progress(task_id, 30, "正在读取音频文件...")
-
-        # 步骤3: 执行转写
         await update_asr_progress(task_id, 50, "正在执行语音识别...")
 
         def _transcribe():
             return asr_instance.transcribe_file(file_path)
 
         result = await loop.run_in_executor(None, _transcribe)
-        logger.info(f"[ASR] 转写完成 - 文本长度: {len(result.text)}, 处理时间: {result.processing_time:.3f}s")
+        logger.info(f"[ASR] 转写完成 - 文本长度: {len(result.text)}, "
+                    f"处理时间: {result.processing_time:.3f}s")
 
-        # 步骤4: 保存结果
+        # 步骤4: 保存结果文件
         await update_asr_progress(task_id, 80, "正在保存转写结果...")
 
         def _save_result():
@@ -188,40 +243,35 @@ async def process_asr_task(queue_task: Task):
 
         result_path = await loop.run_in_executor(None, _save_result)
 
+        # 构造最终结果
+        final_result = result.to_dict()
+        update_kw = {
+            "result_file": result_path,
+            "progress": 100,
+        }
+
         # 步骤5: 如果有参考文本，计算CER
         if reference_text:
             from asr.evaluator import compute_cer
             cer, cer_del, cer_ins, cer_sub = compute_cer(reference_text, result.text)
-            asr_tasks[task_id]["cer"] = round(cer, 4)
-            asr_tasks[task_id]["cer_detail"] = {
+            cer_detail = {
                 "delete": round(cer_del, 4),
                 "insert": round(cer_ins, 4),
                 "substitute": round(cer_sub, 4),
             }
-            asr_tasks[task_id]["reference_text"] = reference_text
-            result_dict = result.to_dict()
-            result_dict["cer"] = round(cer, 4)
-            result_dict["cer_detail"] = asr_tasks[task_id]["cer_detail"]
-            result_dict["reference_text"] = reference_text
-            asr_tasks[task_id]["result"] = result_dict
-            logger.info(f"[ASR] CER: {cer:.4f} (del={cer_del:.4f}, ins={cer_ins:.4f}, sub={cer_sub:.4f})")
-
-        # 完成
-        asr_tasks[task_id]["status"] = "completed"
-        asr_tasks[task_id]["progress"] = 100
-        asr_tasks[task_id]["message"] = "[done]转写完成"
-        asr_tasks[task_id]["result_file"] = result_path
-        # 合并结果（如果有CER，保留CER信息）
-        final_result = result.to_dict()
-        if reference_text:
-            final_result["cer"] = asr_tasks[task_id].get("cer")
-            final_result["cer_detail"] = asr_tasks[task_id].get("cer_detail")
+            final_result["cer"] = round(cer, 4)
+            final_result["cer_detail"] = cer_detail
             final_result["reference_text"] = reference_text
-        asr_tasks[task_id]["result"] = final_result
-        asr_tasks[task_id]["processing_time"] = result.processing_time
-        asr_tasks[task_id]["updated_at"] = datetime.now().isoformat()
+            logger.info(f"[ASR] CER: {cer:.4f} (del={cer_del:.4f}, "
+                        f"ins={cer_ins:.4f}, sub={cer_sub:.4f})")
 
-        await asr_task_queue.update_task(task_id, progress=100, message="[done]转写完成")
+        # 数据全部写入 Task.data，由 TaskQueue 统一持久化
+        update_kw["data"] = {
+            **task_data,
+            "result": final_result,
+            "processing_time": result.processing_time,
+        }
+        await asr_task_queue.update_task(task_id, **update_kw)
 
         logger.info(f"[ASR] 任务完成: {task_id}")
 
@@ -230,7 +280,7 @@ async def process_asr_task(queue_task: Task):
             reserved_mb = torch.cuda.memory_reserved() / 1024 ** 2
             logger.info(f"[ASR] 显存状态: {allocated_mb:.1f}MB / {reserved_mb:.1f}MB")
 
-        asyncio.ensure_future(asr_manager.send_progress(task_id, {
+        _safe_create_task(asr_manager.send_progress(task_id, {
             "status": "completed",
             "progress": 100,
             "message": "[done]转写完成",
@@ -238,20 +288,11 @@ async def process_asr_task(queue_task: Task):
         }))
 
     except Exception as e:
-        asr_tasks[task_id]["status"] = "failed"
-        asr_tasks[task_id]["message"] = str(e)
-        asr_tasks[task_id]["updated_at"] = datetime.now().isoformat()
-
         logger.error(f"[ASR] 任务失败: {task_id}, 错误: {e}")
         import traceback
         logger.error(f"[ASR] 错误堆栈: {traceback.format_exc()}")
-
-        asyncio.ensure_future(asr_manager.send_progress(task_id, {
-            "status": "failed",
-            "progress": asr_tasks[task_id].get("progress", 0),
-            "message": str(e),
-            "step": "error",
-        }))
+        # 不在此设置 status — 由 TaskQueue._worker 统一管理重试/终态
+        raise
 
 
 async def process_batch_asr_task(queue_task: Task):
@@ -271,13 +312,16 @@ async def process_batch_asr_task(queue_task: Task):
     results = []
     try:
         # 加载算法
-        await update_asr_progress(task_id, 10, "正在加载ASR算法模型...")
+        await update_asr_progress(task_id, 10, "正在加载ASR算法模型...",
+                                  status=TaskStatus.PROCESSING)
         loop = asyncio.get_event_loop()
 
         def _get_asr_instance():
             if not ASR_AVAILABLE:
                 raise RuntimeError("ASR模块不可用")
-            instance = ASRRegistry.get(algorithm, device=_get_device(), model_dir=os.path.join(asr_model_dir, algorithm))
+            instance = ASRRegistry.get(
+                algorithm, device=_get_device(),
+                model_dir=os.path.join(asr_model_dir, algorithm))
             if not instance:
                 raise ValueError(f"未知的ASR算法: {algorithm}")
             if not instance.is_initialized():
@@ -293,7 +337,8 @@ async def process_batch_asr_task(queue_task: Task):
             filename = file_info["filename"]
 
             progress = 30 + int(50 * i / total)
-            await update_asr_progress(task_id, progress, f"正在转写 {i + 1}/{total}: {filename}")
+            await update_asr_progress(task_id, progress,
+                                      f"正在转写 {i + 1}/{total}: {filename}")
 
             def _transcribe(fp=file_path):
                 return asr_instance.transcribe_file(fp)
@@ -303,7 +348,8 @@ async def process_batch_asr_task(queue_task: Task):
 
             # 如果有参考文本，计算CER
             if i < len(reference_texts) and reference_texts[i]:
-                cer, cer_del, cer_ins, cer_sub = compute_cer(reference_texts[i], result.text)
+                cer, cer_del, cer_ins, cer_sub = compute_cer(
+                    reference_texts[i], result.text)
                 result_dict["cer"] = round(cer, 4)
                 result_dict["cer_detail"] = {
                     "delete": round(cer_del, 4),
@@ -326,20 +372,22 @@ async def process_batch_asr_task(queue_task: Task):
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
 
-        # 完成
-        asr_tasks[task_id]["status"] = "completed"
-        asr_tasks[task_id]["progress"] = 100
-        asr_tasks[task_id]["message"] = f"[done]批量转写完成，共 {len(results)} 个文件"
-        asr_tasks[task_id]["result_file"] = result_path
-        asr_tasks[task_id]["results"] = results
-        asr_tasks[task_id]["total_files"] = len(results)
-        asr_tasks[task_id]["updated_at"] = datetime.now().isoformat()
-
-        await asr_task_queue.update_task(task_id, progress=100, message=f"[done]批量转写完成，共 {len(results)} 个文件")
+        # 数据全部写入 Task.data
+        await asr_task_queue.update_task(
+            task_id,
+            result_file=result_path,
+            progress=100,
+            data={
+                **task_data,
+                "type": "batch",
+                "results": results,
+                "total_files": len(results),
+            },
+        )
 
         logger.info(f"[ASR] 批量任务完成: {task_id}, 共 {len(results)} 个文件")
 
-        asyncio.ensure_future(asr_manager.send_progress(task_id, {
+        _safe_create_task(asr_manager.send_progress(task_id, {
             "status": "completed",
             "progress": 100,
             "message": f"[done]批量转写完成，共 {len(results)} 个文件",
@@ -347,20 +395,10 @@ async def process_batch_asr_task(queue_task: Task):
         }))
 
     except Exception as e:
-        asr_tasks[task_id]["status"] = "failed"
-        asr_tasks[task_id]["message"] = str(e)
-        asr_tasks[task_id]["updated_at"] = datetime.now().isoformat()
-
         logger.error(f"[ASR] 批量任务失败: {task_id}, 错误: {e}")
         import traceback
         logger.error(f"[ASR] 错误堆栈: {traceback.format_exc()}")
-
-        asyncio.ensure_future(asr_manager.send_progress(task_id, {
-            "status": "failed",
-            "progress": asr_tasks[task_id].get("progress", 0),
-            "message": str(e),
-            "step": "error",
-        }))
+        raise
 
 
 # ===========================
@@ -399,9 +437,6 @@ class BenchmarkRequest(BaseModel):
 @router.get("/algorithms")
 async def list_algorithms(current_user: User = Depends(get_current_active_user)) -> List[ASRAlgorithmInfo]:
     """获取所有可用的ASR算法"""
-    if not ASR_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR模块不可用")
-
     algorithms = []
     available = ASRRegistry.list_available()
 
@@ -436,9 +471,6 @@ async def initialize_algorithm(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """初始化指定ASR算法"""
-    if not ASR_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR模块不可用")
-
     available = ASRRegistry.list_available()
     algo_names = [a["name"] for a in available]
     if name not in algo_names:
@@ -480,9 +512,6 @@ async def unload_algorithm(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """卸载指定ASR算法以释放GPU显存"""
-    if not ASR_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR模块不可用")
-
     try:
         ASRRegistry.unload(name)
         logger.info(f"[ASR] 算法 {name} 已卸载")
@@ -506,9 +535,6 @@ async def transcribe_audio(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """上传单个音频文件进行转写"""
-    if not ASR_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR模块不可用")
-
     if not audio_file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件名为空")
 
@@ -526,38 +552,21 @@ async def transcribe_audio(
     if algorithm not in algo_names:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"不支持的算法: {algorithm}")
 
-    # 保存文件
+    # 保存文件（流式写入，避免全量读内存）
     task_id = str(uuid.uuid4())
     upload_dir = os.path.join(asr_upload_dir, task_id)
     os.makedirs(upload_dir, exist_ok=True)
 
     file_path = os.path.join(upload_dir, audio_file.filename)
-    content = await audio_file.read()
     with open(file_path, "wb") as f:
-        f.write(content)
+        shutil.copyfileobj(audio_file.file, f)
 
-    # 创建任务
-    now = datetime.now().isoformat()
-    asr_tasks[task_id] = {
-        "task_id": task_id,
-        "algorithm": algorithm,
-        "filename": audio_file.filename,
-        "language": language,
-        "status": "queued",
-        "progress": 0,
-        "message": "[queued]等待处理...",
-        "result_file": None,
-        "result": None,
-        "processing_time": None,
-        "created_at": now,
-        "updated_at": now,
-        "user": current_user.username,
-    }
-
-    # 提交到队列
+    # 提交到队列（数据全部放入 Task.data）
     queue_task = Task(
         task_id=task_id,
         user=current_user.username,
+        timeout=1800,
+        max_retries=2,
         data={
             "algorithm": algorithm,
             "filename": audio_file.filename,
@@ -583,9 +592,6 @@ async def transcribe_audio_batch(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """批量上传多个音频文件进行转写"""
-    if not ASR_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR模块不可用")
-
     if not files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请选择文件")
 
@@ -619,9 +625,8 @@ async def transcribe_audio_batch(
             continue
 
         file_path = os.path.join(upload_dir, file.filename)
-        content = await file.read()
         with open(file_path, "wb") as f:
-            f.write(content)
+            shutil.copyfileobj(file.file, f)
 
         file_list.append({
             "filename": file.filename,
@@ -631,31 +636,18 @@ async def transcribe_audio_batch(
     if not file_list:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有有效的音频文件")
 
-    # 创建任务
-    now = datetime.now().isoformat()
-    asr_tasks[task_id] = {
-        "task_id": task_id,
-        "algorithm": algorithm,
-        "type": "batch",
-        "total_files": len(file_list),
-        "status": "queued",
-        "progress": 0,
-        "message": "[queued]等待批量处理...",
-        "result_file": None,
-        "results": None,
-        "created_at": now,
-        "updated_at": now,
-        "user": current_user.username,
-    }
-
-    # 提交到队列
+    # 提交到队列（数据全部放入 Task.data）
     queue_task = Task(
         task_id=task_id,
         user=current_user.username,
+        timeout=3600,
+        max_retries=1,
         data={
             "algorithm": algorithm,
             "files": file_list,
             "reference_texts": ref_texts,
+            "type": "batch",
+            "total_files": len(file_list),
         },
     )
     submitted = await asr_task_queue.submit(queue_task)
@@ -674,24 +666,44 @@ async def transcribe_audio_batch(
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str, current_user: User = Depends(get_current_active_user)) -> Dict[str, Any]:
     """获取ASR任务状态和结果"""
-    if task_id not in asr_tasks:
+    task = await asr_task_queue.get_task(task_id)
+    if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
-    return asr_tasks[task_id]
+    if task.user != current_user.username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此任务")
+    return _task_to_response(task)
 
 
 @router.get("/tasks")
 async def list_tasks(current_user: User = Depends(get_current_active_user)) -> List[Dict[str, Any]]:
     """获取当前用户的所有ASR任务"""
-    return [t for t in asr_tasks.values() if t.get("user") == current_user.username]
+    tasks = await asr_task_queue.get_user_tasks(current_user.username)
+    return [_task_to_response(t) for t in tasks]
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str, current_user: User = Depends(get_current_active_user)) -> Dict[str, Any]:
+    """取消ASR任务（排队中或处理中均可取消）"""
+    task = await asr_task_queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+    if task.user != current_user.username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权操作此任务")
+
+    cancelled = await asr_task_queue.cancel(task_id)
+    if not cancelled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="任务已完成或已取消，无法取消")
+    return {"message": "任务已取消", "task_id": task_id}
 
 
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, current_user: User = Depends(get_current_active_user)):
     """删除ASR任务及文件"""
-    if task_id not in asr_tasks:
+    task = await asr_task_queue.get_task(task_id)
+    if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
-
-    if asr_tasks[task_id].get("user") != current_user.username:
+    if task.user != current_user.username:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权删除此任务")
 
     # 删除上传文件
@@ -704,7 +716,8 @@ async def delete_task(task_id: str, current_user: User = Depends(get_current_act
     if os.path.exists(result_dir):
         shutil.rmtree(result_dir)
 
-    del asr_tasks[task_id]
+    # 从队列和持久化中移除
+    await asr_task_queue.delete_task(task_id)
 
     return {"message": "任务已删除"}
 
@@ -727,9 +740,6 @@ async def run_benchmark(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """启动ASR Benchmark评测"""
-    if not ASR_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR模块不可用")
-
     # 获取数据集样本
     dm = _get_dataset_manager()
     samples = dm.get_test_samples(request.dataset, max_samples=request.max_samples)
@@ -789,7 +799,6 @@ async def run_benchmark(
 
             # 生成报告
             report_formats = request.metrics if request.metrics else ["json", "html"]
-            # 只保留有效格式
             valid_formats = [f for f in report_formats if f in ["json", "markdown", "excel", "html"]]
             if not valid_formats:
                 valid_formats = ["json", "html"]
@@ -822,7 +831,7 @@ async def run_benchmark(
             import traceback
             logger.error(f"[ASR] 错误堆栈: {traceback.format_exc()}")
 
-    asyncio.ensure_future(_run_benchmark())
+    _safe_create_task(_run_benchmark(), log_prefix="[ASR-Benchmark]")
 
     return {
         "bench_id": bench_id,
@@ -916,14 +925,13 @@ async def list_benchmarks(current_user: User = Depends(get_current_active_user))
 
 
 def _validate_api_key(api_key: Optional[str]) -> bool:
-    """验证API Key"""
+    """验证API Key（配置路径: settings.asr.api_keys.keys）"""
     if not api_key:
         return False
     try:
-        configured_keys = getattr(settings, "asr_api_keys", [])
-        if not configured_keys:
+        if not settings.asr.api_keys.enabled:
             return False
-        return api_key in configured_keys
+        return api_key in settings.asr.api_keys.keys
     except Exception:
         return False
 
@@ -933,10 +941,8 @@ async def _get_user_from_api_key_or_jwt(
     current_user: Optional[User] = Depends(get_current_user_optional),
 ) -> User:
     """支持API Key或JWT认证（用于v1外部API）"""
-    # 优先使用API Key
     if x_api_key:
         if _validate_api_key(x_api_key):
-            # API Key认证成功，返回系统用户
             from app.core.security import User as UserModel
             return UserModel(username="api_client", is_active=True, hashed_password="")
         raise HTTPException(
@@ -944,7 +950,6 @@ async def _get_user_from_api_key_or_jwt(
             detail="无效的API Key",
         )
 
-    # 回退到JWT认证
     if current_user:
         return current_user
 
@@ -959,34 +964,12 @@ async def recognize_audio(
     audio_file: UploadFile = File(...),
     algorithm: str = Form("paraformer-large"),
     language: str = Form("zh"),
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    current_user: User = Depends(_get_user_from_api_key_or_jwt),
 ) -> Dict[str, Any]:
     """
     简单识别API — 支持X-API-Key或JWT认证
     同步返回识别结果，适用于第三方集成
     """
-    if not ASR_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR模块不可用")
-
-    # 认证：API Key 或 JWT
-    authenticated = False
-    if x_api_key and _validate_api_key(x_api_key):
-        authenticated = True
-    else:
-        # 尝试JWT认证
-        try:
-            current_user = await get_current_user_optional()
-            if current_user:
-                authenticated = True
-        except Exception:
-            pass
-
-    if not authenticated:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="请提供有效的X-API-Key或JWT认证",
-        )
-
     if not audio_file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件名为空")
 
@@ -1009,9 +992,8 @@ async def recognize_audio(
     os.makedirs(temp_dir, exist_ok=True)
 
     file_path = os.path.join(temp_dir, audio_file.filename)
-    content = await audio_file.read()
     with open(file_path, "wb") as f:
-        f.write(content)
+        shutil.copyfileobj(audio_file.file, f)
 
     try:
         # 同步执行识别
@@ -1056,9 +1038,6 @@ async def recognize_audio(
 @router.get("/v1/algorithms")
 async def list_algorithms_public() -> List[Dict[str, Any]]:
     """获取可用的ASR算法列表（无需认证）"""
-    if not ASR_AVAILABLE:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="ASR模块不可用")
-
     algorithms = []
     for name, desc in ASR_ALGORITHM_DESCRIPTIONS.items():
         algorithms.append({
@@ -1084,34 +1063,90 @@ async def asr_ws_endpoint(websocket: WebSocket, task_id: str):
     await asr_manager.connect(websocket, task_id)
     try:
         # 立即推送一次当前状态
-        if task_id in asr_tasks:
-            t = asr_tasks[task_id]
+        task = await asr_task_queue.get_task(task_id)
+        if task:
             await websocket.send_json({
-                "status": t.get("status"),
-                "progress": t.get("progress", 0),
-                "message": t.get("message", ""),
-                "step": _get_step_name(t.get("progress", 0)),
+                "status": task.status.value,
+                "progress": task.progress,
+                "message": task.message,
+                "step": _get_step_name(task.progress),
             })
+            # 终态就不继续轮询了
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED,
+                               TaskStatus.TIMEOUT, TaskStatus.CANCELLED):
+                return
 
+        # 等待主动推送（asr_manager.send_progress 在状态变更时调用）
+        # 同时每5秒做一次保活心跳以防推送丢失
         while True:
-            if task_id in asr_tasks:
-                t = asr_tasks[task_id]
-                await websocket.send_json({
-                    "status": t.get("status"),
-                    "progress": t.get("progress", 0),
-                    "message": t.get("message", ""),
-                    "step": _get_step_name(t.get("progress", 0)),
-                })
-                # 终态 -> 推送后断开
-                if t.get("status") in ("completed", "failed"):
-                    break
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
+            task = await asr_task_queue.get_task(task_id)
+            if not task:
+                break
+            await websocket.send_json({
+                "status": task.status.value,
+                "progress": task.progress,
+                "message": task.message,
+                "step": _get_step_name(task.progress),
+            })
+            if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED,
+                               TaskStatus.TIMEOUT, TaskStatus.CANCELLED):
+                break
+
     except WebSocketDisconnect:
         pass
     except Exception:
         pass
     finally:
         asr_manager.disconnect(task_id)
+
+
+# ===========================
+# 5. 健康检查
+# ===========================
+
+
+@router.get("/health")
+async def asr_health():
+    """ASR服务健康检查（GPU、队列、模型状态）"""
+    status = "healthy" if ASR_AVAILABLE else "unavailable"
+
+    info = {
+        "status": status,
+        "asr_available": ASR_AVAILABLE,
+        "queue_depth": asr_task_queue.get_queue_size(),
+        "processing_count": asr_task_queue.get_processing_count(),
+    }
+
+    if ASR_AVAILABLE:
+        # 算法初始化状态
+        algorithms = []
+        for a in ASRRegistry.list_available():
+            algorithms.append({
+                "name": a["name"],
+                "initialized": a.get("initialized", False),
+            })
+        info["algorithms"] = algorithms
+        info["total_algorithms"] = len(algorithms)
+        info["initialized_count"] = sum(1 for a in algorithms if a["initialized"])
+
+    # GPU状态
+    if torch.cuda.is_available():
+        try:
+            device_id = torch.cuda.current_device()
+            info["gpu"] = {
+                "available": True,
+                "device_id": device_id,
+                "device_name": torch.cuda.get_device_name(device_id),
+                "memory_allocated_mb": round(torch.cuda.memory_allocated() / 1024 ** 2, 1),
+                "memory_reserved_mb": round(torch.cuda.memory_reserved() / 1024 ** 2, 1),
+            }
+        except Exception:
+            info["gpu"] = {"available": False, "error": "query_failed"}
+    else:
+        info["gpu"] = {"available": False}
+
+    return info
 
 
 # ===========================
