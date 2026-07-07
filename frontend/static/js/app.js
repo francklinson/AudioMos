@@ -439,9 +439,17 @@ function _updateMosTaskElement(el, t) {
   if (shouldHaveViewBtn && !hasViewBtn) {
     const actionsDiv = el.querySelector('.task-actions');
     if (actionsDiv) {
-      actionsDiv.insertAdjacentHTML('beforeend',
-        `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${taskId}')"><i class="bi bi-eye"></i> 查看</button>
+      // 在删除按钮之前插入查看/下载按钮，保持 DOM 顺序一致性
+      const delBtn = actionsDiv.querySelector('.btn-outline-danger');
+      if (delBtn) {
+        delBtn.insertAdjacentHTML('beforebegin',
+          `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${taskId}')"><i class="bi bi-eye"></i> 查看</button>
          <button class="btn btn-sm btn-outline-success" onclick="downloadMosResult('${taskId}')"><i class="bi bi-download"></i> 下载</button>`);
+      } else {
+        actionsDiv.insertAdjacentHTML('beforeend',
+          `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${taskId}')"><i class="bi bi-eye"></i> 查看</button>
+         <button class="btn btn-sm btn-outline-success" onclick="downloadMosResult('${taskId}')"><i class="bi bi-download"></i> 下载</button>`);
+      }
     }
   } else if (!shouldHaveViewBtn && hasViewBtn) {
     // 从completed变成非completed（罕见但处理）

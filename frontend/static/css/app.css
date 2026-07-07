@@ -903,7 +903,6 @@ body::after {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
   gap: .5rem;
 }
 
@@ -932,8 +931,8 @@ body::after {
 .task-actions {
   display: flex;
   gap: .4rem;
-  flex-wrap: wrap;
   align-items: center;
+  flex-shrink: 0;
 }
 .task-actions .badge {
   vertical-align: middle;
