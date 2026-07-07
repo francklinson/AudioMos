@@ -6,7 +6,7 @@ const qs = (s, c) => (c || document).querySelector(s);
 const qsa = (s, c) => (c || document).querySelectorAll(s);
 
 // 任务列表截断：最多显示 N 个，其余折叠
-const MOS_MAX_VISIBLE_TASKS = 20;
+const MOS_MAX_VISIBLE_TASKS = 10;
 
 function formatTime(t) {
   if (!t || isNaN(t)) return '00:00';
