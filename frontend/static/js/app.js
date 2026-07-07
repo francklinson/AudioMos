@@ -5,6 +5,9 @@ const $ = id => document.getElementById(id);
 const qs = (s, c) => (c || document).querySelector(s);
 const qsa = (s, c) => (c || document).querySelectorAll(s);
 
+// 任务列表截断：最多显示 N 个，其余折叠
+const MOS_MAX_VISIBLE_TASKS = 20;
+
 function formatTime(t) {
   if (!t || isNaN(t)) return '00:00';
   const m = Math.floor(t / 60);
@@ -515,6 +518,7 @@ function _escapeHtml(str) {
  * - 后续轮询：仅增量更新已有卡片的进度/状态，保持WebSocket更新的DOM存活
  * - 新任务出现时：添加到列表
  * - 已删除任务：从DOM移除
+ * - 数量截断：最多显示 MOS_MAX_VISIBLE_TASKS 个已完成任务，其余折叠
  */
 function renderMosTasks(tasks) {
   const container = $('mos-task-list');
@@ -523,35 +527,58 @@ function renderMosTasks(tasks) {
     return;
   }
 
+  // 按时间排序（最新的在前）
+  const sorted = [...tasks].sort((a, b) => {
+    const ta = a.created_at || a.create_time || '';
+    const tb = b.created_at || b.create_time || '';
+    return ta > tb ? -1 : ta < tb ? 1 : 0;
+  });
+
   // 判断是否需要全量渲染（首次或所有卡片都被移除）
   const needsFullRender = !container.querySelector('.task-item');
 
   if (needsFullRender) {
     // ====== 首次全量渲染 ======
-    let html = '';
-    tasks.forEach(t => { html += _buildMosTaskHtml(t); });
+    const visible = sorted.slice(0, MOS_MAX_VISIBLE_TASKS);
+    const collapsed = sorted.slice(MOS_MAX_VISIBLE_TASKS);
+
+    let html = '<div id="mos-visible-tasks">';
+    visible.forEach(t => { html += _buildMosTaskHtml(t); });
+    html += '</div>';
+
+    if (collapsed.length > 0) {
+      html += `<div id="mos-collapsed-tasks" class="d-none">`;
+      collapsed.forEach(t => { html += _buildMosTaskHtml(t); });
+      html += `</div>`;
+      html += `<div class="text-center py-2" id="mos-collapsed-toggle">`;
+      html += `<button class="btn btn-sm btn-outline-secondary" onclick="toggleMosCollapsedTasks()">`;
+      html += `<i class="bi bi-chevron-down"></i> 显示历史任务 (${collapsed.length}条)`;
+      html += `</button></div>`;
+    }
+
     container.innerHTML = html;
-    tasks.forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
+    visible.concat(collapsed).forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
     return;
   }
 
   // ====== 增量更新 ======
   const existingIds = new Set();
+  const visibleContainer = $('mos-visible-tasks') || container;
 
-  tasks.forEach(t => {
+  sorted.forEach(t => {
     existingIds.add(t.task_id);
     const el = $(`mos-task-${t.task_id}`);
     if (el) {
       // 已有卡片 → 增量更新
       _updateMosTaskElement(el, t);
     } else {
-      // 新任务 → 插入到列表顶部
-      container.insertAdjacentHTML('afterbegin', _buildMosTaskHtml(t));
+      // 新任务 → 插入到可见列表顶部
+      visibleContainer.insertAdjacentHTML('afterbegin', _buildMosTaskHtml(t));
       if (_isActiveTask(t)) connectMosWs(t.task_id);
     }
   });
 
-  // 移除已删除的任务（本地删除或别的客户端删除）
+  // 移除已删除的任务
   container.querySelectorAll('.task-item[id^="mos-task-"]').forEach(el => {
     const id = el.id.replace('mos-task-', '');
     if (!existingIds.has(id)) {
@@ -559,6 +586,35 @@ function renderMosTasks(tasks) {
       el.remove();
     }
   });
+
+  // 更新折叠区的数量
+  const toggle = $('mos-collapsed-toggle');
+  if (toggle) {
+    const collapsedCount = Math.max(0, existingIds.size - MOS_MAX_VISIBLE_TASKS);
+    if (collapsedCount > 0) {
+      const btn = toggle.querySelector('button');
+      if (btn) btn.innerHTML = `<i class="bi bi-chevron-down"></i> 显示历史任务 (${collapsedCount}条)`;
+    } else {
+      toggle.remove();
+      const collapsedDiv = $('mos-collapsed-tasks');
+      if (collapsedDiv) collapsedDiv.remove();
+    }
+  }
+}
+
+function toggleMosCollapsedTasks() {
+  const collapsedDiv = $('mos-collapsed-tasks');
+  const toggle = $('mos-collapsed-toggle');
+  if (!collapsedDiv || !toggle) return;
+  const btn = toggle.querySelector('button');
+  const isHidden = collapsedDiv.classList.contains('d-none');
+  collapsedDiv.classList.toggle('d-none');
+  if (btn) {
+    const count = collapsedDiv.querySelectorAll('.task-item').length;
+    btn.innerHTML = isHidden
+      ? `<i class="bi bi-chevron-up"></i> 收起历史任务`
+      : `<i class="bi bi-chevron-down"></i> 显示历史任务 (${count}条)`;
+  }
 }
 
 /** WebSocket推送的处理进度步骤 — 根据后端报告的步骤名确定完成状态 */
