@@ -5,8 +5,11 @@ const $ = id => document.getElementById(id);
 const qs = (s, c) => (c || document).querySelector(s);
 const qsa = (s, c) => (c || document).querySelectorAll(s);
 
-// 任务列表截断：最多显示 N 个，其余折叠
-const MOS_MAX_VISIBLE_TASKS = 10;
+// 任务列表分页
+const MOS_MAX_VISIBLE_TASKS = 10;   // 最近任务固定显示数
+const MOS_HISTORY_PAGE_SIZE = 10;   // 历史任务每页条数
+let _mosAllTasks = [];              // 全量任务（最新在前）
+let _mosHistoryPage = 1;            // 历史任务当前页码
 
 function formatTime(t) {
   if (!t || isNaN(t)) return '00:00';
@@ -518,62 +521,64 @@ function _escapeHtml(str) {
  * - 后续轮询：仅增量更新已有卡片的进度/状态，保持WebSocket更新的DOM存活
  * - 新任务出现时：添加到列表
  * - 已删除任务：从DOM移除
- * - 数量截断：最多显示 MOS_MAX_VISIBLE_TASKS 个已完成任务，其余折叠
+ * - 数量截断：最多显示 MOS_MAX_VISIBLE_TASKS 个，其余分页显示
  */
 function renderMosTasks(tasks) {
   const container = $('mos-task-list');
   if (!tasks || tasks.length === 0) {
     container.innerHTML = '<div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无任务</div>';
+    _mosAllTasks = [];
     return;
   }
 
-  // 按时间排序（最新的在前）
-  const sorted = [...tasks].sort((a, b) => {
+  // 缓存全量任务（最新在前）
+  _mosAllTasks = [...tasks].sort((a, b) => {
     const ta = a.created_at || a.create_time || '';
     const tb = b.created_at || b.create_time || '';
     return ta > tb ? -1 : ta < tb ? 1 : 0;
   });
 
-  // 判断是否需要全量渲染（首次或所有卡片都被移除）
   const needsFullRender = !container.querySelector('.task-item');
 
   if (needsFullRender) {
     // ====== 首次全量渲染 ======
-    const visible = sorted.slice(0, MOS_MAX_VISIBLE_TASKS);
-    const collapsed = sorted.slice(MOS_MAX_VISIBLE_TASKS);
+    const recent = _mosAllTasks.slice(0, MOS_MAX_VISIBLE_TASKS);
+    const historyCount = Math.max(0, _mosAllTasks.length - MOS_MAX_VISIBLE_TASKS);
 
     let html = '<div id="mos-visible-tasks">';
-    visible.forEach(t => { html += _buildMosTaskHtml(t); });
+    recent.forEach(t => { html += _buildMosTaskHtml(t); });
     html += '</div>';
 
-    if (collapsed.length > 0) {
-      html += `<div id="mos-collapsed-tasks" class="d-none">`;
-      collapsed.forEach(t => { html += _buildMosTaskHtml(t); });
-      html += `</div>`;
-      html += `<div class="text-center py-2" id="mos-collapsed-toggle">`;
-      html += `<button class="btn btn-sm btn-outline-secondary" onclick="toggleMosCollapsedTasks()">`;
-      html += `<i class="bi bi-chevron-down"></i> 显示历史任务 (${collapsed.length}条)`;
-      html += `</button></div>`;
+    if (historyCount > 0) {
+      const totalPages = Math.ceil(historyCount / MOS_HISTORY_PAGE_SIZE);
+      if (_mosHistoryPage > totalPages) _mosHistoryPage = totalPages;
+      const start = MOS_MAX_VISIBLE_TASKS + (_mosHistoryPage - 1) * MOS_HISTORY_PAGE_SIZE;
+      const pageTasks = _mosAllTasks.slice(start, start + MOS_HISTORY_PAGE_SIZE);
+
+      html += '<div id="mos-paged-section">';
+      html += '<div id="mos-paged-tasks">';
+      pageTasks.forEach(t => { html += _buildMosTaskHtml(t); });
+      html += '</div>';
+      html += _buildPaginationHtml();
+      html += '</div>';
     }
 
     container.innerHTML = html;
-    visible.concat(collapsed).forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
+    _mosAllTasks.forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
     return;
   }
 
   // ====== 增量更新 ======
   const existingIds = new Set();
-  const visibleContainer = $('mos-visible-tasks') || container;
+  const visibleContainer = $('mos-visible-tasks');
 
-  sorted.forEach(t => {
+  _mosAllTasks.forEach(t => {
     existingIds.add(t.task_id);
     const el = $(`mos-task-${t.task_id}`);
     if (el) {
-      // 已有卡片 → 增量更新
       _updateMosTaskElement(el, t);
     } else {
-      // 新任务 → 插入到可见列表顶部
-      visibleContainer.insertAdjacentHTML('afterbegin', _buildMosTaskHtml(t));
+      (visibleContainer || container).insertAdjacentHTML('afterbegin', _buildMosTaskHtml(t));
       if (_isActiveTask(t)) connectMosWs(t.task_id);
     }
   });
@@ -587,34 +592,72 @@ function renderMosTasks(tasks) {
     }
   });
 
-  // 更新折叠区的数量
-  const toggle = $('mos-collapsed-toggle');
-  if (toggle) {
-    const collapsedCount = Math.max(0, existingIds.size - MOS_MAX_VISIBLE_TASKS);
-    if (collapsedCount > 0) {
-      const btn = toggle.querySelector('button');
-      if (btn) btn.innerHTML = `<i class="bi bi-chevron-down"></i> 显示历史任务 (${collapsedCount}条)`;
+  // 重建分页区（保证与 _mosAllTasks 一致）
+  _rebuildPagedSection();
+}
+
+function _buildPaginationHtml() {
+  const historyCount = Math.max(0, _mosAllTasks.length - MOS_MAX_VISIBLE_TASKS);
+  const totalPages = Math.ceil(historyCount / MOS_HISTORY_PAGE_SIZE) || 1;
+  if (totalPages <= 1 && historyCount === 0) return '';
+
+  if (_mosHistoryPage > totalPages) _mosHistoryPage = totalPages;
+  if (_mosHistoryPage < 1) _mosHistoryPage = 1;
+
+  let html = '<div class="d-flex justify-content-center align-items-center gap-2 py-2" id="mos-pagination">';
+  html += `<button class="btn btn-sm btn-outline-secondary" onclick="_changeMosHistoryPage(-1)" ${_mosHistoryPage <= 1 ? 'disabled' : ''}><i class="bi bi-chevron-left"></i> 上一页</button>`;
+  html += `<span class="text-muted small">第 ${_mosHistoryPage}/${totalPages} 页（共${historyCount}条）</span>`;
+  html += `<button class="btn btn-sm btn-outline-secondary" onclick="_changeMosHistoryPage(1)" ${_mosHistoryPage >= totalPages ? 'disabled' : ''}>下一页 <i class="bi bi-chevron-right"></i></button>`;
+  html += '</div>';
+  return html;
+}
+
+function _rebuildPagedSection() {
+  const historyCount = Math.max(0, _mosAllTasks.length - MOS_MAX_VISIBLE_TASKS);
+  const pagedSection = $('mos-paged-section');
+
+  if (historyCount === 0) {
+    if (pagedSection) pagedSection.remove();
+    return;
+  }
+
+  const totalPages = Math.ceil(historyCount / MOS_HISTORY_PAGE_SIZE);
+  if (_mosHistoryPage > totalPages) _mosHistoryPage = totalPages;
+
+  const start = MOS_MAX_VISIBLE_TASKS + (_mosHistoryPage - 1) * MOS_HISTORY_PAGE_SIZE;
+  const pageTasks = _mosAllTasks.slice(start, start + MOS_HISTORY_PAGE_SIZE);
+  const pagedTasks = $('mos-paged-tasks');
+  const pagination = $('mos-pagination');
+
+  if (pagedSection && pagedTasks && pagination) {
+    pagedTasks.innerHTML = pageTasks.map(t => _buildMosTaskHtml(t)).join('');
+    pagination.outerHTML = _buildPaginationHtml();
+    pageTasks.forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
+  } else {
+    let html = '<div id="mos-paged-section">';
+    html += '<div id="mos-paged-tasks">';
+    html += pageTasks.map(t => _buildMosTaskHtml(t)).join('');
+    html += '</div>';
+    html += _buildPaginationHtml();
+    html += '</div>';
+    const container = $('mos-task-list');
+    const visibleContainer = $('mos-visible-tasks');
+    if (visibleContainer) {
+      visibleContainer.insertAdjacentHTML('afterend', html);
     } else {
-      toggle.remove();
-      const collapsedDiv = $('mos-collapsed-tasks');
-      if (collapsedDiv) collapsedDiv.remove();
+      container.insertAdjacentHTML('beforeend', html);
     }
+    pageTasks.forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
   }
 }
 
-function toggleMosCollapsedTasks() {
-  const collapsedDiv = $('mos-collapsed-tasks');
-  const toggle = $('mos-collapsed-toggle');
-  if (!collapsedDiv || !toggle) return;
-  const btn = toggle.querySelector('button');
-  const isHidden = collapsedDiv.classList.contains('d-none');
-  collapsedDiv.classList.toggle('d-none');
-  if (btn) {
-    const count = collapsedDiv.querySelectorAll('.task-item').length;
-    btn.innerHTML = isHidden
-      ? `<i class="bi bi-chevron-up"></i> 收起历史任务`
-      : `<i class="bi bi-chevron-down"></i> 显示历史任务 (${count}条)`;
-  }
+function _changeMosHistoryPage(delta) {
+  _mosHistoryPage += delta;
+  const historyCount = Math.max(0, _mosAllTasks.length - MOS_MAX_VISIBLE_TASKS);
+  const totalPages = Math.ceil(historyCount / MOS_HISTORY_PAGE_SIZE) || 1;
+  if (_mosHistoryPage < 1) _mosHistoryPage = 1;
+  if (_mosHistoryPage > totalPages) _mosHistoryPage = totalPages;
+  _rebuildPagedSection();
 }
 
 /** WebSocket推送的处理进度步骤 — 根据后端报告的步骤名确定完成状态 */
