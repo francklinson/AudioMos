@@ -5,6 +5,11 @@ const $ = id => document.getElementById(id);
 const qs = (s, c) => (c || document).querySelector(s);
 const qsa = (s, c) => (c || document).querySelectorAll(s);
 
+// 任务列表分页
+const MOS_PAGE_SIZE = 10;           // 每页条数
+let _mosAllTasks = [];              // 全量任务（最新在前）
+let _mosPage = 1;                   // 当前页码
+
 function formatTime(t) {
   if (!t || isNaN(t)) return '00:00';
   const m = Math.floor(t / 60);
@@ -440,9 +445,17 @@ function _updateMosTaskElement(el, t) {
   if (shouldHaveViewBtn && !hasViewBtn) {
     const actionsDiv = el.querySelector('.task-actions');
     if (actionsDiv) {
-      actionsDiv.insertAdjacentHTML('beforeend',
-        `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${taskId}')"><i class="bi bi-eye"></i> 查看</button>
+      // 在删除按钮之前插入查看/下载按钮，保持 DOM 顺序一致性
+      const delBtn = actionsDiv.querySelector('.btn-outline-danger');
+      if (delBtn) {
+        delBtn.insertAdjacentHTML('beforebegin',
+          `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${taskId}')"><i class="bi bi-eye"></i> 查看</button>
          <button class="btn btn-sm btn-outline-success" onclick="downloadMosResult('${taskId}')"><i class="bi bi-download"></i> 下载</button>`);
+      } else {
+        actionsDiv.insertAdjacentHTML('beforeend',
+          `<button class="btn btn-sm btn-outline-info" onclick="showMosResult('${taskId}')"><i class="bi bi-eye"></i> 查看</button>
+         <button class="btn btn-sm btn-outline-success" onclick="downloadMosResult('${taskId}')"><i class="bi bi-download"></i> 下载</button>`);
+      }
     }
   } else if (!shouldHaveViewBtn && hasViewBtn) {
     // 从completed变成非completed（罕见但处理）
@@ -504,47 +517,51 @@ function _escapeHtml(str) {
  * 渲染MOS任务列表 — 智能增量更新
  *
  * 关键设计：避免全量innerHTML替换，防止WebSocket实时进度被轮询重置。
- * - 首次渲染：创建所有任务卡片
- * - 后续轮询：仅增量更新已有卡片的进度/状态，保持WebSocket更新的DOM存活
- * - 新任务出现时：添加到列表
- * - 已删除任务：从DOM移除
+ * - 首次渲染：创建当前页所有任务卡片
+ * - 后续轮询：增量更新已有卡片的进度/状态
+ * - 新任务出现时：插入到当前页顶部
+ * - 分页：按时间倒序分页显示，每页 MOS_PAGE_SIZE 条
  */
 function renderMosTasks(tasks) {
   const container = $('mos-task-list');
   if (!tasks || tasks.length === 0) {
     container.innerHTML = '<div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无任务</div>';
+    _mosAllTasks = [];
     return;
   }
 
-  // 判断是否需要全量渲染（首次或所有卡片都被移除）
+  // 缓存全量任务（最新在前）
+  _mosAllTasks = [...tasks].sort((a, b) => {
+    const ta = a.created_at || a.create_time || '';
+    const tb = b.created_at || b.create_time || '';
+    return ta > tb ? -1 : ta < tb ? 1 : 0;
+  });
+
   const needsFullRender = !container.querySelector('.task-item');
 
   if (needsFullRender) {
-    // ====== 首次全量渲染 ======
-    let html = '';
-    tasks.forEach(t => { html += _buildMosTaskHtml(t); });
-    container.innerHTML = html;
-    tasks.forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
+    // ====== 全量渲染 ======
+    _renderCurrentPage();
     return;
   }
 
   // ====== 增量更新 ======
   const existingIds = new Set();
+  const taskContainer = $('mos-task-container');
 
-  tasks.forEach(t => {
+  _mosAllTasks.forEach(t => {
     existingIds.add(t.task_id);
     const el = $(`mos-task-${t.task_id}`);
     if (el) {
-      // 已有卡片 → 增量更新
       _updateMosTaskElement(el, t);
     } else {
       // 新任务 → 插入到列表顶部
-      container.insertAdjacentHTML('afterbegin', _buildMosTaskHtml(t));
+      (taskContainer || container).insertAdjacentHTML('afterbegin', _buildMosTaskHtml(t));
       if (_isActiveTask(t)) connectMosWs(t.task_id);
     }
   });
 
-  // 移除已删除的任务（本地删除或别的客户端删除）
+  // 移除已删除的任务
   container.querySelectorAll('.task-item[id^="mos-task-"]').forEach(el => {
     const id = el.id.replace('mos-task-', '');
     if (!existingIds.has(id)) {
@@ -552,6 +569,82 @@ function renderMosTasks(tasks) {
       el.remove();
     }
   });
+
+  // 翻页到第一页展示最新任务
+  if (_mosPage !== 1) {
+    _mosPage = 1;
+    _renderCurrentPage();
+  } else {
+    _syncPaginationControls();
+  }
+}
+
+function _renderCurrentPage() {
+  const container = $('mos-task-list');
+  const totalPages = Math.ceil(_mosAllTasks.length / MOS_PAGE_SIZE) || 1;
+  if (_mosPage > totalPages) _mosPage = totalPages;
+  if (_mosPage < 1) _mosPage = 1;
+
+  const start = (_mosPage - 1) * MOS_PAGE_SIZE;
+  const pageTasks = _mosAllTasks.slice(start, start + MOS_PAGE_SIZE);
+
+  let html = '<div id="mos-task-container">';
+  pageTasks.forEach(t => { html += _buildMosTaskHtml(t); });
+  html += '</div>';
+  html += _buildPaginationHtml();
+  container.innerHTML = html;
+  pageTasks.forEach(t => { if (_isActiveTask(t)) connectMosWs(t.task_id); });
+}
+
+function _buildPaginationHtml() {
+  const totalCount = _mosAllTasks.length;
+  const totalPages = Math.ceil(totalCount / MOS_PAGE_SIZE) || 1;
+  if (totalPages <= 1) return '';
+
+  if (_mosPage > totalPages) _mosPage = totalPages;
+  if (_mosPage < 1) _mosPage = 1;
+
+  let html = '<div class="d-flex justify-content-center align-items-center gap-2 py-2" id="mos-pagination">';
+  html += `<button class="btn btn-sm btn-outline-secondary" onclick="_changeMosPage(-1)" ${_mosPage <= 1 ? 'disabled' : ''}><i class="bi bi-chevron-left"></i> 上一页</button>`;
+
+  // 页码按钮
+  const rangeStart = Math.max(1, _mosPage - 2);
+  const rangeEnd = Math.min(totalPages, _mosPage + 2);
+  for (let p = rangeStart; p <= rangeEnd; p++) {
+    if (p === _mosPage) {
+      html += `<span class="btn btn-sm btn-primary disabled">${p}</span>`;
+    } else {
+      html += `<button class="btn btn-sm btn-outline-secondary" onclick="_goMosPage(${p})">${p}</button>`;
+    }
+  }
+
+  html += `<button class="btn btn-sm btn-outline-secondary" onclick="_changeMosPage(1)" ${_mosPage >= totalPages ? 'disabled' : ''}>下一页 <i class="bi bi-chevron-right"></i></button>`;
+  html += `<span class="text-muted small ms-1">共 ${totalCount} 条</span>`;
+  html += '</div>';
+  return html;
+}
+
+function _syncPaginationControls() {
+  const pagination = $('mos-pagination');
+  if (!pagination) return;
+  const totalCount = _mosAllTasks.length;
+  const totalPages = Math.ceil(totalCount / MOS_PAGE_SIZE) || 1;
+  if (totalPages <= 1) { pagination.remove(); return; }
+  // 替换整个分页控件
+  pagination.outerHTML = _buildPaginationHtml();
+}
+
+function _changeMosPage(delta) {
+  _mosPage += delta;
+  const totalPages = Math.ceil(_mosAllTasks.length / MOS_PAGE_SIZE) || 1;
+  if (_mosPage < 1) _mosPage = 1;
+  if (_mosPage > totalPages) _mosPage = totalPages;
+  _renderCurrentPage();
+}
+
+function _goMosPage(page) {
+  _mosPage = page;
+  _renderCurrentPage();
 }
 
 /** WebSocket推送的处理进度步骤 — 根据后端报告的步骤名确定完成状态 */

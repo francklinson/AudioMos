@@ -734,34 +734,73 @@ class OptimizedNisqaMosScore:
         import time
         print("\n[NISQA] 初始化NISQA模型...")
         start_time = time.time()
-        
+
         if not NISQA_AVAILABLE:
             raise ImportError("nisqa未安装")
-        
+
         # 获取项目根目录
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        
-        # 检查模型路径
-        model_path_project = os.path.join(project_root, 'models', 'nisqa', 'weights', 'nisqa_3000.tar')
-        model_path_algo = os.path.join(project_root, 'app', 'algorithms', 'nisqa', 'weights', 'nisqa_3000.tar')
-        
+
+        # 模型候选路径（按优先级排列）
+        model_candidates = [
+            ("项目模型目录", os.path.join(project_root, 'models', 'nisqa', 'weights', 'nisqa_3000.tar')),
+            ("算法内置目录", os.path.join(project_root, 'app', 'algorithms', 'nisqa', 'weights', 'nisqa_3000.tar')),
+        ]
+
         print(f"[NISQA] 检查模型路径...")
-        if os.path.exists(model_path_project):
-            self.nisqa_model = model_path_project
-            print(f"  ✓ 使用项目路径模型: {model_path_project}")
-        elif os.path.exists(model_path_algo):
-            self.nisqa_model = model_path_algo
-            print(f"  ✓ 使用算法路径模型: {model_path_algo}")
+        found_model = None
+        for label, path in model_candidates:
+            if os.path.exists(path):
+                found_model = path
+                print(f"  ✓ 找到模型 ({label}): {path}")
+                # 快速验证 tar 文件结构（只读文件头，不加载整个模型）
+                self._validate_tar(path)
+                break
+            else:
+                print(f"  - 未找到 ({label}): {path}")
+
+        if found_model:
+            self.nisqa_model = found_model
         else:
-            # 使用默认文件名，让nisqa自己查找
-            self.nisqa_model = 'nisqa_3000.tar'
-            print(f"  ⚠ 本地模型未找到，使用默认配置: {self.nisqa_model}")
-        
+            raise FileNotFoundError(
+                "[NISQA] 模型文件 'nisqa_3000.tar' 未找到。\n"
+                f"  搜索路径:\n"
+                f"    1. {model_candidates[0][1]}\n"
+                f"    2. {model_candidates[1][1]}\n"
+                f"  请将模型文件放置于以上任一目录。"
+            )
+
         self.nisqa_mode = "predict_list"
-        
+
         init_time = time.time() - start_time
         print(f"[NISQA] 模型初始化完成 (耗时: {init_time:.2f}s)")
         print(f"  ✓ NISQA评分器就绪")
+
+    @staticmethod
+    def _validate_tar(tar_path: str):
+        """
+        快速验证 tar 文件结构和完整性。
+        读取文件头验证其包含预期的 checkpoint 键（model_state_dict），
+        但不加载全部权重到内存，避免不必要的显存/内存开销。
+        """
+        try:
+            # 使用 torch.load 的 weights_only 模式安全加载文件头
+            # map_location='cpu' 确保不分配 GPU 显存
+            checkpoint = torch.load(tar_path, map_location='cpu', weights_only=True)
+            if 'model_state_dict' not in checkpoint:
+                raise ValueError(
+                    f"模型文件 '{tar_path}' 缺少 'model_state_dict' 键，"
+                    f"文件可能已损坏或不完整"
+                )
+            del checkpoint  # 立即释放
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            raise ValueError(
+                f"[NISQA] 模型文件验证失败: {tar_path}\n"
+                f"  错误: {e}\n"
+                f"  文件可能已损坏或不完整，请重新下载。"
+            ) from e
     
     @timed_execution("nisqa")
     def get_mos(self, file_dir_list) -> dict:

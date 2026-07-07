@@ -7,10 +7,34 @@ import argparse
 def nisqa_predict(mode, deg=None, deg_list=None, data_dir=None, output_dir='', csv_file=None, model: str = 'nisqa_3000.tar',
                   csv_deg=None,
                   num_workers=0, bs=10):
-    # 直接使用传入的参数，不使用argparse解析命令行
+    """
+    NISQA 模型预测。
+
+    model 参数可以是：
+    - 绝对路径（如 /data/models/nisqa_3000.tar）→ 直接使用
+    - 文件名（如 nisqa_3000.tar）→ 从本模块所在目录的 weights/ 子目录加载
+    """
+    # 解析模型路径：绝对路径直接使用，相对路径从 weights/ 目录加载
+    if os.path.isabs(model):
+        pretrained_model = model
+    else:
+        pretrained_model = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'weights',
+            model
+        )
+
+    if not os.path.exists(pretrained_model):
+        raise FileNotFoundError(
+            f"NISQA 模型文件未找到: {pretrained_model}\n"
+            f"请将模型文件放置于以下任一位置：\n"
+            f"  1. {os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weights', model)}\n"
+            f"  2. 任意路径，通过绝对路径传入 model 参数"
+        )
+
     args = {
         'mode': mode,
-        'pretrained_model': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weights', model),
+        'pretrained_model': pretrained_model,
         'deg': deg,
         'deg_list': deg_list,
         'data_dir': data_dir,
