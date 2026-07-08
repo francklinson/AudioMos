@@ -1841,6 +1841,120 @@ let asrSelectedAlgorithm = '';
 let asrFile = null;
 let asrDatasets = [];
 let asrBenchmarkAlgos = new Set();
+let leaderboardData = null;
+
+// ── 测评榜单 ──
+
+async function loadLeaderboard(datasetKey) {
+  const tbody = $('asr-leaderboard-tbody');
+  tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">加载中...</td></tr>';
+  try {
+    const data = await api(apiUrl(`/api/asr/leaderboard/${datasetKey}`));
+    leaderboardData = data;
+    renderLeaderboard(data);
+    $('asr-lb-updated').textContent = `更新于 ${data.updated_at || data.updated_at || '-'}`;
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="text-center text-danger py-4">加载失败: ${e.message}</td></tr>`;
+    console.error('加载榜单失败:', e);
+  }
+}
+
+function renderLeaderboard(data) {
+  const tbody = $('asr-leaderboard-tbody');
+  const entries = data.entries || [];
+  if (entries.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">暂无数据</td></tr>';
+    return;
+  }
+  tbody.innerHTML = '';
+  entries.forEach((e, i) => {
+    const tr = document.createElement('tr');
+    if (i === 0) tr.className = 'table-warning';
+    else if (i === 1) tr.className = 'table-light';
+
+    // 公开基准 CER
+    const baseCer = e.baseline_cer != null ? `${e.baseline_cer.toFixed(2)}%` : '-';
+
+    // 本地最佳 CER（与公开基准对比着色）
+    let localCer = '-';
+    if (e.local_cer != null) {
+      const better = e.baseline_cer != null && e.local_cer < e.baseline_cer;
+      const cls = better ? 'text-success fw-bold' : 'text-danger';
+      localCer = `<span class="${cls}">${e.local_cer.toFixed(2)}%</span>`;
+    }
+
+    // WER / RTF / 句数
+    const localWer = e.local_wer != null ? `${e.local_wer.toFixed(2)}%` : '-';
+    const localRtf = e.local_rtf != null ? e.local_rtf.toFixed(3) : '-';
+    const localUtt = e.local_num_utterances || '-';
+
+    // 来源
+    let source = '-';
+    if (e.local_bench_id) source = `<span class="text-success">本地测评</span>`;
+    if (e.baseline_source) source = e.baseline_source;
+
+    tr.innerHTML = `
+      <td><strong>${i + 1}</strong></td>
+      <td><strong>${e.display_name || e.algorithm}</strong></td>
+      <td class="text-muted small">${e.params || '-'}</td>
+      <td>${baseCer}</td>
+      <td>${localCer}</td>
+      <td>${localWer}</td>
+      <td>${localRtf}</td>
+      <td>${localUtt}</td>
+      <td class="text-muted small" style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${(e.baseline_source || '')}">${source}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function initLeaderboard() {
+  // 加载完整榜单以获取数据集列表
+  try {
+    const full = await api(apiUrl('/api/asr/leaderboard'));
+    const sel = $('asr-lb-dataset');
+    sel.innerHTML = '';
+    const datasets = full.datasets || {};
+    let firstKey = null;
+    Object.entries(datasets).forEach(([key, ds]) => {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = ds.name || key;
+      sel.appendChild(opt);
+      if (!firstKey) firstKey = key;
+    });
+    // 默认选中第一个数据集
+    if (firstKey) {
+      sel.value = firstKey;
+      loadLeaderboard(firstKey);
+    }
+  } catch (e) {
+    console.error('加载榜单失败:', e);
+    $('asr-leaderboard-tbody').innerHTML = '<tr><td colspan="9" class="text-center text-danger py-4">加载榜单失败</td></tr>';
+  }
+
+  // 数据集下拉框切换
+  $('asr-lb-dataset').addEventListener('change', () => {
+    loadLeaderboard($('asr-lb-dataset').value);
+  });
+
+  // 刷新按钮
+  $('asr-lb-refresh-btn').addEventListener('click', async () => {
+    const btn = $('asr-lb-refresh-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    try {
+      await api(apiUrl('/api/asr/leaderboard/refresh'), { method: 'POST' });
+      showToast('榜单已刷新', 'success');
+      loadLeaderboard($('asr-lb-dataset').value);
+    } catch (e) {
+      showToast('刷新失败: ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
+    }
+  });
+}
 
 async function loadAsrAlgorithms() {
   try {
@@ -1936,6 +2050,9 @@ function updateAsrBenchmarkBtn() {
 }
 
 function initAsrPage() {
+  // 初始化榜单
+  initLeaderboard();
+
   // 算法选择
   $('asr-algorithm-select').addEventListener('change', e => {
     asrSelectedAlgorithm = e.target.value;
@@ -2073,6 +2190,15 @@ async function submitAsrBenchmark() {
     });
 
     const benchId = data.bench_id;
+    // 缓存命中：后端已返回完整结果，直接展示
+    if (data.cached) {
+      showToast('该配置已有测评结果，直接加载', 'info');
+      showAsrBenchmarkResult(data);
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-speedometer2"></i> <span>开始评测</span>';
+      $('asr-benchmark-progress').classList.add('d-none');
+      return;
+    }
     pollAsrBenchmark(benchId);
   } catch (e) {
     showToast('启动评测失败: ' + e.message, 'error');

@@ -37,6 +37,7 @@ try:
     from asr.dataset_manager import DatasetManager
     from asr.report_generator import ASRReportGenerator
     from asr.evaluator import compute_cer
+    from asr.leaderboard import LeaderboardManager
 
     ASR_AVAILABLE = True
     logger.info("✓ ASR语音识别模块加载成功")
@@ -90,45 +91,127 @@ asr_task_queue = TaskQueue(
 # WebSocket连接管理器
 asr_manager = ConnectionManager()
 
-# Benchmark存储（带JSON持久化）
+# ── 测评结果持久化（按 数据集/算法 组织）──
+asr_results_dir = os.path.join(asr_result_dir, "results")
+os.makedirs(asr_results_dir, exist_ok=True)
+
+# asr_results[dataset][algorithm] = {metrics, per_utterance, errors, ...}
+asr_results: Dict[str, Dict[str, dict]] = {}
+
+# Benchmark 运行状态（仅内存，存正在跑的）
 asr_benchmarks: Dict[str, Dict[str, Any]] = {}
-asr_benchmarks_dir = os.path.join(asr_result_dir, "_benchmarks")
-os.makedirs(asr_benchmarks_dir, exist_ok=True)
+
+# 旧格式目录（用于迁移）
+_asr_benchmarks_legacy_dir = os.path.join(asr_result_dir, "_benchmarks")
 
 
-def _save_benchmarks():
-    """持久化所有benchmark状态到JSON文件"""
-    try:
-        for bench_id, data in asr_benchmarks.items():
-            filepath = os.path.join(asr_benchmarks_dir, f"{bench_id}.json")
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"[ASR] Benchmark持久化失败: {e}")
+def _migrate_legacy_benchmarks():
+    """将旧 _benchmarks/*.json 迁移到 results/{dataset}/{algorithm}.json"""
+    if not os.path.isdir(_asr_benchmarks_legacy_dir):
+        return
+    files = [f for f in os.listdir(_asr_benchmarks_legacy_dir) if f.endswith(".json")]
+    if not files:
+        return
+
+    logger.info(f"[ASR] 检测到旧格式 benchmark {len(files)} 个，开始迁移...")
+    migrated = 0
+    for fname in files:
+        try:
+            with open(os.path.join(_asr_benchmarks_legacy_dir, fname), "r") as f:
+                bench = json.load(f)
+        except Exception:
+            continue
+
+        if bench.get("status") != "completed":
+            continue
+
+        dataset = bench.get("dataset", bench.get("dataset_name", ""))
+        results = bench.get("results", {})
+        if isinstance(results, dict) and "results" in results:
+            results = results["results"]  # 兼容旧嵌套格式
+
+        if not isinstance(results, dict):
+            continue
+
+        for algo_name, algo_result in results.items():
+            if not isinstance(algo_result, dict):
+                continue
+            _save_result(dataset, algo_name, algo_result)
+            migrated += 1
+
+    if migrated:
+        # 迁移完成后重命名旧目录
+        bak = _asr_benchmarks_legacy_dir + ".bak"
+        os.rename(_asr_benchmarks_legacy_dir, bak)
+        logger.info(f"[ASR] 迁移完成: {migrated} 条结果 → {asr_results_dir}, 旧数据备份至 {bak}")
 
 
-def _load_benchmarks():
-    """启动时从JSON文件恢复benchmark"""
-    if not os.path.exists(asr_benchmarks_dir):
+def _load_all_results():
+    """启动时从 results/{dataset}/*.json 加载所有测评结果"""
+    global asr_results
+    asr_results = {}
+    if not os.path.isdir(asr_results_dir):
         return
     loaded = 0
-    for fname in sorted(os.listdir(asr_benchmarks_dir)):
-        if fname.endswith(".json"):
+    for ds_name in os.listdir(asr_results_dir):
+        ds_dir = os.path.join(asr_results_dir, ds_name)
+        if not os.path.isdir(ds_dir):
+            continue
+        asr_results[ds_name] = {}
+        for fname in os.listdir(ds_dir):
+            if not fname.endswith(".json"):
+                continue
             try:
-                filepath = os.path.join(asr_benchmarks_dir, fname)
-                with open(filepath, "r", encoding="utf-8") as f:
+                with open(os.path.join(ds_dir, fname), "r") as f:
                     data = json.load(f)
-                bench_id = data.get("bench_id", fname[:-5])
-                asr_benchmarks[bench_id] = data
+                algo = data.get("algorithm", fname[:-5])
+                asr_results[ds_name][algo] = data
                 loaded += 1
             except Exception as e:
-                logger.error(f"[ASR] 加载benchmark文件失败 {fname}: {e}")
+                logger.error(f"[ASR] 加载结果失败 {ds_dir}/{fname}: {e}")
     if loaded:
-        logger.info(f"[ASR] 从持久化恢复 {loaded} 个Benchmark")
+        logger.info(f"[ASR] 加载 {loaded} 条测评结果 ({len(asr_results)} 个数据集)")
 
 
-# 模块加载时自动恢复benchmark
-_load_benchmarks()
+def _save_result(dataset: str, algorithm: str, result_data: dict):
+    """保存单个算法的测评结果到 results/{dataset}/{algorithm}.json"""
+    ds_dir = os.path.join(asr_results_dir, dataset)
+    os.makedirs(ds_dir, exist_ok=True)
+
+    # 与已有结果比较，仅保留更优 CER
+    existing_path = os.path.join(ds_dir, f"{algorithm}.json")
+    if os.path.exists(existing_path):
+        try:
+            with open(existing_path, "r") as f:
+                existing = json.load(f)
+            old_cer = existing.get("metrics", {}).get("cer")
+            new_cer = result_data.get("metrics", {}).get("cer")
+            if old_cer is not None and new_cer is not None and new_cer >= old_cer:
+                return  # 已有更好的结果，跳过
+        except Exception:
+            pass
+
+    data = {
+        "algorithm": algorithm,
+        "dataset": dataset,
+        "metrics": result_data.get("metrics", {}),
+        "per_utterance": result_data.get("per_utterance", [])[:20],
+        "errors": result_data.get("errors", []),
+        "updated_at": datetime.now().isoformat(),
+    }
+    with open(existing_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # 同步内存
+    if dataset not in asr_results:
+        asr_results[dataset] = {}
+    asr_results[dataset][algorithm] = data
+
+
+# 模块加载：迁移旧数据 → 加载所有结果
+_migrate_legacy_benchmarks()
+_load_all_results()
+
 
 # 数据集管理器（延迟初始化）
 _dataset_manager: Optional[DatasetManager] = None
@@ -153,6 +236,54 @@ def _get_step_name(progress: int) -> str:
     return step
 
 
+def _benchmark_cache_key(algorithms: List[str], dataset: str, max_samples: int) -> str:
+    """生成benchmark缓存键（算法排序后取指纹）"""
+    import hashlib
+    raw = f"{'|'.join(sorted(algorithms))}|{dataset}|{max_samples}"
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+
+def _find_cached_benchmark(algorithms: List[str], dataset: str, max_samples: int) -> Optional[Dict[str, Any]]:
+    """查找已完成的benchmark结果 — 从 asr_results 字典 O(1) 查找每个算法"""
+    ds_results = asr_results.get(dataset, {})
+    if not ds_results:
+        logger.info(f"[ASR] 缓存未命中: dataset={dataset} 无任何结果")
+        return None
+
+    found = {}
+    missing = []
+    for algo in algorithms:
+        if algo in ds_results:
+            entry = ds_results[algo]
+            found[algo] = {
+                "metrics": entry.get("metrics", {}),
+                "per_utterance": entry.get("per_utterance", []),
+                "errors": entry.get("errors", []),
+                "algorithm_name": algo,
+            }
+        else:
+            missing.append(algo)
+
+    if missing:
+        if found:
+            logger.info(f"[ASR] 部分缓存命中: 已有={set(found.keys())} 缺失={missing}")
+        else:
+            logger.info(f"[ASR] 缓存未命中: algos={algorithms} dataset={dataset}")
+        return None
+
+    logger.info(f"[ASR] 缓存全部命中 ({len(found)}个算法) dataset={dataset}")
+    return {
+        "bench_id": f"cached_{dataset}",
+        "algorithms": algorithms,
+        "dataset": dataset,
+        "max_samples": max_samples,
+        "status": "completed",
+        "progress": 100.0,
+        "results": found,
+        "cached": True,
+    }
+
+
 def _get_dataset_manager() -> DatasetManager:
     """获取数据集管理器（懒加载单例，从全局配置读取数据集路径）"""
     global _dataset_manager
@@ -160,6 +291,22 @@ def _get_dataset_manager() -> DatasetManager:
         datasets_config = settings.asr.datasets if hasattr(settings, 'asr') else {}
         _dataset_manager = DatasetManager.from_config(datasets_config, project_root=project_root)
     return _dataset_manager
+
+
+# 榜单管理器（延迟初始化）
+_leaderboard_manager: Optional[LeaderboardManager] = None
+
+
+def _get_leaderboard_manager() -> LeaderboardManager:
+    """获取榜单管理器（懒加载单例，首次加载时从公开基准+历史记录初始化）"""
+    global _leaderboard_manager
+    if _leaderboard_manager is None:
+        _leaderboard_manager = LeaderboardManager(
+            filepath=os.path.join(asr_result_dir, "leaderboard.json")
+        )
+        # 首次加载后，扫描历史 benchmark 补充本地结果
+        _leaderboard_manager.seed_from_history(asr_results_dir)
+    return _leaderboard_manager
 
 
 def _get_device() -> str:
@@ -794,6 +941,16 @@ async def run_benchmark(
         if algo not in algo_names:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"不支持的算法: {algo}")
 
+    # ── 记忆功能：相同配置直接返回已有结果 ──
+    cache_key = _benchmark_cache_key(request.algorithms, request.dataset, request.max_samples)
+    cached = _find_cached_benchmark(request.algorithms, request.dataset, request.max_samples)
+    if cached:
+        logger.info(f"[ASR] 命中缓存: {cached['bench_id']} (算法={request.algorithms}, 数据集={request.dataset})")
+        return {
+            **cached,
+            "message": "该配置已有测评结果，直接返回（未重新计算）",
+        }
+
     bench_id = f"bench_{uuid.uuid4().hex[:8]}"
     now = datetime.now().isoformat()
 
@@ -812,7 +969,6 @@ async def run_benchmark(
         "updated_at": now,
         "user": current_user.username,
     }
-    _save_benchmarks()
 
     # 在后台线程执行benchmark
     async def _run_benchmark():
@@ -858,7 +1014,21 @@ async def run_benchmark(
             asr_benchmarks[bench_id]["ranking"] = ranking
             asr_benchmarks[bench_id]["report_files"] = report_files
             asr_benchmarks[bench_id]["updated_at"] = datetime.now().isoformat()
-            _save_benchmarks()
+
+            # 逐算法持久化到 results/{dataset}/{algorithm}.json
+            results_dict = run_result.to_dict()["results"]
+            for algo_name, algo_result in results_dict.items():
+                if isinstance(algo_result, dict):
+                    _save_result(request.dataset, algo_name, algo_result)
+
+            # 更新测评榜单
+            try:
+                lm = _get_leaderboard_manager()
+                updated = lm.update_from_benchmark(bench_id, asr_benchmarks[bench_id])
+                if updated:
+                    logger.info(f"[ASR] 榜单已更新: {updated} 条记录")
+            except Exception as e:
+                logger.error(f"[ASR] 更新榜单失败: {e}")
 
             logger.info(f"[ASR] Benchmark完成: {bench_id}")
 
@@ -866,7 +1036,6 @@ async def run_benchmark(
             asr_benchmarks[bench_id]["status"] = "failed"
             asr_benchmarks[bench_id]["message"] = str(e)
             asr_benchmarks[bench_id]["updated_at"] = datetime.now().isoformat()
-            _save_benchmarks()
 
             logger.error(f"[ASR] Benchmark失败: {bench_id}, 错误: {e}")
             import traceback
@@ -958,6 +1127,36 @@ async def list_benchmarks(current_user: User = Depends(get_current_active_user))
         if b.get("user") == current_user.username
     ]
     return user_benchmarks
+
+
+# ===========================
+# 3.5 测评榜单
+# ===========================
+
+
+@router.get("/leaderboard")
+async def get_leaderboard_full() -> Dict[str, Any]:
+    """获取完整测评榜单（所有数据集）"""
+    lm = _get_leaderboard_manager()
+    return lm.get_full()
+
+
+@router.get("/leaderboard/{dataset_key}")
+async def get_leaderboard_dataset(dataset_key: str) -> Dict[str, Any]:
+    """获取指定数据集的测评榜单"""
+    lm = _get_leaderboard_manager()
+    result = lm.get_leaderboard(dataset_key)
+    if not result.get("entries"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"数据集 '{dataset_key}' 不存在")
+    return result
+
+
+@router.post("/leaderboard/refresh")
+async def refresh_leaderboard(current_user: User = Depends(get_current_active_user)) -> Dict[str, Any]:
+    """手动刷新榜单（从公开基准+历史benchmark重建）"""
+    lm = _get_leaderboard_manager()
+    count = lm.refresh(asr_results_dir)
+    return {"message": f"榜单已刷新，共 {count} 个数据集", "datasets": count}
 
 
 # ===========================

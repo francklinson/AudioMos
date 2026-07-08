@@ -397,6 +397,55 @@
 
             <!-- Benchmark子Tab -->
             <div class="tab-pane fade" id="asr-pane-benchmark">
+
+              <!-- Benchmark内部子导航 -->
+              <ul class="nav nav-pills mb-3" id="asr-bench-tabs" role="tablist">
+                <li class="nav-item"><button class="nav-link active" id="asr-bench-tab-lb" data-bs-toggle="pill" data-bs-target="#asr-bench-pane-lb">测评榜单</button></li>
+                <li class="nav-item"><button class="nav-link" id="asr-bench-tab-run" data-bs-toggle="pill" data-bs-target="#asr-bench-pane-run">运行测评</button></li>
+              </ul>
+
+              <div class="tab-content">
+
+                <!-- 测评榜单视图 -->
+                <div class="tab-pane fade show active" id="asr-bench-pane-lb">
+                  <div class="card mb-3">
+                    <div class="card-body">
+                      <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="card-title mb-0"><i class="bi bi-trophy"></i> ASR测评榜单</h5>
+                        <div class="d-flex gap-2">
+                          <select class="form-select form-select-sm" id="asr-lb-dataset" style="width: auto;">
+                            <option value="">加载中...</option>
+                          </select>
+                          <button class="btn btn-sm btn-outline-secondary" id="asr-lb-refresh-btn" title="刷新榜单"><i class="bi bi-arrow-repeat"></i></button>
+                        </div>
+                      </div>
+                      <div class="table-responsive">
+                        <table class="table table-striped table-hover result-table">
+                          <thead>
+                            <tr>
+                              <th style="width: 50px;">排名</th>
+                              <th>算法</th>
+                              <th style="width: 85px;">参数量</th>
+                              <th style="width: 110px;">公开基准 CER</th>
+                              <th style="width: 110px;">本地最佳 CER</th>
+                              <th style="width: 85px;">WER</th>
+                              <th style="width: 75px;">RTF</th>
+                              <th style="width: 80px;">评测句数</th>
+                              <th>来源</th>
+                            </tr>
+                          </thead>
+                          <tbody id="asr-leaderboard-tbody">
+                            <tr><td colspan="9" class="text-center text-muted py-4">加载中...</td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                      <div id="asr-lb-updated" class="text-muted small"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 运行测评视图 -->
+                <div class="tab-pane fade" id="asr-bench-pane-run">
               <div class="card mb-3">
                 <div class="card-body">
                   <h5 class="card-title"><i class="bi bi-cpu"></i> 选择算法（多选）</h5>
@@ -453,7 +502,9 @@
                   </div>
                 </div>
               </div>
-            </div>
+                </div><!-- end 运行测评 pane -->
+              </div><!-- end bench tab-content -->
+            </div><!-- end benchmark pane -->
 
             <!-- API文档子Tab -->
             <div class="tab-pane fade" id="asr-pane-api">

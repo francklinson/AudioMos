@@ -1439,3 +1439,16 @@ input[type="checkbox"] {
   height: 1em;
   cursor: pointer;
 }
+
+/* ── ASR 测评榜单 ── */
+#asr-leaderboard-tbody td {
+  vertical-align: middle;
+}
+
+#asr-leaderboard-tbody .text-success {
+  color: #198754 !important;
+}
+
+#asr-leaderboard-tbody .text-danger {
+  color: #dc3545 !important;
+}
