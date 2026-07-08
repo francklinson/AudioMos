@@ -24,7 +24,7 @@ logger = logging.getLogger("audiomos")
 class BenchmarkResult:
     """单算法Benchmark结果"""
     algorithm_name: str
-    metrics: ASRMetrics
+    metrics: ASRMetrics = field(default_factory=ASRMetrics)
     per_utterance: List[dict] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
@@ -140,13 +140,18 @@ class ASRBenchmark:
                     audio, sr = sf.read(sample.audio_path)
                     if len(audio.shape) > 1:
                         audio = audio.mean(axis=1)
+                    audio_dur = len(audio) / sr
 
-                    asr_result = instance.transcribe_file(sample.audio_path)
+                    # 直接调用 transcribe，避免 transcribe_file 重复读取文件
+                    start_time = time.time()
+                    asr_result = instance.transcribe(audio, sr)
+                    asr_result.processing_time = time.time() - start_time
+                    asr_result.rtf = asr_result.processing_time / audio_dur if audio_dur > 0 else 0
+                    asr_result.algorithm_name = instance.name
 
                     references.append(sample.reference_text)
                     hypotheses.append(asr_result.text)
                     proc_times.append(asr_result.processing_time)
-                    audio_dur = len(audio) / sr
                     durations.append(audio_dur)
 
                     cer, _, _, _ = compute_cer(sample.reference_text, asr_result.text)

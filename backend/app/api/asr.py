@@ -90,8 +90,45 @@ asr_task_queue = TaskQueue(
 # WebSocket连接管理器
 asr_manager = ConnectionManager()
 
-# Benchmark存储
+# Benchmark存储（带JSON持久化）
 asr_benchmarks: Dict[str, Dict[str, Any]] = {}
+asr_benchmarks_dir = os.path.join(asr_result_dir, "_benchmarks")
+os.makedirs(asr_benchmarks_dir, exist_ok=True)
+
+
+def _save_benchmarks():
+    """持久化所有benchmark状态到JSON文件"""
+    try:
+        for bench_id, data in asr_benchmarks.items():
+            filepath = os.path.join(asr_benchmarks_dir, f"{bench_id}.json")
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[ASR] Benchmark持久化失败: {e}")
+
+
+def _load_benchmarks():
+    """启动时从JSON文件恢复benchmark"""
+    if not os.path.exists(asr_benchmarks_dir):
+        return
+    loaded = 0
+    for fname in sorted(os.listdir(asr_benchmarks_dir)):
+        if fname.endswith(".json"):
+            try:
+                filepath = os.path.join(asr_benchmarks_dir, fname)
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                bench_id = data.get("bench_id", fname[:-5])
+                asr_benchmarks[bench_id] = data
+                loaded += 1
+            except Exception as e:
+                logger.error(f"[ASR] 加载benchmark文件失败 {fname}: {e}")
+    if loaded:
+        logger.info(f"[ASR] 从持久化恢复 {loaded} 个Benchmark")
+
+
+# 模块加载时自动恢复benchmark
+_load_benchmarks()
 
 # 数据集管理器（延迟初始化）
 _dataset_manager: Optional[DatasetManager] = None
@@ -117,10 +154,11 @@ def _get_step_name(progress: int) -> str:
 
 
 def _get_dataset_manager() -> DatasetManager:
-    """获取数据集管理器（懒加载单例）"""
+    """获取数据集管理器（懒加载单例，从全局配置读取数据集路径）"""
     global _dataset_manager
     if _dataset_manager is None:
-        _dataset_manager = DatasetManager.from_config({}, project_root=project_root)
+        datasets_config = settings.asr.datasets if hasattr(settings, 'asr') else {}
+        _dataset_manager = DatasetManager.from_config(datasets_config, project_root=project_root)
     return _dataset_manager
 
 
@@ -774,6 +812,7 @@ async def run_benchmark(
         "updated_at": now,
         "user": current_user.username,
     }
+    _save_benchmarks()
 
     # 在后台线程执行benchmark
     async def _run_benchmark():
@@ -819,6 +858,7 @@ async def run_benchmark(
             asr_benchmarks[bench_id]["ranking"] = ranking
             asr_benchmarks[bench_id]["report_files"] = report_files
             asr_benchmarks[bench_id]["updated_at"] = datetime.now().isoformat()
+            _save_benchmarks()
 
             logger.info(f"[ASR] Benchmark完成: {bench_id}")
 
@@ -826,6 +866,7 @@ async def run_benchmark(
             asr_benchmarks[bench_id]["status"] = "failed"
             asr_benchmarks[bench_id]["message"] = str(e)
             asr_benchmarks[bench_id]["updated_at"] = datetime.now().isoformat()
+            _save_benchmarks()
 
             logger.error(f"[ASR] Benchmark失败: {bench_id}, 错误: {e}")
             import traceback

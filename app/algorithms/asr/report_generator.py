@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 from .benchmark import BenchmarkRun, BenchmarkResult
+from .baselines import get_baseline, DATASET_DISPLAY_NAMES
 
 logger = logging.getLogger("audiomos")
 
@@ -19,9 +20,16 @@ class ASRReportGenerator:
 
     @staticmethod
     def generate_json(run: BenchmarkRun, output_path: str) -> str:
-        """生成JSON报告"""
+        """生成JSON报告（含基准对比）"""
+        data = run.to_dict()
+        # 追加基准信息
+        data["baselines"] = {}
+        for algo in data.get("results", {}):
+            baseline = get_baseline(algo, run.dataset_name)
+            if baseline and baseline["cer"] is not None:
+                data["baselines"][algo] = baseline
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(run.to_dict(), f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
         return output_path
 
     @staticmethod
@@ -38,11 +46,12 @@ class ASRReportGenerator:
         lines.append(f"- **状态**: {run.status}")
         lines.append(f"")
 
-        # 排名表
+        # 排名表（含基准对比）
+        dataset_key = run.dataset_name if run.dataset_name in DATASET_DISPLAY_NAMES else run.dataset_name
         lines.append(f"## 排名")
         lines.append(f"")
-        lines.append(f"| 排名 | 算法 | CER | WER | RTF | 评测句数 |")
-        lines.append(f"|------|------|-----|-----|-----|----------|")
+        lines.append(f"| 排名 | 算法 | CER | 预期CER | 差距 | WER | RTF | 评测句数 |")
+        lines.append(f"|------|------|-----|---------|------|-----|-----|----------|")
 
         ranking = []
         for name, result in run.results.items():
@@ -56,10 +65,17 @@ class ASRReportGenerator:
         ranking.sort(key=lambda x: x.get("cer", float("inf")))
 
         for i, r in enumerate(ranking, 1):
+            baseline = get_baseline(r["algorithm"], run.dataset_name)
+            expected = ""
+            delta = ""
+            if baseline and baseline["cer"] is not None:
+                expected = f"{baseline['cer']:.2f}%"
+                diff = r["cer"] * 100 - baseline["cer"] if r["cer"] is not None else 0
+                delta = f"{diff:+.2f}%"
             lines.append(
                 f"| {i} | {r['algorithm']} | "
-                f"{r['cer']:.4f} | {r['wer']:.4f} | "
-                f"{r['rtf']:.4f} | {r['num_utterances']} |"
+                f"{r['cer']:.4f} | {expected} | {delta} | "
+                f"{r['wer']:.4f} | {r['rtf']:.4f} | {r['num_utterances']} |"
             )
 
         lines.append(f"")
@@ -167,14 +183,23 @@ tr:nth-child(even) {{ background-color: #f8f9fa; }}
 
 <h2>排名</h2>
 <table>
-<tr><th>排名</th><th>算法</th><th>CER</th><th>WER</th><th>RTF</th><th>评测句数</th></tr>
+<tr><th>排名</th><th>算法</th><th>CER</th><th>预期CER</th><th>差距</th><th>WER</th><th>RTF</th><th>评测句数</th></tr>
 """
 
         for i, r in enumerate(ranking, 1):
-            rank_class = f"rank-{i}" if i <= 3 else ""
+            baseline = get_baseline(r["algorithm"], run.dataset_name)
+            expected_html = ""
+            delta_html = ""
+            if baseline and baseline["cer"] is not None:
+                expected_html = f'{baseline["cer"]:.2f}%'
+                diff = r["cer"] * 100 - baseline["cer"] if r["cer"] is not None else 0
+                color = "#22c55e" if diff <= 0 else "#ef4444"
+                delta_html = f'<span style="color:{color}">{diff:+.2f}%</span>'
+            rank_class = f'rank-{i}' if i <= 3 else ''
             html += f'<tr class="{rank_class}"><td>{i}</td><td>{r["algorithm"]}</td>'
-            html += f'<td>{r["cer"]:.4f}</td><td>{r["wer"]:.4f}</td>'
-            html += f'<td>{r["rtf"]:.4f}</td><td>{r["num_utterances"]}</td></tr>\n'
+            html += f'<td>{r["cer"]:.4f}</td><td>{expected_html}</td><td>{delta_html}</td>'
+            html += f'<td>{r["wer"]:.4f}</td><td>{r["rtf"]:.4f}</td>'
+            html += f'<td>{r["num_utterances"]}</td></tr>\n'
 
         html += """</table>
 <h2>详细指标</h2>
