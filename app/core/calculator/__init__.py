@@ -15,6 +15,7 @@ from .mos_calculator import (
     AudioCache,
     PerformanceTimer,
     compute_mos_scores_optimized,
+    compute_final_mos_scores,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     'AudioCache',
     'PerformanceTimer',
     'compute_mos_scores_optimized',
+    'compute_final_mos_scores',
 ]

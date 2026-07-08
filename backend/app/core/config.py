@@ -91,6 +91,16 @@ class ASRConfig(BaseSettings):
     datasets: dict = {}
 
 
+class TaskQueueConfig(BaseSettings):
+    """任务队列配置"""
+    max_workers: int = 1  # 默认1，确保模型实例不并发争用；多GPU部署可调高
+
+
+class ScoringConfig(BaseSettings):
+    """MOS评分权重配置"""
+    weights: dict = {}
+
+
 class Config(BaseSettings):
     """全局配置"""
     server: ServerConfig = ServerConfig()
@@ -100,6 +110,8 @@ class Config(BaseSettings):
     logging: LoggingConfig = LoggingConfig()
     audio: AudioConfig = AudioConfig()
     asr: ASRConfig = ASRConfig()
+    task_queue: TaskQueueConfig = TaskQueueConfig()
+    scoring: ScoringConfig = ScoringConfig()
 
 
 def load_config(config_path: str = None) -> Config:
@@ -181,6 +193,10 @@ def load_config(config_path: str = None) -> Config:
                     algorithms=asr_data.get("algorithms", {}),
                     datasets=asr_data.get("datasets", {}),
                 )
+            if "task_queue" in yaml_config:
+                config.task_queue = TaskQueueConfig(**yaml_config["task_queue"])
+            if "scoring" in yaml_config:
+                config.scoring = ScoringConfig(**yaml_config["scoring"])
     
     # 将相对路径转换为基于项目根目录的绝对路径
     def resolve_path(path_str: str) -> str:

@@ -309,4 +309,12 @@ class TaskQueue:
 
 
 # 全局任务队列实例（MOS评分使用）
-task_queue = TaskQueue(max_workers=1)
+# max_workers 从 config.yaml task_queue.max_workers 读取，默认 1
+# 注意：调高此值需要确保各评分器支持并发调用（模型实例线程安全）
+_task_queue_max_workers = 1
+try:
+    from app.core.config import settings
+    _task_queue_max_workers = getattr(settings.task_queue, 'max_workers', 1)
+except Exception:
+    pass
+task_queue = TaskQueue(max_workers=_task_queue_max_workers)

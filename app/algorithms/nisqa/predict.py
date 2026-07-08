@@ -1,4 +1,3 @@
-import gc
 import os
 from .nisqa_lib.NISQA_model import NisqaModel
 import argparse
@@ -73,8 +72,10 @@ def nisqa_predict(mode, deg=None, deg_list=None, data_dir=None, output_dir='', c
 
     nisqa_model = NisqaModel(args)
     nisqa_ret = nisqa_model.predict()
-    del nisqa_model
-    gc.collect()
+    # 注意：不再显式 del/gc.collect()。
+    # 1. gc.collect() 在多线程评分环境中是全局STW操作，会阻塞DNSMOS/UTMOS/Scoreq等并行线程
+    # 2. 模型由Python GC自然回收即可，CUDA显存由上游 torch.cuda.empty_cache() 统一管理
+    # 3. 若调用方需要复用模型实例，应直接使用 NisqaModel 而非本函数
     return nisqa_ret
 
 

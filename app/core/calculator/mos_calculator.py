@@ -728,7 +728,7 @@ class OptimizedDNSMOScore:
 
 
 class OptimizedNisqaMosScore:
-    """优化的NISQA评分"""
+    """优化的NISQA评分 — 模型权重只加载一次，后续调用仅重建轻量Dataset"""
 
     def __init__(self):
         import time
@@ -753,15 +753,11 @@ class OptimizedNisqaMosScore:
             if os.path.exists(path):
                 found_model = path
                 print(f"  ✓ 找到模型 ({label}): {path}")
-                # 快速验证 tar 文件结构（只读文件头，不加载整个模型）
-                self._validate_tar(path)
                 break
             else:
                 print(f"  - 未找到 ({label}): {path}")
 
-        if found_model:
-            self.nisqa_model = found_model
-        else:
+        if not found_model:
             raise FileNotFoundError(
                 "[NISQA] 模型文件 'nisqa_3000.tar' 未找到。\n"
                 f"  搜索路径:\n"
@@ -770,55 +766,69 @@ class OptimizedNisqaMosScore:
                 f"  请将模型文件放置于以上任一目录。"
             )
 
-        self.nisqa_mode = "predict_list"
+        # 保存模型路径和基础参数，延迟加载实际权重（首次 get_mos 时触发）
+        self._model_path = found_model
+        self._nisqa_instance = None  # NisqaModel 实例（含已加载权重），首次调用时创建
+        self._model_loaded = False
 
         init_time = time.time() - start_time
-        print(f"[NISQA] 模型初始化完成 (耗时: {init_time:.2f}s)")
+        print(f"[NISQA] 模型路径确认完成 (耗时: {init_time:.2f}s，权重延迟加载)")
         print(f"  ✓ NISQA评分器就绪")
 
-    @staticmethod
-    def _validate_tar(tar_path: str):
+    def _ensure_model_loaded(self, file_dir_list):
         """
-        快速验证 tar 文件结构和完整性。
-        读取文件头验证其包含预期的 checkpoint 键（model_state_dict），
-        但不加载全部权重到内存，避免不必要的显存/内存开销。
+        确保模型权重已加载。首次调用时执行完整 torch.load + 模型构建，
+        后续调用仅重建 Dataset（轻量操作）。
         """
-        try:
-            # 使用 torch.load 的 weights_only 模式安全加载文件头
-            # map_location='cpu' 确保不分配 GPU 显存
-            checkpoint = torch.load(tar_path, map_location='cpu', weights_only=True)
-            if 'model_state_dict' not in checkpoint:
-                raise ValueError(
-                    f"模型文件 '{tar_path}' 缺少 'model_state_dict' 键，"
-                    f"文件可能已损坏或不完整"
-                )
-            del checkpoint  # 立即释放
-        except FileNotFoundError:
-            raise
-        except Exception as e:
-            raise ValueError(
-                f"[NISQA] 模型文件验证失败: {tar_path}\n"
-                f"  错误: {e}\n"
-                f"  文件可能已损坏或不完整，请重新下载。"
-            ) from e
-    
+        if self._model_loaded:
+            return
+
+        print(f"[NISQA] 首次加载模型权重（后续调用将复用）...")
+        load_start = time.time()
+
+        # 构建参数并创建 NisqaModel 实例（触发 _loadModel 从 .tar 加载权重）
+        from nisqa.nisqa_lib.NISQA_model import NisqaModel as _NisqaModel
+
+        args = {
+            'mode': 'predict_list',
+            'pretrained_model': self._model_path,
+            'deg_list': file_dir_list,
+            'output_dir': '',
+            'bs': 10,
+            'num_workers': 0,
+            'ms_channel': None,
+        }
+        args['tr_bs_val'] = args['bs']
+        args['tr_num_workers'] = args['num_workers']
+
+        self._nisqa_instance = _NisqaModel(args)
+        self._model_loaded = True
+
+        load_time = time.time() - load_start
+        print(f"[NISQA] 模型权重加载完成 (耗时: {load_time:.2f}s)")
+
     @timed_execution("nisqa")
     def get_mos(self, file_dir_list) -> dict:
-        """计算nisqa分 - 使用列表模式批量处理"""
+        """计算nisqa分 — 复用已加载的模型权重，仅重建Dataset"""
         file_num = len(file_dir_list)
-        
-        # 使用predict_list模式一次性处理所有文件
-        nisqa_prediction = nisqa_predict(
-            mode=self.nisqa_mode,
-            deg_list=file_dir_list,
-            model=self.nisqa_model,
-            bs=10,  # 增加batch size
-            num_workers=0  # 使用主进程加载（多线程环境下num_workers>0会死锁）
-        )
-        
+
+        if self._model_loaded:
+            # 后续调用：仅更新文件列表并重建 Dataset（轻量操作，不重新 torch.load）
+            self._nisqa_instance.args['deg_list'] = file_dir_list
+            self._nisqa_instance.args['mode'] = 'predict_list'
+            self._nisqa_instance.args['tr_bs_val'] = self._nisqa_instance.args.get('bs', 10)
+            self._nisqa_instance.args['tr_num_workers'] = self._nisqa_instance.args.get('num_workers', 0)
+            self._nisqa_instance._loadDatasets()
+        else:
+            # 首次调用：完整加载模型权重 + Dataset
+            self._ensure_model_loaded(file_dir_list)
+
+        # 推理（复用已加载的模型权重，不再创建/销毁 NisqaModel）
+        nisqa_prediction = self._nisqa_instance.predict()
+
         ret = nisqa_prediction.to_dict(orient='list')
         ret.pop("deg", None)
-        
+
         # 验证输出长度
         for k, v in ret.items():
             if len(v) != file_num:
@@ -828,7 +838,7 @@ class OptimizedNisqaMosScore:
                 else:
                     v = v[:file_num]
                 ret[k] = v
-        
+
         return ret
 
 
@@ -1143,6 +1153,7 @@ class OptimizedToneColorFidelityScore:
         }
 
         self._pipeline_cache = {}
+        self._pipeline_lock = threading.Lock()  # 保护 _pipeline_cache 的并发访问
         self._init_error = None
     
     def _check_and_fix_tcf_config(self, model_path: str) -> None:
@@ -1193,8 +1204,17 @@ class OptimizedToneColorFidelityScore:
         return False, None, False
     
     def _get_pipeline(self, alg: str):
-        """获取或创建指定算法的pipeline"""
-        if alg not in self._pipeline_cache:
+        """获取或创建指定算法的pipeline（线程安全）"""
+        # 快速路径：已缓存则直接返回（读锁不需要，Python dict.get 是原子的）
+        cached = self._pipeline_cache.get(alg)
+        if cached is not None:
+            return cached
+
+        # 慢路径：加锁创建 pipeline，防止并发重复创建
+        with self._pipeline_lock:
+            # 双重检查：锁内再次确认未被其他线程创建
+            if alg in self._pipeline_cache:
+                return self._pipeline_cache[alg]
             model_config = self.sv_model_dict[alg]
             exists, model_path, is_project = self._check_model_exists(model_config)
 
@@ -1372,30 +1392,23 @@ class OptimizedToneColorFidelityScore:
                 logger.warning(f"[TCF] ✗ [{alg}] 模型计算失败: {e}")
                 return alg, None, e
 
-        # TCF模型并行执行（限制并发数防OOM）
-        # _TCF_MAX_CONCURRENT 控制GPU峰值显存，2路并发约需6-8GB
-        _max_concurrent = getattr(self, '_TCF_MAX_CONCURRENT', 2)
-        _tcf_executor = ThreadPoolExecutor(
-            max_workers=_max_concurrent,
-            thread_name_prefix='tcf_parallel'
-        )
-        try:
-            tcf_futures = {
-                _tcf_executor.submit(_run_single_model, alg): alg
-                for alg in self.sv_model_dict.keys()
-            }
+        # TCF模型并行执行（复用全局共享线程池，避免每次 get_mos() 创建/销毁 ThreadPoolExecutor）
+        # 当前仅有 campplus 单模型，共享线程池的 max_workers=8 足够
+        _tcf_executor = get_shared_executor()
+        tcf_futures = {
+            _tcf_executor.submit(_run_single_model, alg): alg
+            for alg in self.sv_model_dict.keys()
+        }
 
-            for future in as_completed(tcf_futures):
-                alg, embeddings, error = future.result()
-                if error is None:
-                    available_algs.append(alg)
-                    with file_embedding_lock:
-                        for fpath, emb in embeddings.items():
-                            file_embedding_score_dict[fpath][alg] = {"embedding": emb}
-                else:
-                    failed_algs.append(alg)
-        finally:
-            _tcf_executor.shutdown(wait=True)
+        for future in as_completed(tcf_futures):
+            alg, embeddings, error = future.result()
+            if error is None:
+                available_algs.append(alg)
+                with file_embedding_lock:
+                    for fpath, emb in embeddings.items():
+                        file_embedding_score_dict[fpath][alg] = {"embedding": emb}
+            else:
+                failed_algs.append(alg)
 
         if not available_algs:
             logger.error(f"[TCF] 所有TCF模型都不可用！失败的模型: {failed_algs}")
@@ -1459,14 +1472,202 @@ class OptimizedToneColorFidelityScore:
         return {"tcf": total_score_list}
 
 
+# ============ 统一的最终MOS得分计算（单数据源，消除双重公式） ============
+
+# 默认指标归一化规则：将各原始指标映射到 [0, 5] 区间
+# 所有指标均假设"越高越好"；原始值越低越好的指标需反转
+_METRIC_KEY_MAP = {
+    'pesq': 'pesq',
+    'stoi': 'STOI',
+    'sisdr': 'SISDR',
+    'wer': 'wer',
+    'wcorr': 'wcorr',
+    'tcf': 'tcf',
+    'dnsmos': ['OVRL', 'SIG', 'BAK', 'P808_MOS'],
+    'nisqa': ['mos_pred', 'noi_pred', 'dis_pred', 'col_pred', 'loud_pred'],
+    'scoreq': 'scoreq',
+    'utmos': 'utmos',
+}
+
+# 默认评分权重（与 config.yaml scoring.weights 对应）
+_DEFAULT_SCORING_WEIGHTS = {
+    'stoi': 5.0, 'sisdr': 5.0, 'pesq': 1.0,
+    'dnsmos_ovrl': 1.0, 'dnsmos_sig': 1.0, 'dnsmos_bak': 1.0, 'dnsmos_p808': 1.0,
+    'wer': 5.0, 'wcorr': 5.0,
+    'nisqa_mos': 1.0, 'nisqa_noi': 1.0, 'nisqa_dis': 1.0, 'nisqa_col': 1.0, 'nisqa_loud': 1.0,
+    'tcf': 5.0, 'scoreq': 1.0, 'utmos': 1.0,
+}
+
+
+def _load_scoring_weights_from_config() -> dict:
+    """从 config.yaml 加载评分权重，失败时返回默认权重"""
+    import yaml
+    _config_paths = [
+        os.path.join(_PROJECT_ROOT, "config", "config.yaml"),
+        os.path.join(_PROJECT_ROOT, "config.yaml"),
+    ]
+    for _cfg_path in _config_paths:
+        if os.path.exists(_cfg_path):
+            try:
+                with open(_cfg_path, 'r') as _f:
+                    _config = yaml.safe_load(_f)
+                _weights = _config.get('scoring', {}).get('weights', {})
+                if _weights:
+                    # 合并默认值，确保所有键都存在
+                    merged = dict(_DEFAULT_SCORING_WEIGHTS)
+                    merged.update(_weights)
+                    logger.info(f"[评分权重] 从配置文件加载: {_cfg_path}")
+                    return merged
+            except Exception:
+                pass
+    logger.info("[评分权重] 使用默认权重")
+    return dict(_DEFAULT_SCORING_WEIGHTS)
+
+
+def compute_final_mos_scores(
+    results: dict,
+    audio_files: list,
+    has_reference: bool,
+    selected_metrics: Optional[List[str]] = None,
+    weights: Optional[dict] = None,
+) -> List[float]:
+    """
+    统一的最终MOS得分计算函数（单数据源）。
+
+    所有调用方（优化路径/回退路径）必须通过此函数计算最终得分，
+    确保同一批音频得到相同的MOS分数。
+
+    Args:
+        results: 各指标的原始值字典，如 {'OVRL': [1.2, 3.4], 'pesq': [2.1, 3.0], ...}
+        audio_files: 音频文件路径列表
+        has_reference: 是否有参考音频
+        selected_metrics: 用户选择的计算项目列表
+        weights: 评分权重字典（None则从config.yaml加载，加载失败则使用默认权重）
+
+    Returns:
+        每个文件的最终MOS得分列表
+    """
+    file_num = len(audio_files)
+
+    if selected_metrics is None:
+        selected_metrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos']
+
+    if weights is None:
+        weights = _load_scoring_weights_from_config()
+
+    def get_value(key, idx, default=0.0):
+        if key in results and idx < len(results[key]):
+            val = results[key][idx]
+            return float(val) if isinstance(val, (int, float)) else default
+        return default
+
+    final_scores = []
+    for i in range(file_num):
+        # 收集 (normalized_score, weight) 对
+        weighted_scores = []
+
+        # ── NISQA 子指标（原始值 1-5 MOS 区间） ──
+        if 'nisqa' in selected_metrics:
+            mos_pred = get_value('mos_pred', i)
+            noi_pred = get_value('noi_pred', i)
+            dis_pred = get_value('dis_pred', i)
+            col_pred = get_value('col_pred', i)
+            loud_pred = get_value('loud_pred', i)
+            weighted_scores.append((mos_pred, weights.get('nisqa_mos', 1.0)))
+            weighted_scores.append((noi_pred, weights.get('nisqa_noi', 1.0)))
+            weighted_scores.append((dis_pred, weights.get('nisqa_dis', 1.0)))
+            weighted_scores.append((col_pred, weights.get('nisqa_col', 1.0)))
+            weighted_scores.append((loud_pred, weights.get('nisqa_loud', 1.0)))
+
+        # ── DNSMOS 子指标（原始值 1-5 MOS 区间，越高越好） ──
+        if 'dnsmos' in selected_metrics:
+            ovrl = get_value('OVRL', i)
+            sig = get_value('SIG', i)
+            bak = get_value('BAK', i)
+            p808 = get_value('P808_MOS', i)
+            weighted_scores.append((ovrl, weights.get('dnsmos_ovrl', 1.0)))
+            weighted_scores.append((sig, weights.get('dnsmos_sig', 1.0)))
+            weighted_scores.append((bak, weights.get('dnsmos_bak', 1.0)))
+            weighted_scores.append((p808, weights.get('dnsmos_p808', 1.0)))
+
+        # ── Scoreq（原始值 0-5 区间） ──
+        if 'scoreq' in selected_metrics:
+            weighted_scores.append((get_value('scoreq', i), weights.get('scoreq', 1.0)))
+
+        # ── UTMOS（原始值 0-5 区间） ──
+        if 'utmos' in selected_metrics:
+            weighted_scores.append((get_value('utmos', i), weights.get('utmos', 1.0)))
+
+        # ── 有参考指标（仅 has_reference=True 且值非零时参与计算） ──
+        if has_reference:
+            # STOI: [-1, 1] → [0, 5] 线性映射（STOI是有界的，线性映射更合适）
+            if 'stoi' in selected_metrics:
+                stoi = get_value('STOI', i)
+                if stoi != 0.0:
+                    weighted_scores.append(((stoi + 1) * 2.5, weights.get('stoi', 5.0)))
+
+            # SISDR: (-∞, +∞) → [0, 5] sigmoid归一化
+            if 'sisdr' in selected_metrics:
+                sisdr = get_value('SISDR', i)
+                if sisdr != 0.0:
+                    weighted_scores.append((5 / (1 + np.exp(-sisdr / 10)), weights.get('sisdr', 5.0)))
+
+            # PESQ: [0, 4.5] → [1, 4.64] (ITU-T P.862.1 MOS-LQO 标准映射)
+            if 'pesq' in selected_metrics:
+                pesq_val = get_value('pesq', i)
+                if pesq_val != 0.0:
+                    mos_lqo = 0.999 + 4 / (1 + np.exp(-1.4945 * pesq_val + 4.6607))
+                    # MOS-LQO 输出约 [1, 4.64]，缩放到 [0, 5] 区间以便与其他指标对齐
+                    mos_lqo_scaled = (mos_lqo - 1) * (5 / 3.64)  # 映射到 [0, 5]
+                    weighted_scores.append((mos_lqo_scaled, weights.get('pesq', 1.0)))
+
+            # WER: [0, 1] → [0, 5] （越低越好 → 越高越好）
+            if 'wer' in selected_metrics:
+                wer = get_value('wer', i)
+                if wer != 0.0:
+                    weighted_scores.append(((1 - wer) * 5, weights.get('wer', 5.0)))
+
+            # WCORR: [0, 1] → [0, 5]
+            if 'wcorr' in selected_metrics:
+                wcorr = get_value('wcorr', i)
+                if wcorr != 0.0:
+                    weighted_scores.append((wcorr * 5, weights.get('wcorr', 5.0)))
+
+            # TCF: [0, 1] → [0, 5] （余弦相似度）
+            if 'tcf' in selected_metrics:
+                tcf = get_value('tcf', i)
+                if tcf != 0.0:
+                    weighted_scores.append((tcf * 5, weights.get('tcf', 5.0)))
+
+        # ── 加权平均 ──
+        if weighted_scores:
+            total_weight = sum(w for _, w in weighted_scores)
+            if total_weight > 0:
+                tmp = sum(s * w for s, w in weighted_scores) / total_weight
+            else:
+                tmp = 0.0
+        else:
+            tmp = 0.0
+
+        logger.debug(f"FinalScore计算 - 文件{i}: has_ref={has_reference}, "
+                     f"指标数={len(weighted_scores)}, 总权重={sum(w for _,w in weighted_scores):.1f}, "
+                     f"得分={tmp:.2f}")
+        final_scores.append(tmp)
+
+    return final_scores
+
+
 # ============ 并行计算控制器 ============
 
 class ParallelMOSCompute:
-    """并行MOS计算控制器"""
+    """并行MOS计算控制器 — 负责初始化模型并编排评分流程"""
 
     def __init__(self, max_workers: int = 4):
         self.max_workers = max_workers
-        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        # 不再创建独立的 ThreadPoolExecutor。
+        # 顶层评分任务（NISQA/DNSMOS/Scoreq/UTMOS）顺序调用，
+        # 各评分器内部通过 get_shared_executor() 实现文件级并行，
+        # 消除双重线程池嵌套导致的资源争用和潜在死锁。
         self.models = {}
         self._init_start_time = None
         logger.info("[ParallelMOSCompute] 实例创建完成，等待模型初始化...")
@@ -1593,12 +1794,11 @@ class ParallelMOSCompute:
     
     def compute_all_no_ref(self, audio_files: List[str], selected_metrics: Optional[List[str]] = None) -> Dict:
         """
-        并行计算所有无参考指标（NISQA / DNSMOS / Scoreq / UTMOS 四路并行）
+        顺序计算所有无参考指标（NISQA / DNSMOS / Scoreq / UTMOS）。
 
-        优化策略:
-        1. NISQA/DNSMOS/Scoreq/UTMOS全部同时并行
-        2. NISQA内部批处理已由自身优化
-        3. DNSMOS内部批处理（段级batch）已由自身优化
+        设计决策：顶层顺序调用各评分器，各评分器内部通过 get_shared_executor()
+        实现文件级并行。这避免了双重线程池嵌套导致的资源争用和潜在死锁。
+        由于各评分器都是GPU密集型操作，顶层串行化不会显著增加总耗时。
         """
         file_num = len(audio_files)
 
@@ -1615,65 +1815,42 @@ class ParallelMOSCompute:
             'utmos':  lambda: {'utmos': [0.0]*file_num},
         }
 
-        # 定义各个指标的计算闭包
-        def compute_nisqa():
-            if 'nisqa' not in selected_metrics or 'nisqa' not in self.models:
-                return metric_defaults['nisqa']()
-            try:
-                return self.models['nisqa'].get_mos(audio_files)
-            except Exception as e:
-                print(f"NISQA计算失败: {e}")
-                return metric_defaults['nisqa']()
-
-        def compute_dnsmos():
-            if 'dnsmos' not in selected_metrics or 'dnsmos' not in self.models:
-                return metric_defaults['dnsmos']()
-            try:
-                return self.models['dnsmos'].get_mos(audio_files)
-            except Exception as e:
-                print(f"DNSMOS计算失败: {e}")
-                return metric_defaults['dnsmos']()
-
-        def compute_scoreq():
-            if 'scoreq' not in selected_metrics or 'scoreq' not in self.models:
-                return metric_defaults['scoreq']()
-            try:
-                return self.models['scoreq'].get_mos(audio_files)
-            except Exception as e:
-                print(f"Scoreq计算失败: {e}")
-                return metric_defaults['scoreq']()
-
-        def compute_utmos():
-            if 'utmos' not in selected_metrics or 'utmos' not in self.models:
-                return metric_defaults['utmos']()
-            try:
-                return self.models['utmos'].predict_files(audio_files)
-            except Exception as e:
-                print(f"UTMOS计算失败: {e}")
-                return metric_defaults['utmos']()
-
-        # 四路并行提交到共享线程池
-        logger.info(f"[并行无参考] 开始并行计算: {selected_metrics}")
-        futures = {}
-        if 'nisqa' in selected_metrics and 'nisqa' in self.models:
-            futures['nisqa'] = self.executor.submit(compute_nisqa)
-        if 'dnsmos' in selected_metrics and 'dnsmos' in self.models:
-            futures['dnsmos'] = self.executor.submit(compute_dnsmos)
-        if 'scoreq' in selected_metrics and 'scoreq' in self.models:
-            futures['scoreq'] = self.executor.submit(compute_scoreq)
-        if 'utmos' in selected_metrics and 'utmos' in self.models:
-            futures['utmos'] = self.executor.submit(compute_utmos)
-
-        # 收集结果
         results = {}
-        for name, future in futures.items():
-            try:
-                results.update(future.result())
-            except Exception as e:
-                logger.error(f"{name}计算异常: {e}")
-                results.update(metric_defaults[name]())
+        logger.info(f"[无参考评分] 顺序计算: {selected_metrics}")
 
-        # 确保未提交的指标有默认值
+        # NISQA（GPU批处理）
+        if 'nisqa' in selected_metrics and 'nisqa' in self.models:
+            try:
+                results.update(self.models['nisqa'].get_mos(audio_files))
+            except Exception as e:
+                logger.error(f"NISQA计算失败: {e}")
+                results.update(metric_defaults['nisqa']())
+
+        # DNSMOS（内部段级批处理）
+        if 'dnsmos' in selected_metrics and 'dnsmos' in self.models:
+            try:
+                results.update(self.models['dnsmos'].get_mos(audio_files))
+            except Exception as e:
+                logger.error(f"DNSMOS计算失败: {e}")
+                results.update(metric_defaults['dnsmos']())
+
+        # Scoreq（内部共享线程池并行）
+        if 'scoreq' in selected_metrics and 'scoreq' in self.models:
+            try:
+                results.update(self.models['scoreq'].get_mos(audio_files))
+            except Exception as e:
+                logger.error(f"Scoreq计算失败: {e}")
+                results.update(metric_defaults['scoreq']())
+
+        # UTMOS
+        if 'utmos' in selected_metrics and 'utmos' in self.models:
+            try:
+                results.update(self.models['utmos'].predict_files(audio_files))
+            except Exception as e:
+                logger.error(f"UTMOS计算失败: {e}")
+                results.update(metric_defaults['utmos']())
+
+        # 确保未计算的指标有默认值
         for m in selected_metrics:
             defaults = metric_defaults[m]()
             for k, v in defaults.items():
@@ -1684,7 +1861,10 @@ class ParallelMOSCompute:
     
     def compute_all_with_ref(self, audio_files: List[str], ref_dir: str, selected_metrics: Optional[List[str]] = None) -> Dict:
         """
-        并行计算所有有参考指标（RefScore / WER / TCF 三路并行）
+        顺序计算所有有参考指标（RefScore / WER / TCF）。
+
+        设计决策：顶层顺序调用各评分器，各评分器内部通过 get_shared_executor()
+        实现文件级并行。这避免了双重线程池嵌套导致的资源争用和潜在死锁。
         """
         results = {}
         file_num = len(audio_files)
@@ -1695,16 +1875,14 @@ class ParallelMOSCompute:
             selected_metrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf']
 
         metrics = selected_metrics.copy()
-        logger.info(f"[compute_all_with_ref] 并行计算有参考指标: {metrics}")
+        logger.info(f"[有参考评分] 顺序计算: {metrics}")
 
         need_ref = any(m in metrics for m in ['pesq', 'stoi', 'sisdr'])
         need_wer = 'wer' in metrics
         need_tcf = 'tcf' in metrics
 
-        # 任务闭包
-        def _compute_ref():
-            if not need_ref or 'ref_score' not in self.models:
-                return {}
+        # RefScore (PESQ/STOI/SISDR) — 内部共享线程池并行
+        if need_ref and 'ref_score' in self.models:
             try:
                 ref_scores = self.models['ref_score'].get_mos(audio_files, ref_dir)
                 if 'pesq' not in metrics and 'pesq' in ref_scores:
@@ -1713,177 +1891,38 @@ class ParallelMOSCompute:
                     ref_scores.pop('STOI', None)
                 if 'sisdr' not in metrics and 'SISDR' in ref_scores:
                     ref_scores.pop('SISDR', None)
-                return ref_scores
+                results.update(ref_scores)
             except Exception as e:
                 logger.error(f"RefScore计算失败: {e}")
-                return {}
-
-        def _compute_wer():
-            if not need_wer or 'wer' not in self.models:
-                return {}
-            try:
-                return self.models['wer'].get_wer(audio_files, ref_dir=ref_dir)
-            except Exception as e:
-                logger.error(f"WER计算失败: {e}")
-                return {}
-
-        def _compute_tcf():
-            if not need_tcf or 'tcf' not in self.models:
-                return {}
-            try:
-                return self.models['tcf'].get_mos(audio_files, ref_dir)
-            except Exception as e:
-                logger.error(f"TCF计算失败: {e}")
-                return {}
-
-        # 三路并行提交到共享线程池
-        ref_future = self.executor.submit(_compute_ref)
-        wer_future = self.executor.submit(_compute_wer) if need_wer else None
-        tcf_future = self.executor.submit(_compute_tcf) if need_tcf else None
-
-        # 收集结果（ref总在最前面，但实际计算是并行的）
-        ref_result = ref_future.result()
-        results.update(ref_result)
         if need_ref and 'STOI' not in results:
             defaults.update({'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num})
 
-        if wer_future:
-            wer_result = wer_future.result()
-            results.update(wer_result)
-            if 'wer' not in results:
-                defaults.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
+        # WER — 内部共享线程池并行
+        if need_wer and 'wer' in self.models:
+            try:
+                results.update(self.models['wer'].get_wer(audio_files, ref_dir=ref_dir))
+            except Exception as e:
+                logger.error(f"WER计算失败: {e}")
+        if need_wer and 'wer' not in results:
+            defaults.update({'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num})
 
-        if tcf_future:
-            tcf_result = tcf_future.result()
-            results.update(tcf_result)
-            if 'tcf' not in results:
-                defaults.update({'tcf': [0.0]*file_num})
+        # TCF — 内部共享线程池并行
+        if need_tcf and 'tcf' in self.models:
+            try:
+                results.update(self.models['tcf'].get_mos(audio_files, ref_dir))
+            except Exception as e:
+                logger.error(f"TCF计算失败: {e}")
+        if need_tcf and 'tcf' not in results:
+            defaults.update({'tcf': [0.0]*file_num})
 
         results.update({k: v for k, v in defaults.items() if k not in results})
 
-        print(f"[compute_all_with_ref] 最终结果(填充前): {results}")
-        
-        # 确保有默认值 - 只填充缺失的键，不覆盖已有值
-        if any(m in metrics for m in ['pesq', 'stoi', 'sisdr']):
-            if 'STOI' not in results:
-                results['STOI'] = [0.0]*file_num
-            if 'SISDR' not in results:
-                results['SISDR'] = [0.0]*file_num
-            if 'pesq' not in results:
-                results['pesq'] = [0.0]*file_num
-        if 'wer' in metrics:
-            if 'wer' not in results:
-                results['wer'] = [0.0]*file_num
-            if 'wcorr' not in results:
-                results['wcorr'] = [0.0]*file_num
-        if 'tcf' in metrics and 'tcf' not in results:
-            results['tcf'] = [0.0]*file_num
-
-        print(f"[compute_all_with_ref] 返回结果: {results}")
+        logger.debug(f"[有参考评分] 返回结果键: {list(results.keys())}")
         return results
     
     def compute_final_scores(self, results: Dict, audio_files: List[str], has_reference: bool, selected_metrics: Optional[List[str]] = None) -> List[float]:
-        """计算最终得分 - 使用字典键名访问，确保正确的指标映射，支持动态计算项目
-
-        关键规则：
-        - 有参考指标（pesq/stoi/sisdr/wer/tcf）中，如果某个指标值为0且未找到参考，则不参与final score计算
-        - 无参考指标始终参与计算
-        """
-        file_num = len(audio_files)
-        final_scores = []
-
-        # 如果没有指定计算项目，使用默认全部
-        if selected_metrics is None:
-            selected_metrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos']
-
-        # 安全的获取指标值
-        def get_value(key, idx, default=0.0):
-            if key in results and idx < len(results[key]):
-                val = results[key][idx]
-                return float(val) if isinstance(val, (int, float)) else default
-            return default
-
-        for i in range(file_num):
-            scores = []
-
-            # NISQA指标 (0-5)
-            if 'nisqa' in selected_metrics:
-                mos_pred = get_value('mos_pred', i)
-                noi_pred = get_value('noi_pred', i)
-                dis_pred = get_value('dis_pred', i)
-                col_pred = get_value('col_pred', i)
-                loud_pred = get_value('loud_pred', i)
-                scores.extend([mos_pred, noi_pred, dis_pred, col_pred, loud_pred])
-
-            # DNSMOS指标 (0-5)
-            if 'dnsmos' in selected_metrics:
-                ovrl = get_value('OVRL', i)
-                sig = get_value('SIG', i)
-                bak = get_value('BAK', i)
-                p808 = get_value('P808_MOS', i)
-                scores.extend([ovrl, sig, bak, p808])
-
-            # ScoreQ (0-5)
-            if 'scoreq' in selected_metrics:
-                scoreq_val = get_value('scoreq', i)
-                scores.append(scoreq_val)
-
-            # UTMOS (0-5)
-            if 'utmos' in selected_metrics:
-                utmos_val = get_value('utmos', i)
-                scores.append(utmos_val)
-
-            # 有参考指标 — 只有has_reference=True且值非0时参与计算
-            if has_reference:
-                # STOI: -1~1 映射到 0-5（值>0才参与）
-                if 'stoi' in selected_metrics:
-                    stoi = get_value('STOI', i)
-                    if stoi != 0.0:
-                        scores.append((stoi + 1) * 2.5)
-
-                # SISDR: 使用sigmoid归一化到0-5（值>0才参与）
-                if 'sisdr' in selected_metrics:
-                    sisdr = get_value('SISDR', i)
-                    if sisdr != 0.0:
-                        scores.append((1 / (1 + np.exp(-sisdr/10))) * 5)
-
-                # PESQ: 0-4.5 映射到 0-5（值>0才参与）
-                if 'pesq' in selected_metrics:
-                    pesq = get_value('pesq', i)
-                    if pesq != 0.0:
-                        scores.append(pesq * (5/4.5))
-
-                # WER: 0-1 映射到 0-5 (越低越好)（值>0才参与）
-                if 'wer' in selected_metrics:
-                    wer = get_value('wer', i)
-                    if wer != 0.0:
-                        scores.append((1 - wer) * 5)
-
-                    # WCORR: 0-1 映射到 0-5
-                    wcorr = get_value('wcorr', i)
-                    if wcorr != 0.0:
-                        scores.append(wcorr * 5)
-
-                # TCF: 0-1 映射到 0-5（值>0才参与）
-                if 'tcf' in selected_metrics:
-                    tcf = get_value('tcf', i)
-                    if tcf != 0.0:
-                        scores.append(tcf * 5)
-
-            # 计算最终得分
-            if scores:
-                tmp = np.mean(scores)
-            else:
-                tmp = 0.0
-
-            # 打印调试信息
-            logger.debug(f"FinalScore计算 - 文件{i}: has_ref={has_reference}, 选择项目={selected_metrics}")
-            logger.debug(f"  所有有效分数({len(scores)}个): {[f'{s:.2f}' for s in scores]}")
-            logger.debug(f"  最终得分: {tmp:.2f}")
-
-            final_scores.append(tmp)
-
-        return final_scores
+        """计算最终得分 — 委托给统一的 compute_final_mos_scores() 确保公式一致性"""
+        return compute_final_mos_scores(results, audio_files, has_reference, selected_metrics)
     
     def get_performance_report(self) -> Dict:
         """获取性能报告"""
@@ -1943,40 +1982,47 @@ def compute_mos_scores_optimized(
     results = {}
     file_num = len(audio_files)
 
-    # 计算无参考指标(并行)
+    # 计算无参考和有参考指标（顶层并行：两组指标互不依赖，使用独立的小线程池）
     no_ref_metrics = [m for m in selected_metrics if m in ['dnsmos', 'nisqa', 'scoreq', 'utmos']]
-    if no_ref_metrics:
-        no_ref_results = parallel_compute.compute_all_no_ref(audio_files, no_ref_metrics)
-        results.update(no_ref_results)
-    else:
-        # 填充0值
+    ref_metrics = [m for m in selected_metrics if m in ['pesq', 'stoi', 'sisdr', 'wer', 'tcf']] if has_reference else []
+
+    # 使用独立的2线程池做顶层并行（与评分器内部共享池分离，避免嵌套死锁）
+    _top_futures = {}
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix='mos_top_') as _top_pool:
+        if no_ref_metrics:
+            _top_futures['no_ref'] = _top_pool.submit(
+                parallel_compute.compute_all_no_ref, audio_files, no_ref_metrics
+            )
+        if ref_metrics:
+            _top_futures['with_ref'] = _top_pool.submit(
+                parallel_compute.compute_all_with_ref, audio_files, ref_dir, ref_metrics
+            )
+
+        # 收集无参考结果
+        if 'no_ref' in _top_futures:
+            try:
+                results.update(_top_futures['no_ref'].result())
+            except Exception as e:
+                logger.error(f"无参考指标计算异常: {e}")
+
+        # 收集有参考结果
+        if 'with_ref' in _top_futures:
+            try:
+                ref_results = _top_futures['with_ref'].result()
+                logger.info(f"[MOS计算] 有参考指标计算完成，共 {len(ref_results)} 个指标")
+                results.update(ref_results)
+            except Exception as e:
+                logger.error(f"有参考指标计算异常: {e}")
+
+    # 填充未计算指标的默认值
+    if not no_ref_metrics:
         results.update({
             'OVRL': [0.0]*file_num, 'SIG': [0.0]*file_num, 'BAK': [0.0]*file_num, 'P808_MOS': [0.0]*file_num,
             'mos_pred': [0.0]*file_num, 'noi_pred': [0.0]*file_num, 'dis_pred': [0.0]*file_num,
             'col_pred': [0.0]*file_num, 'loud_pred': [0.0]*file_num,
             'scoreq': [0.0]*file_num, 'utmos': [0.0]*file_num
         })
-
-    # 计算有参考指标(并行)
-    print(f"[compute_mos_scores_optimized] has_reference={has_reference}, selected_metrics={selected_metrics}")
-    if has_reference:
-        ref_metrics = [m for m in selected_metrics if m in ['pesq', 'stoi', 'sisdr', 'wer', 'tcf']]
-        print(f"[compute_mos_scores_optimized] ref_metrics={ref_metrics}")
-        if ref_metrics:
-            logger.info(f"[MOS计算] 开始计算有参考指标: {ref_metrics}")
-            ref_results = parallel_compute.compute_all_with_ref(audio_files, ref_dir, ref_metrics)
-            logger.info(f"[MOS计算] 有参考指标计算完成，共 {len(ref_results)} 个指标")
-            results.update(ref_results)
-        else:
-            print(f"[compute_mos_scores_optimized] 无参考指标需要计算，填充0值")
-            # 填充0值
-            results.update({
-                'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num,
-                'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num, 'tcf': [0.0]*file_num
-            })
-    else:
-        print(f"[compute_mos_scores_optimized] 无参考音频，填充0值")
-        # 填充0值
+    if not has_reference or not ref_metrics:
         results.update({
             'STOI': [0.0]*file_num, 'SISDR': [0.0]*file_num, 'pesq': [0.0]*file_num,
             'wer': [0.0]*file_num, 'wcorr': [0.0]*file_num, 'tcf': [0.0]*file_num

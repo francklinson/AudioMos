@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.join(project_root, 'app', 'core'))
 try:
     from calculator.mos_calculator import (
         compute_mos_scores_optimized,
+        compute_final_mos_scores,
         get_performance_report,
         reset_performance_tracking,
         parallel_compute
@@ -67,6 +68,61 @@ except ImportError as e:
             RefScore, WerScore, ScoreqScore, can_convert_to_float
         )
         USE_OPTIMIZED = False
+
+# 确保 compute_final_mos_scores 可用（用于统一最终得分计算）
+# 如果上面已导入则跳过，否则尝试单独导入
+try:
+    compute_final_mos_scores  # noqa: F821 - 检查是否已定义
+except NameError:
+    try:
+        from calculator.mos_calculator import compute_final_mos_scores as _cfs
+        compute_final_mos_scores = _cfs
+    except ImportError:
+        # 最后回退：使用内联函数（与 mos_calculator.py 中公式保持一致）
+        import numpy as _np
+        def compute_final_mos_scores(results, audio_files, has_reference, selected_metrics=None, weights=None):
+            """回退路径的最终得分计算（与优化路径公式一致）"""
+            if selected_metrics is None:
+                selected_metrics = ['pesq', 'stoi', 'sisdr', 'wer', 'tcf', 'dnsmos', 'nisqa', 'scoreq', 'utmos']
+            file_num = len(audio_files)
+            def _gv(key, idx, default=0.0):
+                if key in results and idx < len(results[key]):
+                    val = results[key][idx]
+                    return float(val) if isinstance(val, (int, float)) else default
+                return default
+            final_scores = []
+            for i in range(file_num):
+                scores = []
+                if 'nisqa' in selected_metrics:
+                    scores.extend([_gv(k, i) for k in ['mos_pred', 'noi_pred', 'dis_pred', 'col_pred', 'loud_pred']])
+                if 'dnsmos' in selected_metrics:
+                    scores.extend([_gv(k, i) for k in ['OVRL', 'SIG', 'BAK', 'P808_MOS']])
+                if 'scoreq' in selected_metrics:
+                    scores.append(_gv('scoreq', i))
+                if 'utmos' in selected_metrics:
+                    scores.append(_gv('utmos', i))
+                if has_reference:
+                    stoi = _gv('STOI', i)
+                    if stoi != 0.0:
+                        scores.append((stoi + 1) * 2.5)
+                    sisdr = _gv('SISDR', i)
+                    if sisdr != 0.0:
+                        scores.append(5 / (1 + _np.exp(-sisdr / 10)))
+                    pesq_val = _gv('pesq', i)
+                    if pesq_val != 0.0:
+                        mos_lqo = 0.999 + 4 / (1 + _np.exp(-1.4945 * pesq_val + 4.6607))
+                        scores.append((mos_lqo - 1) * (5 / 3.64))
+                    wer = _gv('wer', i)
+                    if wer != 0.0:
+                        scores.append((1 - wer) * 5)
+                    wcorr = _gv('wcorr', i)
+                    if wcorr != 0.0:
+                        scores.append(wcorr * 5)
+                    tcf = _gv('tcf', i)
+                    if tcf != 0.0:
+                        scores.append(tcf * 5)
+                final_scores.append(_np.mean(scores) if scores else 0.0)
+            return final_scores
 
 # 导入优化版匹配切分（全范围DTW + HPSS精对齐）
 from matching_optimizer import cut_all_audio_files_with_optimized_matcher
@@ -1010,109 +1066,13 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
             result[key] = value
     logger.info("  ✅ 结果数据验证完成")
 
-    # 计算最终得分
+    # 计算最终得分（使用统一函数，确保与优化路径一致）
     logger.info("[MOS计算] 计算最终MOS得分...")
     logger.info(f"[MOS计算] 用户选择的指标: {selected_metrics}")
-    
-    # 使用明确的指标名称获取值，而不是依赖字典顺序
-    def get_metric_value(metric_name, index):
-        """安全获取指标值"""
-        if metric_name in result and index < len(result[metric_name]):
-            val = result[metric_name][index]
-            return float(val) if isinstance(val, (int, float)) else 0.0
-        return 0.0
-    
-    # 定义指标到结果键名的映射
-    metric_key_map = {
-        'pesq': 'pesq',
-        'stoi': 'STOI',
-        'sisdr': 'SISDR',
-        'wer': 'wer',
-        'wcorr': 'wcorr',
-        'tcf': 'tcf',
-        'dnsmos': ['OVRL', 'SIG', 'BAK', 'P808_MOS'],  # DNSMOS包含4个子指标
-        'nisqa': ['mos_pred', 'noi_pred', 'dis_pred', 'col_pred', 'loud_pred'],  # NISQA包含5个子指标
-        'scoreq': 'scoreq',
-        'utmos': 'utmos',
-    }
-    
-    final_scores = []
-    file_count = len(next(iter(result.values())))
-    
-    for i in range(file_count):
-        scores_to_average = []
-        selected_details = []
-        
-        # 遍历用户选择的指标
-        for metric in selected_metrics:
-            if metric not in metric_key_map:
-                continue
-                
-            key_or_keys = metric_key_map[metric]
-            
-            # 处理单个指标
-            if isinstance(key_or_keys, str):
-                val = get_metric_value(key_or_keys, i)
-                # 根据指标类型进行转换
-                if metric == 'pesq':
-                    # PESQ 原始分转换为 MOS-LQO 分 (1-5分)
-                    # 使用与 mos_calculator.py 中相同的映射公式
-                    mos_lqo = 0.999 + 4 / (1 + np.exp(-1.4945 * val + 4.6607))
-                    scores_to_average.append(mos_lqo)
-                    selected_details.append(f"PESQ={val:.2f}(MOS={mos_lqo:.2f})")
-                elif metric == 'stoi':
-                    scores_to_average.append((1 / (1 + np.exp(-val))) * 5)  # STOI sigmoid转换
-                    selected_details.append(f"STOI={val:.2f}")
-                elif metric == 'sisdr':
-                    scores_to_average.append(val)
-                    selected_details.append(f"SISDR={val:.2f}")
-                elif metric == 'wer':
-                    scores_to_average.append(val)
-                    selected_details.append(f"WER={val:.2f}")
-                elif metric == 'wcorr':
-                    scores_to_average.append(val)
-                    selected_details.append(f"WCORR={val:.2f}")
-                elif metric == 'tcf':
-                    scores_to_average.append(val)
-                    selected_details.append(f"TCF={val:.2f}")
-                elif metric == 'scoreq':
-                    scores_to_average.append(val * 5)  # Scoreq (0-5分)
-                    selected_details.append(f"Scoreq={val:.2f}")
-                elif metric == 'utmos':
-                    scores_to_average.append(val)
-                    selected_details.append(f"UTMOS={val:.2f}")
-            
-            # 处理复合指标（DNSMOS, NISQA）
-            elif isinstance(key_or_keys, list):
-                for key in key_or_keys:
-                    val = get_metric_value(key, i)
-                    if metric == 'dnsmos' and key == 'OVRL':
-                        scores_to_average.append((1 - val) * 5)  # OVRL反向
-                    else:
-                        scores_to_average.append(val)
-                if metric == 'dnsmos':
-                    ovrl = get_metric_value('OVRL', i)
-                    selected_details.append(f"DNSMOS={ovrl:.2f}")
-                elif metric == 'nisqa':
-                    mos = get_metric_value('mos_pred', i)
-                    selected_details.append(f"NISQA={mos:.2f}")
-        
-        # 计算平均值
-        if scores_to_average:
-            tmp = np.mean(scores_to_average)
-        else:
-            tmp = 0.0
-            
-        final_scores.append(tmp)
-        
-        # 记录每个文件的详细得分
-        if i < 3 or i == file_count - 1:  # 只显示前3个和最后1个
-            logger.info(f"  文件 {i+1}/{file_count}: {', '.join(selected_details)}, Final={tmp:.2f}")
-        elif i == 3:
-            logger.info(f"  ... ({file_count - 4} 个文件省略) ...")
 
+    final_scores = compute_final_mos_scores(result, audio_files, has_reference, selected_metrics)
     result['final_scores'] = final_scores
-    
+
     # 统计最终得分
     if final_scores:
         avg_score = np.mean(final_scores)
@@ -1125,7 +1085,7 @@ def compute_mos_scores_sync(audio_files: List[str], ref_dir: str, has_reference:
         logger.info(f"  最高分: {max_score:.2f}")
         logger.info(f"  计算模式: {'有参考' if has_reference else '无参考'}")
         logger.info(f"  使用指标: {', '.join(selected_metrics)}")
-    
+
     return result
 
 
