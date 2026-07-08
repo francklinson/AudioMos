@@ -9,6 +9,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import logging
 
+# 标点符号过滤正则（模块级常量，避免重复编译）
+_PUNCT_RE = re.compile(r'[，。！？、；：“”‘’（）\s,.!?;:\'\"()\-—…]')
+# 中文字符检测正则
+_CJK_RE = re.compile(r'[一-鿿]')
+
 logger = logging.getLogger("audiomos")
 
 
@@ -40,6 +45,10 @@ class ASRMetrics:
     num_chars: int = 0                # 总字符数
     num_words: int = 0                # 总词数
 
+    # 逐条详情（避免 benchmark 重复计算 CER/WER）
+    per_utterance_cer: List[float] = field(default_factory=list)
+    per_utterance_wer: List[float] = field(default_factory=list)
+
     def to_dict(self) -> dict:
         return {
             "cer": self.cer,
@@ -66,18 +75,11 @@ class ASRMetrics:
 def _edit_distance(ref: List[str], hyp: List[str]) -> Tuple[int, int, int, int]:
     """
     计算编辑距离，返回(删除, 插入, 替换, 正确)数
-
-    Args:
-        ref: 参考序列
-        hyp: 假设序列
-
-    Returns:
-        (deletions, insertions, substitutions, correct)
+    DP算法，时间 O(n*m)，空间 O(n*m)
     """
     n = len(ref)
     m = len(hyp)
 
-    # DP矩阵
     dp = [[0] * (m + 1) for _ in range(n + 1)]
     for i in range(n + 1):
         dp[i][0] = i
@@ -116,20 +118,10 @@ def _edit_distance(ref: List[str], hyp: List[str]) -> Tuple[int, int, int, int]:
 def compute_cer(reference: str, hypothesis: str) -> Tuple[float, float, float, float]:
     """
     计算中文字错误率 (Character Error Rate)
-
     中文按字符级别拆分，标点符号过滤
-
-    Args:
-        reference: 参考文本
-        hypothesis: 识别文本
-
-    Returns:
-        (cer, cer_del, cer_ins, cer_sub)
     """
-    # 过滤标点和空白
-    import re
-    ref_clean = re.sub(r'[，。！？、；：\u201c\u201d\u2018\u2019\uff08\uff09\s,.!?;:\'\"()\-\u2014\u2026]', '', reference)
-    hyp_clean = re.sub(r'[，。！？、；：\u201c\u201d\u2018\u2019\uff08\uff09\s,.!?;:\'\"()\-\u2014\u2026]', '', hypothesis)
+    ref_clean = _PUNCT_RE.sub('', reference)
+    hyp_clean = _PUNCT_RE.sub('', hypothesis)
 
     ref_chars = list(ref_clean)
     hyp_chars = list(hyp_clean)
@@ -150,15 +142,7 @@ def compute_cer(reference: str, hypothesis: str) -> Tuple[float, float, float, f
 def compute_wer(reference: str, hypothesis: str) -> Tuple[float, float, float, float]:
     """
     计算词错误率 (Word Error Rate)
-
     中文使用 jieba 分词，英文按空格分词
-
-    Args:
-        reference: 参考文本
-        hypothesis: 识别文本
-
-    Returns:
-        (wer, wer_del, wer_ins, wer_sub)
     """
     ref_words = _tokenize_words(reference)
     hyp_words = _tokenize_words(hypothesis)
@@ -177,13 +161,11 @@ def compute_wer(reference: str, hypothesis: str) -> Tuple[float, float, float, f
 
 
 def _tokenize_words(text: str) -> List[str]:
-    """对文本分词：中文用jieba，英文/已分好词用split"""
-    # 去除标点
-    clean = re.sub(r'[，。！？、；：“”‘’（）\s,.!?;:\'\"()\-—…]', '', text)
+    """对文本分词：中文用jieba，英文按空格分词"""
+    clean = _PUNCT_RE.sub('', text)
     if not clean:
         return []
-    # 检测是否含中文字符
-    if re.search(r'[一-鿿]', clean):
+    if _CJK_RE.search(clean):
         import jieba
         return list(jieba.cut(clean))
     else:
@@ -197,7 +179,7 @@ def evaluate_asr(
     audio_durations: Optional[List[float]] = None,
 ) -> ASRMetrics:
     """
-    批量评测ASR结果
+    批量评测ASR结果，每个 utterance 只做一次 CER + WER 计算
 
     Args:
         references: 参考文本列表
@@ -206,7 +188,7 @@ def evaluate_asr(
         audio_durations: 各条音频时长
 
     Returns:
-        ASRMetrics
+        ASRMetrics（含 per_utterance_cer / per_utterance_wer 避免重复计算）
     """
     if len(references) != len(hypotheses):
         raise ValueError(f"参考和假设数量不匹配: {len(references)} vs {len(hypotheses)}")
@@ -218,21 +200,27 @@ def evaluate_asr(
     total_words = 0
 
     for ref, hyp in zip(references, hypotheses):
+        # CER
         cer, cer_del, cer_ins, cer_sub = compute_cer(ref, hyp)
         total_cer += cer
         total_cer_del += cer_del
         total_cer_ins += cer_ins
         total_cer_sub += cer_sub
+        metrics.per_utterance_cer.append(cer)
 
-        import re
-        ref_clean = re.sub(r'[，。！？、；：\u201c\u201d\u2018\u2019\uff08\uff09\s,.!?;:\'\"()\-\u2014\u2026]', '', ref)
+        # 字符数（复用 _PUNCT_RE）
+        ref_clean = _PUNCT_RE.sub('', ref)
         total_chars += len(ref_clean)
 
+        # WER
         wer, wer_del, wer_ins, wer_sub = compute_wer(ref, hyp)
         total_wer += wer
         total_wer_del += wer_del
         total_wer_ins += wer_ins
         total_wer_sub += wer_sub
+        metrics.per_utterance_wer.append(wer)
+
+        # 词数
         total_words += len(_tokenize_words(ref))
 
     n = len(references)

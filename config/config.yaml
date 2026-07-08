@@ -179,6 +179,20 @@ asr:
     - "zh"
     - "en"
     - "zh_en"
+  # 离线模式：仅从本地 models/ 目录加载，禁止联网下载（服务器部署必须开启）
+  offline: true
+  # Benchmark 并发评测算法数（1=串行，>1=并行；并行需要更大显存）
+  benchmark_workers: 1
+  # 单次转写超时（秒）
+  transcribe_timeout: 1800
+  # 单次转写最大重试次数
+  transcribe_max_retries: 2
+  # 批量转写超时（秒）
+  batch_timeout: 3600
+  # 批量转写最大重试次数
+  batch_max_retries: 1
+  # 结果中保留的逐条详情上限
+  per_utterance_limit: 20
   # API Key配置（对外接口认证）
   api_keys:
     enabled: true

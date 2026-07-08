@@ -57,12 +57,14 @@ class BaseASR(ABC):
         device: str = "cuda",
         language: str = "zh",
         model_dir: Optional[str] = None,
+        offline: bool = True,
     ):
         self.name = name
         self.sample_rate = sample_rate
         self.device = device
         self.language = language
         self.model_dir = model_dir
+        self.offline = offline
         self._model = None
         self._is_initialized = False
 

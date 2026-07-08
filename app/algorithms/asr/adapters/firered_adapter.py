@@ -22,26 +22,21 @@ logger = logging.getLogger("audiomos")
 class FireRedASR2Adapter(BaseASR):
     """FireRedASR2-AED 适配器 — Attention-based Encoder-Decoder (1.1B)"""
 
-    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
+    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None,
+                 offline: bool = True, **kwargs):
         super().__init__(
             name="firered-asr2",
             sample_rate=16000,
             device=device,
             language="zh",
             model_dir=model_dir,
+            offline=offline,
         )
 
     def _find_model_dir(self) -> Optional[str]:
-        """查找本地模型目录"""
-        if self.model_dir and os.path.exists(self.model_dir) and os.listdir(self.model_dir):
+        """查找本地模型目录（仅检查 self.model_dir）"""
+        if self.model_dir and os.path.isdir(self.model_dir) and os.listdir(self.model_dir):
             return self.model_dir
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )))
-        for dirname in ["firered-asr2", "FireRedASR2-AED", "fireredasr2-aed"]:
-            candidate = os.path.join(project_root, "models", "asr", dirname)
-            if os.path.exists(candidate) and os.listdir(candidate):
-                return candidate
         return None
 
     def initialize(self) -> bool:
@@ -65,6 +60,10 @@ class FireRedASR2Adapter(BaseASR):
 
             model_dir = self._find_model_dir()
             if not model_dir:
+                if self.offline:
+                    raise FileNotFoundError(
+                        f"[FireRedASR2-AED] 离线模式：未找到本地模型，请放置在 {self.model_dir}"
+                    )
                 raise FileNotFoundError(
                     "未找到FireRedASR2-AED模型文件。请下载模型到 models/asr/firered-asr2/ 目录"
                 )
@@ -94,18 +93,20 @@ class FireRedASR2Adapter(BaseASR):
 
     def _initialize_fasr(self) -> bool:
         """使用fasr库初始化"""
-        from fasr.config import registry  # 在方法内部导入
+        from fasr.config import registry
 
         model_dir = self._find_model_dir()
         if not model_dir:
+            if self.offline:
+                raise FileNotFoundError(
+                    f"[FireRedASR2-AED] 离线模式：未找到本地模型，请放置在 {self.model_dir}"
+                )
             raise FileNotFoundError("未找到FireRedASR2-AED模型文件")
 
         logger.info(f"[FireRedASR2-AED] 使用fasr库从本地加载: {model_dir}")
 
-        # 使用registry获取模型类并实例化
         model_class = registry.asr_models.get("firered_aed")
         self._model = model_class()
-        # 使用load_checkpoint方法加载权重
         self._model.load_checkpoint(checkpoint_dir=model_dir)
         self._use_fasr = True
         self._is_initialized = True
@@ -116,19 +117,20 @@ class FireRedASR2Adapter(BaseASR):
         if not self._is_initialized:
             raise RuntimeError("FireRedASR2-AED模型未初始化")
 
-        import soundfile as sf
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_path = f.name
-        try:
-            sf.write(temp_path, audio, sample_rate or self.sample_rate)
-
-            if self._use_fasr:
-                return self._transcribe_fasr(audio, sample_rate)
-            else:
+        if self._use_fasr:
+            # fasr 路径直接传 numpy，不写临时文件
+            return self._transcribe_fasr(audio, sample_rate)
+        else:
+            # official 路径需要文件路径
+            import soundfile as sf
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                temp_path = f.name
+            try:
+                sf.write(temp_path, audio, sample_rate or self.sample_rate)
                 return self._transcribe_official(temp_path)
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
 
     def _transcribe_official(self, audio_path: str) -> ASRResult:
         """使用官方推理代码"""
@@ -155,7 +157,6 @@ class FireRedASR2Adapter(BaseASR):
             item = results[0]
             if isinstance(item, dict):
                 text = item.get("text", "") or item.get("ref", "")
-                # AED支持字级时间戳
                 timestamp = item.get("timestamp", [])
                 for ts in timestamp:
                     if isinstance(ts, (list, tuple)) and len(ts) >= 2:
@@ -178,7 +179,7 @@ class FireRedASR2Adapter(BaseASR):
         )
 
     def _transcribe_fasr(self, audio: np.ndarray, sample_rate: Optional[int] = None) -> ASRResult:
-        """使用fasr库推理 - 创建AudioSpan对象传递给模型"""
+        """使用fasr库推理 - 直接传 numpy 数组，无临时文件"""
         from fasr.data.audio import AudioSpan
         from fasr.data.waveform import Waveform
 
@@ -198,7 +199,6 @@ class FireRedASR2Adapter(BaseASR):
             end_ms=duration_ms,
         )
 
-        # 调用transcribe，模型接受 List[AudioSpan]
         result = self._model.transcribe([span])
 
         text = ""

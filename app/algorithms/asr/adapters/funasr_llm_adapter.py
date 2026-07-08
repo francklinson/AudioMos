@@ -21,26 +21,21 @@ logger = logging.getLogger("audiomos")
 class FunASRLLMAdapter(BaseASR):
     """Fun-ASR-Nano 800M 适配器 — 轻量LLM-based ASR，支持31种语言"""
 
-    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
+    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None,
+                 offline: bool = True, **kwargs):
         super().__init__(
             name="funasr-llm",
             sample_rate=16000,
             device=device,
             language="zh",
             model_dir=model_dir,
+            offline=offline,
         )
 
     def _find_model_dir(self) -> Optional[str]:
-        """查找本地模型目录"""
-        if self.model_dir and os.path.exists(self.model_dir) and os.listdir(self.model_dir):
+        """查找本地模型目录（仅检查 self.model_dir，不再遍历项目目录）"""
+        if self.model_dir and os.path.isdir(self.model_dir) and os.listdir(self.model_dir):
             return self.model_dir
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )))
-        for dirname in ["funasr-llm", "Fun-ASR-Nano-2512", "fun-asr-nano"]:
-            candidate = os.path.join(project_root, "models", "asr", dirname)
-            if os.path.exists(candidate) and os.listdir(candidate):
-                return candidate
         return None
 
     def initialize(self) -> bool:
@@ -59,7 +54,10 @@ class FunASRLLMAdapter(BaseASR):
                     disable_update=True,
                 )
             else:
-                # 使用HuggingFace模型名加载
+                if self.offline:
+                    raise FileNotFoundError(
+                        f"[Fun-ASR-Nano] 离线模式：未找到本地模型，请放置在 {self.model_dir}"
+                    )
                 logger.info("[Fun-ASR-Nano] 从HuggingFace加载: FunAudioLLM/Fun-ASR-Nano-2512")
                 self._model = AutoModel(
                     model="FunAudioLLM/Fun-ASR-Nano-2512",
@@ -80,21 +78,11 @@ class FunASRLLMAdapter(BaseASR):
         if not self._is_initialized:
             raise RuntimeError("Fun-ASR-Nano模型未初始化")
 
-        import soundfile as sf
-        import tempfile
-
-        sr = sample_rate or self.sample_rate
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_path = f.name
-        try:
-            sf.write(temp_path, audio, sr)
-            result = self._model.generate(
-                input=temp_path,
-                batch_size_s=300,
-            )
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
+        # 直接传 numpy 数组，无需临时文件
+        result = self._model.generate(
+            input=audio,
+            batch_size_s=300,
+        )
 
         text = ""
         if result and len(result) > 0:

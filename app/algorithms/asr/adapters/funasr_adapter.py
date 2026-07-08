@@ -17,20 +17,21 @@ logger = logging.getLogger("audiomos")
 class ParaformerAdapter(BaseASR):
     """Paraformer-large 适配器 — 通过FunASR加载"""
 
-    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
+    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None,
+                 offline: bool = True, **kwargs):
         super().__init__(
             name="paraformer-large",
             sample_rate=16000,
             device=device,
             language="zh",
             model_dir=model_dir,
+            offline=offline,
         )
 
     def initialize(self) -> bool:
         try:
             from funasr import AutoModel
 
-            # 直接从本地模型目录加载（绕开 modelscope 缓存）
             model_dir = self.model_dir
             if model_dir and os.path.isdir(model_dir) and os.path.isfile(os.path.join(model_dir, "model.pt")):
                 logger.info(f"[Paraformer] 从本地模型目录加载: {model_dir}")
@@ -40,8 +41,11 @@ class ParaformerAdapter(BaseASR):
                     disable_update=True,
                 )
             else:
-                # 兜底：从 HuggingFace 加载
-                logger.info("[Paraformer] 从 HuggingFace 加载: FunAudioLLM/paraformer-large")
+                if self.offline:
+                    raise FileNotFoundError(
+                        f"[Paraformer] 离线模式：未找到本地模型，请放置在 {self.model_dir}"
+                    )
+                logger.info("[Paraformer] 从HuggingFace加载: FunAudioLLM/paraformer-large")
                 self._model = AutoModel(
                     model="FunAudioLLM/paraformer-large",
                     device=self.device,
@@ -92,20 +96,21 @@ class ParaformerAdapter(BaseASR):
 class SenseVoiceAdapter(BaseASR):
     """SenseVoice-Small 适配器 — 通过FunASR加载"""
 
-    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
+    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None,
+                 offline: bool = True, **kwargs):
         super().__init__(
             name="sensevoice-small",
             sample_rate=16000,
             device=device,
             language="zh",
             model_dir=model_dir,
+            offline=offline,
         )
 
     def initialize(self) -> bool:
         try:
             from funasr import AutoModel
 
-            # 直接从本地模型目录加载（绕开 modelscope 缓存）
             model_dir = self.model_dir
             if model_dir and os.path.isdir(model_dir) and os.path.isfile(os.path.join(model_dir, "model.pt")):
                 logger.info(f"[SenseVoice] 从本地模型目录加载: {model_dir}")
@@ -115,8 +120,11 @@ class SenseVoiceAdapter(BaseASR):
                     disable_update=True,
                 )
             else:
-                # 兜底：从 HuggingFace 加载
-                logger.info("[SenseVoice] 从 HuggingFace 加载: FunAudioLLM/SenseVoiceSmall")
+                if self.offline:
+                    raise FileNotFoundError(
+                        f"[SenseVoice] 离线模式：未找到本地模型，请放置在 {self.model_dir}"
+                    )
+                logger.info("[SenseVoice] 从HuggingFace加载: FunAudioLLM/SenseVoiceSmall")
                 self._model = AutoModel(
                     model="FunAudioLLM/SenseVoiceSmall",
                     device=self.device,

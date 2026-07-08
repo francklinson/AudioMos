@@ -77,14 +77,14 @@ router = APIRouter(
 asr_upload_dir = os.path.join(settings.paths.upload_dir, "asr")
 asr_result_dir = os.path.join(settings.paths.result_dir, "asr")
 asr_report_dir = os.path.join(settings.paths.result_dir, "asr", "reports")
-asr_model_dir = os.path.join(project_root, "models", "asr")
+asr_model_dir = os.path.join(settings.paths.models_dir, "asr")
 
 for d in [asr_upload_dir, asr_result_dir, asr_report_dir, asr_model_dir]:
     os.makedirs(d, exist_ok=True)
 
 # ASR独立任务队列（带JSON持久化）
 asr_task_queue = TaskQueue(
-    max_workers=1,
+    max_workers=settings.asr.benchmark_workers,
     persistence_dir=os.path.join(asr_result_dir, "_tasks"),
 )
 
@@ -178,9 +178,15 @@ def _save_result(dataset: str, algorithm: str, result_data: dict):
     ds_dir = os.path.join(asr_results_dir, dataset)
     os.makedirs(ds_dir, exist_ok=True)
 
-    # 与已有结果比较，仅保留更优 CER
+    # 与已有结果比较，仅保留更优 CER（优先从内存读取）
     existing_path = os.path.join(ds_dir, f"{algorithm}.json")
-    if os.path.exists(existing_path):
+    existing = asr_results.get(dataset, {}).get(algorithm)
+    if existing:
+        old_cer = existing.get("metrics", {}).get("cer")
+        new_cer = result_data.get("metrics", {}).get("cer")
+        if old_cer is not None and new_cer is not None and new_cer >= old_cer:
+            return  # 已有更好的结果，跳过
+    elif os.path.exists(existing_path):
         try:
             with open(existing_path, "r") as f:
                 existing = json.load(f)
@@ -195,7 +201,7 @@ def _save_result(dataset: str, algorithm: str, result_data: dict):
         "algorithm": algorithm,
         "dataset": dataset,
         "metrics": result_data.get("metrics", {}),
-        "per_utterance": result_data.get("per_utterance", [])[:20],
+        "per_utterance": result_data.get("per_utterance", [])[:settings.asr.per_utterance_limit],
         "errors": result_data.get("errors", []),
         "updated_at": datetime.now().isoformat(),
     }
@@ -394,7 +400,8 @@ async def process_asr_task(queue_task: Task):
                 raise RuntimeError("ASR模块不可用")
             instance = ASRRegistry.get(
                 algorithm, device=_get_device(),
-                model_dir=os.path.join(asr_model_dir, algorithm))
+                model_dir=os.path.join(asr_model_dir, algorithm),
+                offline=settings.asr.offline)
             if not instance:
                 raise ValueError(f"未知的ASR算法: {algorithm}")
             if not instance.is_initialized():
@@ -506,7 +513,8 @@ async def process_batch_asr_task(queue_task: Task):
                 raise RuntimeError("ASR模块不可用")
             instance = ASRRegistry.get(
                 algorithm, device=_get_device(),
-                model_dir=os.path.join(asr_model_dir, algorithm))
+                model_dir=os.path.join(asr_model_dir, algorithm),
+                offline=settings.asr.offline)
             if not instance:
                 raise ValueError(f"未知的ASR算法: {algorithm}")
             if not instance.is_initialized():
@@ -667,7 +675,8 @@ async def initialize_algorithm(
         return {"message": f"算法 {name} 已初始化", "name": name, "initialized": True}
 
     try:
-        instance = ASRRegistry.get(name, device=_get_device(), model_dir=os.path.join(asr_model_dir, name))
+        instance = ASRRegistry.get(name, device=_get_device(), model_dir=os.path.join(asr_model_dir, name),
+                                   offline=settings.asr.offline)
         if not instance:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"无法创建算法实例: {name}")
 
@@ -750,8 +759,8 @@ async def transcribe_audio(
     queue_task = Task(
         task_id=task_id,
         user=current_user.username,
-        timeout=1800,
-        max_retries=2,
+        timeout=settings.asr.transcribe_timeout,
+        max_retries=settings.asr.transcribe_max_retries,
         data={
             "algorithm": algorithm,
             "filename": audio_file.filename,
@@ -825,8 +834,8 @@ async def transcribe_audio_batch(
     queue_task = Task(
         task_id=task_id,
         user=current_user.username,
-        timeout=3600,
-        max_retries=1,
+        timeout=settings.asr.batch_timeout,
+        max_retries=settings.asr.batch_max_retries,
         data={
             "algorithm": algorithm,
             "files": file_list,
@@ -973,7 +982,11 @@ async def run_benchmark(
     # 在后台线程执行benchmark
     async def _run_benchmark():
         try:
-            benchmark = ASRBenchmark(model_dir=asr_model_dir, device=_get_device())
+            benchmark = ASRBenchmark(
+                model_dir=asr_model_dir, device=_get_device(),
+                max_workers=settings.asr.benchmark_workers,
+                per_utterance_limit=settings.asr.per_utterance_limit,
+            )
             loop = asyncio.get_event_loop()
 
             # 进度回调
@@ -1240,7 +1253,8 @@ async def recognize_audio(
         loop = asyncio.get_event_loop()
 
         def _recognize():
-            instance = ASRRegistry.get(algorithm, device=_get_device(), model_dir=os.path.join(asr_model_dir, algorithm))
+            instance = ASRRegistry.get(algorithm, device=_get_device(), model_dir=os.path.join(asr_model_dir, algorithm),
+                                       offline=settings.asr.offline)
             if not instance:
                 raise ValueError(f"算法 {algorithm} 不可用")
             if not instance.is_initialized():
@@ -1421,7 +1435,8 @@ def init_asr():
             logger.info(f"[ASR初始化] [{idx}/{len(preload_list)}] 正在预加载 '{name}'...")
             model_start = time.time()
 
-            instance = ASRRegistry.get(name, device=device, model_dir=os.path.join(asr_model_dir, name))
+            instance = ASRRegistry.get(name, device=device, model_dir=os.path.join(asr_model_dir, name),
+                                       offline=settings.asr.offline)
             if not instance:
                 init_stats["failed"].append((name, "无法创建实例"))
                 continue

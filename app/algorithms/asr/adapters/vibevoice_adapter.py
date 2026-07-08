@@ -1,11 +1,9 @@
 """
 VibeVoice-ASR 适配器
-超低帧率分词器+LLM，单次处理60分钟长音频
-ICLR 2026 Oral
+支持 VibeVoice 官方包 和 transformers 两种加载方式
 
-默认使用4-bit在线量化加载FP16模型(~8GB VRAM)，适合3090部署
 HuggingFace: microsoft/VibeVoice-ASR-HF
-依赖: pip install transformers torch soundfile bitsandbytes
+依赖: pip install vibevoice-asr 或 pip install transformers
 """
 
 import os
@@ -20,110 +18,70 @@ logger = logging.getLogger("audiomos")
 
 
 class VibeVoiceAdapter(BaseASR):
-    """VibeVoice-ASR 适配器 — 超低帧率分词器 + LLM (4-bit在线量化)"""
+    """VibeVoice-ASR 适配器"""
 
-    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
+    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None,
+                 offline: bool = True, **kwargs):
         super().__init__(
             name="vibevoice-asr",
             sample_rate=16000,
             device=device,
             language="zh",
             model_dir=model_dir,
+            offline=offline,
         )
+        self._load_mode = None
         self._processor = None
-        # 默认使用4-bit量化以适配3090 (24GB VRAM)
-        self._use_4bit = kwargs.get("use_4bit", True)
 
     def _find_model_dir(self) -> Optional[str]:
-        """查找本地模型目录"""
-        if self.model_dir and os.path.exists(self.model_dir) and os.listdir(self.model_dir):
+        """查找本地模型目录（仅检查 self.model_dir）"""
+        if self.model_dir and os.path.isdir(self.model_dir) and os.listdir(self.model_dir):
             return self.model_dir
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )))
-        for dirname in ["vibevoice-asr", "VibeVoice-ASR-HF", "VibeVoice-ASR-7B", "VibeVoice-ASR-4bit"]:
-            candidate = os.path.join(project_root, "models", "asr", dirname)
-            if os.path.exists(candidate) and os.listdir(candidate):
-                return candidate
         return None
 
     def initialize(self) -> bool:
         try:
-            import torch
-
             model_dir = self._find_model_dir()
 
-            # 尝试使用VibeVoice专用transformers类
+            if model_dir is None:
+                if self.offline:
+                    raise FileNotFoundError(
+                        f"[VibeVoice] 离线模式：未找到本地模型，请放置在 {self.model_dir}"
+                    )
+
+            # 尝试使用 vibevoice 官方包
+            if model_dir is None:
+                model_dir = "microsoft/VibeVoice-ASR-HF"
+
             try:
-                from transformers import AutoProcessor
-                from transformers import VibeVoiceAsrForConditionalGeneration
-
-                if model_dir:
-                    logger.info(f"[VibeVoice] 从本地加载模型: {model_dir}")
-                    model_path = model_dir
-                else:
-                    logger.info("[VibeVoice] 从HuggingFace下载: microsoft/VibeVoice-ASR-HF")
-                    model_path = "microsoft/VibeVoice-ASR-HF"
-
-                self._processor = AutoProcessor.from_pretrained(
-                    model_path,
-                    local_files_only=bool(model_dir),
-                    trust_remote_code=True,
+                import vibevoice_asr
+                logger.info(f"[VibeVoice] 使用VibeVoice官方包加载: {model_dir}")
+                self._model = vibevoice_asr.VibeVoiceAsrForConditionalGeneration.from_pretrained(
+                    model_dir,
                 )
-
-                if self._use_4bit:
-                    # 4-bit在线量化加载（FP16模型→4-bit运行，约8GB VRAM）
-                    from transformers import BitsAndBytesConfig
-                    quantization_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=torch.float16,
-                    )
-                    self._model = VibeVoiceAsrForConditionalGeneration.from_pretrained(
-                        model_path,
-                        quantization_config=quantization_config,
-                        local_files_only=bool(model_dir),
-                        trust_remote_code=True,
-                    )
-                else:
-                    torch_dtype = torch.float16 if self.device != "cpu" else torch.float32
-                    self._model = VibeVoiceAsrForConditionalGeneration.from_pretrained(
-                        model_path,
-                        device_map="auto",
-                        torch_dtype=torch_dtype,
-                        local_files_only=bool(model_dir),
-                        trust_remote_code=True,
-                    )
-
+                self._processor = vibevoice_asr.VibeVoiceProcessor.from_pretrained(model_dir)
                 self._load_mode = "vibevoice"
-                self._is_initialized = True
-                logger.info(f"[VibeVoice] 模型初始化成功 ({'4-bit量化' if self._use_4bit else 'FP16'})")
-                return True
-
-            except (ImportError, AttributeError):
-                pass
-
-            # 回退: 使用vibevoice社区包
-            try:
-                from vibevoice import VibeVoiceASR
-
-                if model_dir:
-                    logger.info(f"[VibeVoice] 使用vibevoice包从本地加载: {model_dir}")
-                    self._model = VibeVoiceASR.from_pretrained(model_dir)
-                else:
-                    logger.info("[VibeVoice] 使用vibevoice包从HuggingFace下载")
-                    self._model = VibeVoiceASR.from_pretrained("microsoft/VibeVoice-ASR-7B")
-
-                self._load_mode = "vibevoice_pkg"
-                self._is_initialized = True
-                logger.info("[VibeVoice] 模型初始化成功 (vibevoice包)")
-                return True
-
             except ImportError:
-                raise ImportError(
-                    "VibeVoice未安装。请执行:\n"
-                    "  pip install transformers>=4.51.0 bitsandbytes\n"
-                    "  或 pip install vibevoice"
+                logger.info("[VibeVoice] vibevoice_asr未安装，使用transformers加载")
+                from transformers import AutoModelForCausalLM, AutoProcessor
+                import torch
+
+                if model_dir is None:
+                    model_dir = "microsoft/VibeVoice-ASR-7B"
+
+                self._model = AutoModelForCausalLM.from_pretrained(
+                    model_dir,
+                    trust_remote_code=True,
+                    torch_dtype=torch.float16 if self.device != "cpu" else torch.float32,
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
                 )
+                self._processor = AutoProcessor.from_pretrained(model_dir, trust_remote_code=True)
+                self._load_mode = "transformers"
+
+            self._is_initialized = True
+            logger.info(f"[VibeVoice] 模型初始化成功 (mode={self._load_mode})")
+            return True
 
         except Exception as e:
             logger.error(f"[VibeVoice] 初始化失败: {e}")
@@ -177,41 +135,38 @@ class VibeVoiceAdapter(BaseASR):
             text = "".join(text_parts).strip()
         except Exception:
             text = self._processor.decode(generated_ids[0], skip_special_tokens=True).strip()
-            segments = None
 
         return ASRResult(
             text=text,
             language=self.language,
-            segments=segments,
+            segments=segments if segments else None,
             algorithm_name=self.name,
         )
 
     def _transcribe_pkg(self, audio_path: str) -> ASRResult:
-        """使用vibevoice社区包推理"""
-        result = self._model.transcribe(audio_path, language="zh")
+        """使用transformers加载的模型推理"""
+        import torch
 
-        text = ""
-        segments = None
-        if isinstance(result, dict):
-            text = result.get("text", "")
-            segs = result.get("segments", [])
-            if segs:
-                segments = [
-                    ASRSegment(
-                        start=s.get("start", 0),
-                        end=s.get("end", 0),
-                        text=s.get("text", ""),
-                    )
-                    for s in segs
-                ]
-        elif isinstance(result, str):
-            text = result
-        else:
-            text = str(result)
+        inputs = self._processor.apply_transcription_request(
+            audio=audio_path,
+            prompt=None,
+        ).to(self._model.device, torch.float16 if self.device != "cpu" else torch.float32)
+
+        output_ids = self._model.generate(**inputs)
+        generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
+
+        try:
+            result = self._processor.decode(generated_ids, return_format="parsed")[0]
+            text_parts = []
+            for seg in result:
+                if isinstance(seg, dict):
+                    text_parts.append(seg.get("Content", seg.get("text", "")))
+            text = "".join(text_parts).strip()
+        except Exception:
+            text = self._processor.decode(generated_ids[0], skip_special_tokens=True).strip()
 
         return ASRResult(
-            text=text.strip(),
+            text=text,
             language=self.language,
-            segments=segments,
             algorithm_name=self.name,
         )

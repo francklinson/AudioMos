@@ -19,27 +19,22 @@ logger = logging.getLogger("audiomos")
 class Qwen3ASRAdapter(BaseASR):
     """Qwen3-ASR-1.7B 适配器 — AuT音频编码器 + Qwen3 LLM"""
 
-    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
+    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None,
+                 offline: bool = True, **kwargs):
         super().__init__(
             name="qwen3-asr",
             sample_rate=16000,
             device=device,
             language="zh",
             model_dir=model_dir,
+            offline=offline,
         )
         self._processor = None
 
     def _find_model_dir(self) -> Optional[str]:
-        """查找本地模型目录"""
-        if self.model_dir and os.path.exists(self.model_dir) and os.listdir(self.model_dir):
+        """查找本地模型目录（仅检查 self.model_dir）"""
+        if self.model_dir and os.path.isdir(self.model_dir) and os.listdir(self.model_dir):
             return self.model_dir
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )))
-        for dirname in ["qwen3-asr", "Qwen3-ASR-1.7B", "qwen3-asr-1.7b"]:
-            candidate = os.path.join(project_root, "models", "asr", dirname)
-            if os.path.exists(candidate) and os.listdir(candidate):
-                return candidate
         return None
 
     def initialize(self) -> bool:
@@ -53,11 +48,13 @@ class Qwen3ASRAdapter(BaseASR):
                 logger.info(f"[Qwen3-ASR] 从本地加载模型: {model_dir}")
                 model_path = model_dir
             else:
+                if self.offline:
+                    raise FileNotFoundError(
+                        f"[Qwen3-ASR] 离线模式：未找到本地模型，请放置在 {self.model_dir}"
+                    )
                 logger.info("[Qwen3-ASR] 从HuggingFace下载模型: Qwen/Qwen3-ASR-1.7B")
                 model_path = "Qwen/Qwen3-ASR-1.7B"
 
-            # 使用 qwen-asr 的 from_pretrained 加载模型
-            # device_map 确保模型加载到 GPU；fp16 加速推理
             model_kwargs = dict(
                 trust_remote_code=True,
                 low_cpu_mem_usage=True,
@@ -96,7 +93,7 @@ class Qwen3ASRAdapter(BaseASR):
         }
         qwen_lang = lang_map.get(self.language, "Chinese")
 
-        # qwen-asr 的 transcribe 接受 (np.ndarray, sr) 元组
+        # qwen-asr 的 transcribe 接受 (np.ndarray, sr) 元组，无需临时文件
         results = self._model.transcribe(
             (audio, sr),
             language=qwen_lang,

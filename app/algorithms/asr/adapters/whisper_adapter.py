@@ -17,13 +17,15 @@ logger = logging.getLogger("audiomos")
 class WhisperAdapter(BaseASR):
     """Whisper Large-v3 Turbo 适配器"""
 
-    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None, **kwargs):
+    def __init__(self, device: str = "cuda", model_dir: Optional[str] = None,
+                 offline: bool = True, **kwargs):
         super().__init__(
             name="whisper-large-v3-turbo",
             sample_rate=16000,
             device=device,
             language="zh",
             model_dir=model_dir,
+            offline=offline,
         )
         self._processor = None
 
@@ -31,30 +33,37 @@ class WhisperAdapter(BaseASR):
         try:
             model_dir = self.model_dir
 
-            # 查找本地模型目录
-            if not model_dir or not os.path.exists(model_dir):
-                project_root = os.path.dirname(os.path.dirname(os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )))
-                candidate = os.path.join(project_root, "models", "asr", "whisper-large-v3-turbo")
-                if os.path.exists(candidate):
-                    model_dir = candidate
+            # 仅检查 self.model_dir，不再遍历项目目录
+            if not model_dir or not os.path.isdir(model_dir):
+                if self.offline:
+                    raise FileNotFoundError(
+                        f"[Whisper] 离线模式：未找到本地模型，请放置在 {self.model_dir}"
+                    )
+                logger.info(f"[Whisper] 从HuggingFace下载模型: large-v3-turbo")
+                import whisper
+                self._model = whisper.load_model("large-v3-turbo", device=self.device)
+                self._is_initialized = True
+                logger.info(f"[Whisper] 模型初始化成功")
+                return True
 
-            # 方式1: 如果本地目录包含safetensors，使用transformers加载
-            if model_dir and os.path.exists(os.path.join(model_dir, "model.safetensors")):
+            # 方式1: 本地safetensors格式
+            if os.path.exists(os.path.join(model_dir, "model.safetensors")):
                 logger.info(f"[Whisper] 从本地safetensors加载: {model_dir}")
                 self._load_from_transformers(model_dir)
-            # 方式2: 如果本地目录包含pt文件，使用openai-whisper加载
-            elif model_dir and os.path.exists(os.path.join(model_dir, "model.pt")):
+            # 方式2: 本地pt格式
+            elif os.path.exists(os.path.join(model_dir, "model.pt")):
                 logger.info(f"[Whisper] 从本地pt文件加载: {model_dir}")
                 import whisper
                 self._model = whisper.load_model(os.path.join(model_dir, "model.pt"), device=self.device)
-            # 方式3: 使用模型名称从HuggingFace缓存加载
-            elif model_dir and os.path.exists(model_dir) and os.listdir(model_dir):
+            # 方式3: 带文件的目录
+            elif os.listdir(model_dir):
                 logger.info(f"[Whisper] 尝试transformers加载目录: {model_dir}")
                 self._load_from_transformers(model_dir)
-            # 方式4: 使用openai-whisper的模型名称下载
             else:
+                if self.offline:
+                    raise FileNotFoundError(
+                        f"[Whisper] 离线模式：模型目录存在但未找到模型文件: {model_dir}"
+                    )
                 logger.info(f"[Whisper] 从HuggingFace下载模型: large-v3-turbo")
                 import whisper
                 self._model = whisper.load_model("large-v3-turbo", device=self.device)
@@ -84,11 +93,9 @@ class WhisperAdapter(BaseASR):
         if not self._is_initialized:
             raise RuntimeError("Whisper模型未初始化")
 
-        # float32输入
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
 
-        # 判断是transformers模型还是openai-whisper模型
         if self._processor is not None:
             return self._transcribe_transformers(audio)
         else:
@@ -98,19 +105,15 @@ class WhisperAdapter(BaseASR):
         """使用transformers pipeline识别"""
         import torch
 
-        # 预处理
         input_features = self._processor(
             audio, sampling_rate=self.sample_rate, return_tensors="pt"
         ).input_features.to(self.device)
 
-        # 生成
         with torch.no_grad():
             predicted_ids = self._model.generate(input_features, language="chinese", task="transcribe")
 
-        # 解码
         text = self._processor.batch_decode(predicted_ids, skip_special_tokens=True)[0].strip()
 
-        # 尝试获取分段（transformers不直接提供时间戳分段）
         return ASRResult(
             text=text,
             language=self.language,
