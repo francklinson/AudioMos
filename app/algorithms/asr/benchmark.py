@@ -106,8 +106,12 @@ class ASRBenchmark:
         total_tasks = len(algorithms) * len(samples)
         completed = 0
 
+        logger.info(f"[Benchmark] 开始评测: bench_id={bench_id}, 算法数={len(algorithms)}, 数据集={dataset_name}, 样本数={len(samples)}, 总任务数={total_tasks}")
+
         for algo_name in algorithms:
             algo_result = BenchmarkResult(algorithm_name=algo_name)
+            algo_task_count = len(samples)
+            logger.info(f"[Benchmark] 开始评测算法: {algo_name} ({algo_task_count} 条样本)")
 
             # 获取/初始化算法
             instance = ASRRegistry.get(algo_name, device=self.device, model_dir=os.path.join(self.model_dir, algo_name))
@@ -134,7 +138,7 @@ class ASRBenchmark:
             proc_times = []
             durations = []
 
-            for sample in samples:
+            for idx, sample in enumerate(samples):
                 try:
                     import soundfile as sf
                     audio, sr = sf.read(sample.audio_path)
@@ -163,8 +167,16 @@ class ASRBenchmark:
                         "processing_time": round(asr_result.processing_time, 3),
                     })
 
+                    # 逐条打印识别结果
+                    logger.info(f"[Benchmark] {algo_name} [{idx+1}/{algo_task_count}] "
+                                f"utt={sample.utterance_id} CER={cer:.4f} "
+                                f"ref={sample.reference_text[:60]} "
+                                f"hyp={asr_result.text[:60]}")
+
                 except Exception as e:
                     algo_result.errors.append(f"{sample.utterance_id}: {e}")
+                    logger.warning(f"[Benchmark] {algo_name} [{idx+1}/{algo_task_count}] "
+                                   f"utt={sample.utterance_id} 错误: {e}")
 
                 completed += 1
                 run.progress = completed / total_tasks * 100
@@ -172,12 +184,22 @@ class ASRBenchmark:
             # 计算汇总指标
             if references:
                 algo_result.metrics = evaluate_asr(references, hypotheses, proc_times, durations)
+                logger.info(f"[Benchmark] {algo_name} 完成: CER={algo_result.metrics.cer:.4f} "
+                            f"WER={algo_result.metrics.wer:.4f} RTF={algo_result.metrics.rtf:.4f}")
 
             run.results[algo_name] = algo_result
 
         run.status = "completed"
         run.end_time = datetime.now().isoformat()
         run.progress = 100.0
+
+        # 汇总日志
+        elapsed = (datetime.fromisoformat(run.end_time) - datetime.fromisoformat(run.start_time)).total_seconds()
+        algo_summaries = []
+        for name, r in run.results.items():
+            m = r.metrics
+            algo_summaries.append(f"{name}: CER={m.cer:.4f} WER={m.wer:.4f} RTF={m.rtf:.4f}" if m.cer is not None else f"{name}: 失败")
+        logger.info(f"[Benchmark] 评测完成: bench_id={bench_id} 耗时={elapsed:.1f}s | " + " | ".join(algo_summaries))
 
         return run
 

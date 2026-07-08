@@ -271,8 +271,8 @@ class DatasetManager:
         return self._datasets.get(name)
 
     def list_datasets(self) -> List[dict]:
-        """列出所有数据集"""
-        return [ds.get_info() for ds in self._datasets.values()]
+        """列出所有数据集，包含注册 key 供前端提交时使用"""
+        return [{**ds.get_info(), "key": key} for key, ds in self._datasets.items()]
 
     def get_test_samples(self, name: str, max_samples: Optional[int] = None) -> List[DatasetSample]:
         """获取指定数据集的测试样本"""
@@ -298,6 +298,9 @@ class DatasetManager:
         for key, cls_type in dataset_map.items():
             ds_config = config.get(key, {})
             ds_dir = ds_config.get("path", os.path.join(datasets_dir, key))
+            # 相对路径基于 project_root 解析，避免依赖进程工作目录
+            if not os.path.isabs(ds_dir):
+                ds_dir = os.path.join(project_root, ds_dir)
             manager.register_dataset(key, cls_type(ds_dir))
 
         return manager

@@ -854,7 +854,7 @@ async def run_benchmark(
             # 更新状态
             asr_benchmarks[bench_id]["status"] = "completed"
             asr_benchmarks[bench_id]["progress"] = 100.0
-            asr_benchmarks[bench_id]["results"] = run_result.to_dict()
+            asr_benchmarks[bench_id]["results"] = run_result.to_dict()["results"]
             asr_benchmarks[bench_id]["ranking"] = ranking
             asr_benchmarks[bench_id]["report_files"] = report_files
             asr_benchmarks[bench_id]["updated_at"] = datetime.now().isoformat()

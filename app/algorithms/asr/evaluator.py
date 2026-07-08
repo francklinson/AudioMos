@@ -4,6 +4,7 @@ ASR评测指标模块
 """
 
 import time
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import logging
@@ -150,7 +151,7 @@ def compute_wer(reference: str, hypothesis: str) -> Tuple[float, float, float, f
     """
     计算词错误率 (Word Error Rate)
 
-    中文按字符分词，英文按空格分词
+    中文使用 jieba 分词，英文按空格分词
 
     Args:
         reference: 参考文本
@@ -159,8 +160,8 @@ def compute_wer(reference: str, hypothesis: str) -> Tuple[float, float, float, f
     Returns:
         (wer, wer_del, wer_ins, wer_sub)
     """
-    ref_words = reference.split()
-    hyp_words = hypothesis.split()
+    ref_words = _tokenize_words(reference)
+    hyp_words = _tokenize_words(hypothesis)
 
     if len(ref_words) == 0:
         return 0.0, 0.0, 0.0, 0.0
@@ -173,6 +174,20 @@ def compute_wer(reference: str, hypothesis: str) -> Tuple[float, float, float, f
     wer_sub = subs / total
 
     return wer, wer_del, wer_ins, wer_sub
+
+
+def _tokenize_words(text: str) -> List[str]:
+    """对文本分词：中文用jieba，英文/已分好词用split"""
+    # 去除标点
+    clean = re.sub(r'[，。！？、；：“”‘’（）\s,.!?;:\'\"()\-—…]', '', text)
+    if not clean:
+        return []
+    # 检测是否含中文字符
+    if re.search(r'[一-鿿]', clean):
+        import jieba
+        return list(jieba.cut(clean))
+    else:
+        return clean.split()
 
 
 def evaluate_asr(
@@ -218,7 +233,7 @@ def evaluate_asr(
         total_wer_del += wer_del
         total_wer_ins += wer_ins
         total_wer_sub += wer_sub
-        total_words += len(ref.split())
+        total_words += len(_tokenize_words(ref))
 
     n = len(references)
     metrics.num_utterances = n

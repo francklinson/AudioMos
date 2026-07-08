@@ -1878,15 +1878,25 @@ function updateAsrAlgoInfo() {
 async function loadAsrDatasets() {
   try {
     const data = await api(apiUrl('/api/asr/datasets'));
-    asrDatasets = data.datasets || [];
+    // 后端返回纯数组，兼容可能包裹在 {datasets: [...]} 中的情况
+    asrDatasets = Array.isArray(data) ? data : (data.datasets || []);
     const sel = $('asr-dataset-select');
     sel.innerHTML = '';
+    let firstAvailable = null;
     asrDatasets.forEach(ds => {
       const opt = document.createElement('option');
-      opt.value = ds.name;
+      // 使用注册 key 作为 value，确保与后端 lookup 一致
+      opt.value = ds.key || ds.name;
       opt.textContent = `${ds.name}${ds.available ? '' : ' (不可用)'} - ${ds.description || ''}`;
+      if (ds.available && !firstAvailable) firstAvailable = ds.key || ds.name;
       sel.appendChild(opt);
     });
+    // 自动选中第一个可用的数据集（优先内置测试集）
+    if (firstAvailable) {
+      sel.value = firstAvailable;
+    }
+    // 更新按钮状态
+    updateAsrBenchmarkBtn();
   } catch (e) {
     console.error('加载ASR数据集失败:', e);
   }
@@ -1913,9 +1923,16 @@ function renderAsrBenchmarkAlgos() {
     cb.addEventListener('change', () => {
       if (cb.checked) asrBenchmarkAlgos.add(cb.value);
       else asrBenchmarkAlgos.delete(cb.value);
-      $('asr-benchmark-btn').disabled = asrBenchmarkAlgos.size === 0;
+      updateAsrBenchmarkBtn();
     });
   });
+  // 渲染完成后刷新按钮状态（此时数据集可能已加载）
+  updateAsrBenchmarkBtn();
+}
+
+function updateAsrBenchmarkBtn() {
+  const dataset = $('asr-dataset-select').value;
+  $('asr-benchmark-btn').disabled = asrBenchmarkAlgos.size === 0 || !dataset;
 }
 
 function initAsrPage() {
@@ -1924,6 +1941,9 @@ function initAsrPage() {
     asrSelectedAlgorithm = e.target.value;
     updateAsrAlgoInfo();
   });
+
+  // 数据集选择变更时更新按钮状态
+  $('asr-dataset-select').addEventListener('change', updateAsrBenchmarkBtn);
 
   // 文件上传（input 已通过 CSS 透明覆盖 zone，用户直接点 input，禁止重复触发）
   const zone = $('asr-upload-zone');
