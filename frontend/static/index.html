@@ -91,6 +91,9 @@
     </div>
     <div class="nav-right">
       <span class="user-greeting">欢迎, <span id="user-display"></span></span>
+      <button class="btn btn-outline-light btn-sm" id="api-doc-btn">
+        <i class="bi bi-book"></i> API文档
+      </button>
       <button class="btn btn-outline-light btn-sm" id="logout-btn">
         <i class="bi bi-box-arrow-right"></i> 退出
       </button>
@@ -340,7 +343,6 @@
           <ul class="nav nav-pills mb-3" id="asr-tabs" role="tablist">
             <li class="nav-item"><button class="nav-link active" id="asr-tab-recognize" data-bs-toggle="pill" data-bs-target="#asr-pane-recognize">语音识别</button></li>
             <li class="nav-item"><button class="nav-link" id="asr-tab-benchmark" data-bs-toggle="pill" data-bs-target="#asr-pane-benchmark">Benchmark</button></li>
-            <li class="nav-item"><button class="nav-link" id="asr-tab-api" data-bs-toggle="pill" data-bs-target="#asr-pane-api">API文档</button></li>
           </ul>
 
           <div class="tab-content">
@@ -506,54 +508,6 @@
               </div><!-- end bench tab-content -->
             </div><!-- end benchmark pane -->
 
-            <!-- API文档子Tab -->
-            <div class="tab-pane fade" id="asr-pane-api">
-              <div class="card">
-                <div class="card-body">
-                  <h5 class="card-title"><i class="bi bi-code-slash"></i> ASR API 接口文档</h5>
-                  <div id="asr-api-doc">
-                    <h6 class="mt-3">1. 语音识别接口</h6>
-                    <div class="alert alert-secondary">
-                      <code>POST /api/asr/v1/recognize</code>
-                      <br><small>支持 X-API-Key 头认证 或 JWT Bearer Token</small>
-                    </div>
-                    <table class="table table-sm">
-                      <thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
-                      <tbody>
-                        <tr><td>audio_file</td><td>File</td><td>是</td><td>音频文件(.wav/.mp3)</td></tr>
-                        <tr><td>algorithm</td><td>String</td><td>否</td><td>算法名称，默认 paraformer-large</td></tr>
-                        <tr><td>language</td><td>String</td><td>否</td><td>语言代码，默认 zh</td></tr>
-                      </tbody>
-                    </table>
-
-                    <h6 class="mt-4">2. 算法列表接口</h6>
-                    <div class="alert alert-secondary">
-                      <code>GET /api/asr/v1/algorithms</code>
-                      <br><small>无需认证</small>
-                    </div>
-
-                    <h6 class="mt-4">3. 请求示例</h6>
-                    <pre class="bg-dark text-light p-3 rounded"><code>curl -X POST http://HOST:PORT/api/asr/v1/recognize \
-  -H "X-API-Key: your-api-key" \
-  -F "audio_file=@test.wav" \
-  -F "algorithm=paraformer-large"</code></pre>
-
-                    <h6 class="mt-4">4. 响应示例</h6>
-                    <pre class="bg-dark text-light p-3 rounded"><code>{
-  "text": "今天天气真好",
-  "language": "zh",
-  "rtf": 0.03,
-  "processing_time": 0.42,
-  "segments": [
-    {"start": 0.0, "end": 0.8, "text": "今天"},
-    {"start": 0.8, "end": 1.5, "text": "天气真好"}
-  ]
-}</code></pre>
-                  </div>
-                </div>
-              </div>
-            </div>
-
           </div><!-- /asr tab-content -->
         </div>
       </div>
@@ -612,6 +566,536 @@
         <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
         <button class="btn btn-danger" id="confirm-modal-ok">确定</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Modal: API 文档 ===================== -->
+<div class="modal fade" id="api-doc-modal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-book"></i> AudioMOS API 文档</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="api-doc-body">
+        <p class="text-muted mb-3">Base URL: <code id="api-doc-base-url"></code></p>
+
+        <!-- 认证说明 -->
+        <div class="alert alert-info mb-4">
+          <strong><i class="bi bi-shield-lock-fill"></i> 认证方式</strong>
+          <div class="row mt-2">
+            <div class="col-md-6">
+              <strong>JWT Bearer Token</strong>
+              <p class="small mb-1">通过 <code>POST /api/auth/login</code> 获取 token，在请求头中携带：</p>
+              <pre class="bg-dark text-light p-1 rounded" style="font-size:11px"><code>Authorization: Bearer &lt;token&gt;</code></pre>
+            </div>
+            <div class="col-md-6">
+              <strong>X-API-Key</strong>（仅 ASR 外部接口）
+              <p class="small mb-1">在请求头中携带 API Key：</p>
+              <pre class="bg-dark text-light p-1 rounded" style="font-size:11px"><code>X-API-Key: &lt;your-key&gt;</code></pre>
+            </div>
+          </div>
+          <div class="row mt-2">
+            <div class="col-md-6">
+              <strong>Query Token</strong>（文件下载）
+              <p class="small mb-1">用于 <code>&lt;audio&gt;</code> 等无法设置请求头的场景：</p>
+              <pre class="bg-dark text-light p-1 rounded" style="font-size:11px"><code>?token=&lt;token&gt;</code></pre>
+            </div>
+            <div class="col-md-6">
+              <strong>公开接口</strong>
+              <p class="small mb-0">标注 <span class="badge bg-success">公开</span> 的接口无需任何认证即可访问</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 内嵌 Tab 导航：按模块切换 -->
+        <ul class="nav nav-pills mb-3" id="api-doc-tabs" role="tablist">
+          <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#api-doc-auth">认证</button></li>
+          <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#api-doc-mos">MOS评分</button></li>
+          <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#api-doc-restoration">音频修复</button></li>
+          <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#api-doc-ref">参考音频</button></li>
+          <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#api-doc-asr">ASR识别</button></li>
+        </ul>
+
+        <div class="tab-content">
+
+          <!-- ═══════════ 1. 认证 Auth ═══════════ -->
+          <div class="tab-pane fade show active" id="api-doc-auth">
+            <h5 class="border-bottom pb-2"><i class="bi bi-key-fill"></i> 认证 Auth</h5>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/auth/login</div>
+              <div class="card-body">
+                <p>用户登录并获取 JWT Token。Token 有效期由服务端配置决定。</p>
+                <h6>请求参数</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                <tbody><tr><td>username</td><td>String</td><td>是</td><td>用户名（OAuth2 form-data 格式）</td></tr>
+                <tr><td>password</td><td>String</td><td>是</td><td>密码</td></tr></tbody></table>
+                <h6>响应</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "bearer"
+}</code></pre>
+                <h6>示例</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>curl -X POST {BASE}/api/auth/login \
+  -F "username=admin" \
+  -F "password=admin123"</code></pre>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-primary me-2">GET</span> /api/auth/me <span class="badge bg-warning text-dark">JWT</span></div>
+              <div class="card-body">
+                <p>获取当前登录用户信息（用户名、角色、激活状态等）。</p>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>curl -H "Authorization: Bearer &lt;token&gt;" {BASE}/api/auth/me</code></pre>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/auth/logout <span class="badge bg-warning text-dark">JWT</span></div>
+              <div class="card-body">
+                <p>用户登出，服务端记录登出日志。</p>
+                <h6>响应</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>{"message": "登出成功"}</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- ═══════════ 2. MOS 评分 ═══════════ -->
+          <div class="tab-pane fade" id="api-doc-mos">
+            <h5 class="border-bottom pb-2"><i class="bi bi-star-fill"></i> MOS 评分</h5>
+            <p class="text-muted">MOS（Mean Opinion Score）评分系统：上传音频 → 提交任务 → 轮询/WebSocket 获取进度 → 下载 Excel 报告。</p>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/mos/upload</div>
+              <div class="card-body">
+                <p>上传音频文件（支持批量），返回 task_id 用于后续操作。</p>
+                <h6>请求参数（multipart/form-data）</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                <tbody><tr><td>files</td><td>File[]</td><td>是</td><td>音频文件列表，支持 .wav/.mp3/.flac 等格式</td></tr>
+                <tr><td>metrics</td><td>String(JSON)</td><td>否</td><td>可选评分指标配置，JSON 字符串</td></tr></tbody></table>
+                <h6>响应</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>{
+  "task_id": "uuid-string",
+  "message": "上传成功",
+  "file_count": 3
+}</code></pre>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/mos/process/{task_id}</div>
+              <div class="card-body">
+                <p>提交 MOS 评分任务到计算队列。上传完成后必须调用此接口开始评分。</p>
+                <h6>路径参数</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>说明</th></tr></thead>
+                <tbody><tr><td>task_id</td><td>上传接口返回的任务 ID</td></tr></tbody></table>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-primary me-2">GET</span> /api/mos/tasks/{task_id}</div>
+              <div class="card-body">
+                <p>获取单个任务状态和结果。任务完成后 response 中包含完整评分数据。</p>
+                <h6>响应字段</h6>
+                <table class="table table-sm"><thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+                <tbody><tr><td>task_id</td><td>String</td><td>任务唯一标识</td></tr>
+                <tr><td>status</td><td>String</td><td>queued / processing / completed / failed</td></tr>
+                <tr><td>progress</td><td>Int</td><td>进度百分比 0-100</td></tr>
+                <tr><td>message</td><td>String</td><td>当前步骤描述</td></tr>
+                <tr><td>results</td><td>Object[]</td><td>评分结果列表（完成后）</td></tr>
+                <tr><td>processing_time</td><td>Float</td><td>处理耗时（秒）</td></tr></tbody></table>
+              </div>
+            </div>
+
+            <h6 class="mt-3">其他端点</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:230px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/mos/tasks</code></td><td>获取当前用户所有任务列表（分页）</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/mos/results/{task_id}</code></td><td>获取任务详细评分结果数据</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/mos/download/{task_id}</code></td><td>下载评分结果 Excel 文件</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/mos/audio/{task_id}/{filename}</code></td><td>获取原始音频（试听），支持 ?token= 查询参数</td><td><span class="badge bg-info">Token</span></td></tr>
+                <tr><td><span class="badge bg-danger">DELETE</span></td><td><code>/api/mos/tasks/{task_id}</code></td><td>删除任务及关联文件</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/mos/performance</code></td><td>获取 MOS 计算性能统计</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-info">WS</span></td><td><code>/api/mos/ws/{task_id}</code></td><td>WebSocket 实时进度推送（公开）</td><td><span class="badge bg-secondary">公开</span></td></tr>
+              </tbody>
+            </table>
+
+            <h6 class="mt-3">典型调用流程</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code># 1. 登录获取 token
+TOKEN=$(curl -s -X POST {BASE}/api/auth/login -F "username=admin" -F "password=admin123" | jq -r '.access_token')
+
+# 2. 上传音频
+TASK_ID=$(curl -s -X POST {BASE}/api/mos/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "files=@audio1.wav" -F "files=@audio2.wav" | jq -r '.task_id')
+
+# 3. 提交处理
+curl -X POST {BASE}/api/mos/process/$TASK_ID -H "Authorization: Bearer $TOKEN"
+
+# 4. 轮询任务状态直到 completed
+curl -s {BASE}/api/mos/tasks/$TASK_ID -H "Authorization: Bearer $TOKEN" | jq '.status'
+
+# 5. 下载 Excel 报告
+curl -o result.xlsx {BASE}/api/mos/download/$TASK_ID -H "Authorization: Bearer $TOKEN"</code></pre>
+          </div>
+
+          <!-- ═══════════ 3. 音频修复 ═══════════ -->
+          <div class="tab-pane fade" id="api-doc-restoration">
+            <h5 class="border-bottom pb-2"><i class="bi bi-tools"></i> 音频修复</h5>
+            <p class="text-muted">音频降噪/去混响/超分等修复处理，支持单文件和批量模式。</p>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-primary me-2">GET</span> /api/restoration/algorithms</div>
+              <div class="card-body">
+                <p>获取所有可用的音频修复算法列表及其参数信息。</p>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>curl -H "Authorization: Bearer &lt;token&gt;" {BASE}/api/restoration/algorithms</code></pre>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/restoration/upload</div>
+              <div class="card-body">
+                <p>上传单个音频文件并指定修复算法。</p>
+                <h6>请求参数</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                <tbody><tr><td>file</td><td>File</td><td>是</td><td>音频文件</td></tr>
+                <tr><td>algorithm</td><td>String</td><td>是</td><td>修复算法名称（从 /algorithms 获取）</td></tr></tbody></table>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/restoration/process/{task_id}</div>
+              <div class="card-body">
+                <p>提交修复任务到处理队列。</p>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/restoration/batch/upload</div>
+              <div class="card-body">
+                <p>批量上传音频文件并立即开始修复处理（一步完成上传+处理）。</p>
+                <h6>请求参数</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                <tbody><tr><td>files</td><td>File[]</td><td>是</td><td>多个音频文件</td></tr>
+                <tr><td>algorithm</td><td>String</td><td>是</td><td>修复算法名称</td></tr></tbody></table>
+              </div>
+            </div>
+
+            <h6 class="mt-3">单文件修复完整端点</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:250px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-success">POST</span></td><td><code>/api/restoration/upload-batch</code></td><td>批量上传音频文件</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/restoration/tasks</code></td><td>获取当前用户所有任务列表</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/restoration/tasks/{task_id}</code></td><td>获取任务状态与结果</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/restoration/source/{task_id}</code></td><td>获取原始音频（试听对比），支持 ?token=</td><td><span class="badge bg-info">Token</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/restoration/download/{task_id}</code></td><td>下载修复后的音频文件，支持 ?token=</td><td><span class="badge bg-info">Token</span></td></tr>
+                <tr><td><span class="badge bg-danger">DELETE</span></td><td><code>/api/restoration/tasks/{task_id}</code></td><td>删除任务及关联文件</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/restoration/gpu-status</code></td><td>获取 GPU 显存使用状态</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-info">WS</span></td><td><code>/api/restoration/ws/{task_id}</code></td><td>WebSocket 实时进度推送（公开）</td><td><span class="badge bg-secondary">公开</span></td></tr>
+              </tbody>
+            </table>
+
+            <h6 class="mt-3">批量修复端点</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:275px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/restoration/batch/tasks</code></td><td>批量任务列表</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/restoration/batch/tasks/{batch_id}</code></td><td>批量任务状态</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/restoration/batch/download/{batch_id}/{filename}</code></td><td>下载批量结果中的单个文件</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-danger">DELETE</span></td><td><code>/api/restoration/batch/tasks/{batch_id}</code></td><td>删除批量任务</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+              </tbody>
+            </table>
+
+            <h6 class="mt-3">典型调用流程</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code># 单文件修复
+TOKEN=$(curl -s -X POST {BASE}/api/auth/login -F "username=admin" -F "password=admin123" | jq -r '.access_token')
+
+TASK_ID=$(curl -s -X POST {BASE}/api/restoration/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@noisy.wav" -F "algorithm=denoiser" | jq -r '.task_id')
+
+curl -X POST {BASE}/api/restoration/process/$TASK_ID -H "Authorization: Bearer $TOKEN"
+
+# 等待完成后下载
+curl -o restored.wav {BASE}/api/restoration/download/$TASK_ID -H "Authorization: Bearer $TOKEN"
+
+# 批量修复（一步完成）
+curl -X POST {BASE}/api/restoration/batch/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "files=@a.wav" -F "files=@b.wav" -F "algorithm=denoiser"</code></pre>
+          </div>
+
+          <!-- ═══════════ 4. 参考音频 ═══════════ -->
+          <div class="tab-pane fade" id="api-doc-ref">
+            <h5 class="border-bottom pb-2"><i class="bi bi-file-music-fill"></i> 参考音频库</h5>
+            <p class="text-muted">管理参考音频文件，支持上传、下载、编辑描述和 Ground Truth 文本，以及基于指纹的内容匹配。</p>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-primary me-2">GET</span> /api/reference-audio/list</div>
+              <div class="card-body">
+                <p>获取所有参考音频列表，包含文件名、时长、采样率、描述、Ground Truth 等信息。</p>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/reference-audio/upload</div>
+              <div class="card-body">
+                <p>上传单个参考音频文件。</p>
+                <h6>请求参数</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                <tbody><tr><td>file</td><td>File</td><td>是</td><td>音频文件</td></tr>
+                <tr><td>description</td><td>String</td><td>否</td><td>音频描述信息</td></tr></tbody></table>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-warning me-2">PUT</span> /api/reference-audio/update/{audio_id}</div>
+              <div class="card-body">
+                <p>更新参考音频的描述文本和 Ground Truth 文本（用于 WER 评估）。</p>
+                <h6>请求体 (JSON)</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>{
+  "description": "音频描述",
+  "ground_truth": "这段音频的正确转写文本"
+}</code></pre>
+              </div>
+            </div>
+
+            <h6 class="mt-3">其他端点</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:270px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-success">POST</span></td><td><code>/api/reference-audio/upload-batch</code></td><td>批量上传参考音频</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/reference-audio/detail/{audio_id}</code></td><td>获取单个音频详细信息</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/reference-audio/download/{audio_id}</code></td><td>下载参考音频文件，支持 ?token=</td><td><span class="badge bg-info">Token</span></td></tr>
+                <tr><td><span class="badge bg-danger">DELETE</span></td><td><code>/api/reference-audio/delete/{audio_id}</code></td><td>删除单个参考音频</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-danger">DELETE</span></td><td><code>/api/reference-audio/</code></td><td>清空所有参考音频（谨慎操作）</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/reference-audio/check/status</code></td><td>检查音频文件完整性状态</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+              </tbody>
+            </table>
+
+            <h6 class="mt-3">指纹匹配（内容识别）</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:280px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-success">POST</span></td><td><code>/api/reference-audio/fingerprint/build</code></td><td>建立/重建音频指纹数据库</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/reference-audio/fingerprint/status</code></td><td>获取指纹数据库状态</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-success">POST</span></td><td><code>/api/reference-audio/fingerprint/match-test</code></td><td>测试音频内容匹配</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- ═══════════ 5. ASR 语音识别 ═══════════ -->
+          <div class="tab-pane fade" id="api-doc-asr">
+            <h5 class="border-bottom pb-2"><i class="bi bi-mic-fill"></i> ASR 语音识别</h5>
+            <p class="text-muted">Automatic Speech Recognition：语音转文字、算法对比评测（Benchmark）、公开测评榜单。</p>
+
+            <!-- 5a. 外部 API -->
+            <h6><i class="bi bi-box-arrow-up-right"></i> 第三方调用接口（外部 API）</h6>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/asr/v1/recognize <span class="badge bg-info">X-API-Key / JWT</span></div>
+              <div class="card-body">
+                <p>核心识别接口：上传音频文件，同步返回转写结果。支持 <strong>X-API-Key</strong> 或 <strong>JWT Bearer Token</strong> 两种认证方式。</p>
+                <h6>请求参数（multipart/form-data）</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>默认值</th><th>说明</th></tr></thead>
+                <tbody>
+                  <tr><td>audio_file</td><td>File</td><td>是</td><td>-</td><td>音频文件，支持 .wav/.mp3/.flac 等</td></tr>
+                  <tr><td>algorithm</td><td>String</td><td>否</td><td>paraformer-large</td><td>ASR 算法名称</td></tr>
+                  <tr><td>language</td><td>String</td><td>否</td><td>zh</td><td>语言代码（zh/en）</td></tr>
+                </tbody></table>
+                <h6>响应</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>{
+  "text": "今天天气真好适合出去散步",
+  "language": "zh",
+  "rtf": 0.0342,
+  "processing_time": 0.891,
+  "segments": [
+    {"start": 0.0, "end": 1.2, "text": "今天天气真好", "confidence": 0.98},
+    {"start": 1.2, "end": 2.8, "text": "适合出去散步", "confidence": 0.95}
+  ]
+}</code></pre>
+                <h6>示例</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code># 使用 X-API-Key 认证
+curl -X POST {BASE}/api/asr/v1/recognize \
+  -H "X-API-Key: your-api-key" \
+  -F "audio_file=@speech.wav" \
+  -F "algorithm=paraformer-large" \
+  -F "language=zh"
+
+# 使用 JWT 认证
+curl -X POST {BASE}/api/asr/v1/recognize \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -F "audio_file=@speech.wav"</code></pre>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-primary me-2">GET</span> /api/asr/v1/algorithms <span class="badge bg-success">公开</span></div>
+              <div class="card-body">
+                <p>获取所有可用 ASR 算法列表，无需认证。</p>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>curl {BASE}/api/asr/v1/algorithms</code></pre>
+              </div>
+            </div>
+
+            <!-- 5b. 转写任务 -->
+            <h6 class="mt-4"><i class="bi bi-journal-text"></i> 转写任务（Web 端使用）</h6>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/asr/transcribe</div>
+              <div class="card-body">
+                <p>上传单个音频文件创建转写任务。返回 task_id，通过 WebSocket 或轮询获取结果。</p>
+                <h6>请求参数（multipart/form-data）</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                <tbody>
+                  <tr><td>audio_file</td><td>File</td><td>是</td><td>音频文件</td></tr>
+                  <tr><td>algorithm</td><td>String</td><td>否</td><td>ASR 算法名称</td></tr>
+                  <tr><td>language</td><td>String</td><td>否</td><td>语言代码（zh/en），默认 zh</td></tr>
+                  <tr><td>reference_text</td><td>String</td><td>否</td><td>参考文本（用于自动计算 CER）</td></tr>
+                </tbody></table>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/asr/transcribe/batch</div>
+              <div class="card-body">
+                <p>批量上传多个音频文件进行转写。</p>
+                <h6>请求参数</h6>
+                <table class="table table-sm"><thead><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                <tbody>
+                  <tr><td>files</td><td>File[]</td><td>是</td><td>多个音频文件</td></tr>
+                  <tr><td>algorithm</td><td>String</td><td>否</td><td>ASR 算法名称</td></tr>
+                  <tr><td>reference_texts</td><td>String(JSON)</td><td>否</td><td>参考文本 JSON 字符串</td></tr></tbody></table>
+              </div>
+            </div>
+
+            <h6 class="mt-3">任务管理端点</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:250px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/algorithms</code></td><td>获取所有算法及初始化状态</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-success">POST</span></td><td><code>/api/asr/algorithms/{name}/initialize</code></td><td>初始化/加载算法模型到内存</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-success">POST</span></td><td><code>/api/asr/algorithms/{name}/unload</code></td><td>卸载算法释放 GPU 显存</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/tasks</code></td><td>获取当前用户所有转写任务</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/tasks/{task_id}</code></td><td>获取任务状态与转写结果</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-success">POST</span></td><td><code>/api/asr/tasks/{task_id}/cancel</code></td><td>取消正在执行的任务</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-danger">DELETE</span></td><td><code>/api/asr/tasks/{task_id}</code></td><td>删除任务及关联文件</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+              </tbody>
+            </table>
+
+            <h6 class="mt-3">典型调用流程</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>TOKEN=$(curl -s -X POST {BASE}/api/auth/login -F "username=admin" -F "password=admin123" | jq -r '.access_token')
+
+# 初始化算法
+curl -X POST {BASE}/api/asr/algorithms/paraformer-large/initialize \
+  -H "Authorization: Bearer $TOKEN"
+
+# 上传转写
+TASK_ID=$(curl -s -X POST {BASE}/api/asr/transcribe \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "audio_file=@speech.wav" \
+  -F "algorithm=paraformer-large" \
+  -F "reference_text=今天天气真好" | jq -r '.task_id')
+
+# 轮询结果
+while true; do
+  STATUS=$(curl -s {BASE}/api/asr/tasks/$TASK_ID -H "Authorization: Bearer $TOKEN" | jq -r '.status')
+  if [ "$STATUS" = "completed" ]; then break; fi
+  sleep 1
+done
+
+# 获取转写文本
+curl -s {BASE}/api/asr/tasks/$TASK_ID -H "Authorization: Bearer $TOKEN" | jq '.result.text'</code></pre>
+
+            <!-- 5c. Benchmark -->
+            <h6 class="mt-4"><i class="bi bi-graph-up"></i> Benchmark 测评</h6>
+
+            <div class="card mb-3">
+              <div class="card-header fw-bold"><span class="badge bg-success me-2">POST</span> /api/asr/benchmark/run</div>
+              <div class="card-body">
+                <p>启动 ASR 算法 Benchmark 评测。已评测过的（算法+数据集）组合会自动读取缓存，不重复计算。</p>
+                <h6>请求体 (JSON)</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code>{
+  "algorithms": ["paraformer-large", "sensevoice-small"],
+  "dataset": "builtin",
+  "max_samples": 100,
+  "metrics": ["cer", "wer", "rtf"]
+}</code></pre>
+                <table class="table table-sm"><thead><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+                <tbody>
+                  <tr><td>algorithms</td><td>String[]</td><td>是</td><td>待评测的算法名称列表</td></tr>
+                  <tr><td>dataset</td><td>String</td><td>是</td><td>数据集标识（如 builtin/aishell1_test）</td></tr>
+                  <tr><td>max_samples</td><td>Int</td><td>否</td><td>最大评测样本数，默认 100</td></tr>
+                  <tr><td>metrics</td><td>String[]</td><td>否</td><td>评测指标，默认 ["cer","wer","rtf"]</td></tr>
+                </tbody></table>
+              </div>
+            </div>
+
+            <h6 class="mt-3">Benchmark 端点</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:255px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/datasets</code></td><td>获取可用评测数据集列表</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/benchmark</code></td><td>获取所有 Benchmark 列表</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/benchmark/{bench_id}</code></td><td>获取 Benchmark 状态与结果</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/benchmark/{bench_id}/ranking</code></td><td>获取 Benchmark 排名</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/benchmark/{bench_id}/report</code></td><td>下载评测报告（支持 ?token= &amp; ?format=json）</td><td><span class="badge bg-info">Token</span></td></tr>
+              </tbody>
+            </table>
+
+            <h6 class="mt-3">Benchmark 调用示例</h6>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code># 启动测评
+BENCH_ID=$(curl -s -X POST {BASE}/api/asr/benchmark/run \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"algorithms":["paraformer-large"],"dataset":"builtin","max_samples":50}' | jq -r '.bench_id')
+
+# 轮询状态
+curl -s {BASE}/api/asr/benchmark/$BENCH_ID -H "Authorization: Bearer $TOKEN" | jq '{status,progress}'
+
+# 下载报告
+curl -o report.json "{BASE}/api/asr/benchmark/$BENCH_ID/report?token=$TOKEN&format=json"</code></pre>
+
+            <!-- 5d. 榜单 -->
+            <h6 class="mt-4"><i class="bi bi-trophy-fill"></i> 测评榜单（公开）</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:255px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/leaderboard</code></td><td>获取所有数据集的完整榜单</td><td><span class="badge bg-success">公开</span></td></tr>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/leaderboard/{dataset_key}</code></td><td>获取指定数据集的排序榜单</td><td><span class="badge bg-success">公开</span></td></tr>
+                <tr><td><span class="badge bg-success">POST</span></td><td><code>/api/asr/leaderboard/refresh</code></td><td>手动刷新榜单（从历史结果重建）</td><td><span class="badge bg-warning text-dark">JWT</span></td></tr>
+              </tbody>
+            </table>
+<pre class="bg-dark text-light p-2 rounded" style="font-size:12px"><code># 公开接口，无需认证
+curl {BASE}/api/asr/leaderboard/builtin | jq '.entries[:3]'</code></pre>
+
+            <!-- 5e. 健康检查 -->
+            <h6 class="mt-4"><i class="bi bi-heart-pulse"></i> 健康检查</h6>
+            <table class="table table-sm table-hover">
+              <thead><tr><th style="width:80px">方法</th><th style="width:200px">路径</th><th>说明</th><th style="width:70px">认证</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge bg-primary">GET</span></td><td><code>/api/asr/health</code></td><td>GPU/队列/模型就绪状态，公开</td><td><span class="badge bg-success">公开</span></td></tr>
+                <tr><td><span class="badge bg-info">WS</span></td><td><code>/api/asr/ws/{task_id}</code></td><td>WebSocket 实时进度推送，公开</td><td><span class="badge bg-secondary">公开</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+        </div><!-- /tab-content -->
+
+        <!-- 认证标识说明 -->
+        <div class="mt-4 border-top pt-3">
+          <small class="text-muted">
+            <strong>认证标识说明：</strong>
+            <span class="badge bg-success">公开</span> 无需认证 &nbsp;
+            <span class="badge bg-warning text-dark">JWT</span> Bearer Token &nbsp;
+            <span class="badge bg-info">Token</span> Query Token / JWT &nbsp;
+            <span class="badge bg-info">X-API-Key</span> 仅限 ASR 外部接口
+          </small>
+        </div>
+      </div><!-- /modal-body -->
     </div>
   </div>
 </div>

@@ -1825,6 +1825,10 @@ checkAuth();
 // 事件绑定 — DOM 已就绪
 $('login-form').addEventListener('submit', handleLogin);
 $('logout-btn').addEventListener('click', handleLogout);
+$('api-doc-btn').addEventListener('click', () => {
+  $('api-doc-base-url').textContent = window.location.origin;
+  new bootstrap.Modal($('api-doc-modal')).show();
+});
 
 // 初始化各页面
 initMosPage();
