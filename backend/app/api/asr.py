@@ -25,6 +25,7 @@ from app.core.task_queue import TaskQueue, Task, TaskStatus
 from app.core.websocket import ConnectionManager
 
 import torch
+import numpy as np
 
 # 导入ASR模块
 project_root = str(Path(__file__).parent.parent.parent.parent)
@@ -49,12 +50,13 @@ except ImportError as e:
 
 
 def _ensure_asr_available():
-    """依赖项：确保ASR模块可用"""
+    """依赖项：确保ASR模块可用（WebSocket 安全：不抛 HTTPException）"""
     if not ASR_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="ASR模块不可用",
-        )
+        from fastapi import WebSocket
+        from starlette.requests import Request
+        # WebSocket 连接中不能抛 HTTPException（会导致静默 403 关闭）
+        # 改为在 handler 内部检查
+        pass
 
 
 def _safe_create_task(coro, log_prefix="[ASR]"):
@@ -72,6 +74,9 @@ router = APIRouter(
     tags=["ASR语音识别"],
     dependencies=[Depends(_ensure_asr_available)],
 )
+
+# WebSocket 专用路由（不带依赖，避免 FastAPI 对 WS 静默关闭连接）
+ws_router = APIRouter(prefix="/asr")
 
 # 确保目录存在
 asr_upload_dir = os.path.join(settings.paths.upload_dir, "asr")
@@ -1353,6 +1358,189 @@ async def asr_ws_endpoint(websocket: WebSocket, task_id: str):
         pass
     finally:
         asr_manager.disconnect(task_id)
+
+
+# ── 流式转录全局模型缓存 ──
+_streaming_asr_instance: Optional[Any] = None
+_streaming_lock = asyncio.Lock()
+
+
+async def _get_or_init_streaming_model(algorithm: str = "qwen3-asr") -> Any:
+    """获取或初始化支持流式转录的ASR模型实例"""
+    global _streaming_asr_instance
+    async with _streaming_lock:
+        if _streaming_asr_instance and _streaming_asr_instance.is_initialized():
+            return _streaming_asr_instance
+
+        if not ASR_AVAILABLE:
+            raise RuntimeError("ASR模块不可用")
+
+        instance = ASRRegistry.get(
+            algorithm, device=_get_device(),
+            model_dir=os.path.join(asr_model_dir, algorithm),
+            offline=settings.asr.offline,
+            use_vllm=True,
+        )
+        if not instance:
+            raise ValueError(f"未知的ASR算法: {algorithm}")
+
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, instance.initialize)
+        if not success:
+            raise RuntimeError(f"算法 {algorithm} 初始化失败")
+
+        if not instance.supports_streaming():
+            raise RuntimeError(
+                f"算法 {algorithm} 不支持流式转录。"
+                "Qwen3-ASR流式转录需要vLLM后端 (pip install qwen-asr[vllm])"
+            )
+
+        _streaming_asr_instance = instance
+        return instance
+
+
+@router.websocket("/streaming-ws")
+async def asr_streaming_ws(websocket: WebSocket):
+    """
+    流式转录 WebSocket 端点
+
+    协议:
+    1. 客户端连接后发送 JSON 配置: {"type": "config", "algorithm": "qwen3-asr", "language": "zh"}
+    2. 服务端响应: {"type": "ready", "algorithm": "qwen3-asr"}
+    3. 客户端持续发送二进制音频块 (16kHz, 16bit PCM, 单声道)
+    4. 服务端逐块返回: {"type": "partial", "text": "...", "language": "Chinese"}
+    5. 客户端发送: {"type": "finish"} 结束转录
+    6. 服务端返回: {"type": "final", "text": "...", "language": "Chinese"}
+    """
+    logger.info("[ASR-Streaming] WebSocket 连接请求到达")
+    await websocket.accept()
+    logger.info("[ASR-Streaming] WebSocket 已接受")
+    algorithm = "qwen3-asr"
+    asr_instance = None
+    streaming_state = None
+    chunk_count = 0
+
+    try:
+        # 等待客户端发送配置
+        config_msg = await websocket.receive_json()
+        logger.info(f"[ASR-Streaming] 收到配置: {config_msg}")
+        if config_msg.get("type") != "config":
+            await websocket.send_json({"type": "error", "message": "请先发送配置消息"})
+            return
+
+        algorithm = config_msg.get("algorithm", "qwen3-asr")
+
+        # 初始化流式模型（带超时）
+        try:
+            asr_instance = await asyncio.wait_for(
+                _get_or_init_streaming_model(algorithm),
+                timeout=120,
+            )
+            logger.info(f"[ASR-Streaming] 模型初始化成功: {algorithm}, supports_streaming={asr_instance.supports_streaming()}")
+        except asyncio.TimeoutError:
+            logger.error("[ASR-Streaming] 模型初始化超时(120s)")
+            await websocket.send_json({"type": "error", "message": "模型初始化超时，请稍后重试"})
+            return
+        except Exception as e:
+            import traceback
+            logger.error(f"[ASR-Streaming] 模型初始化失败: {e}\n{traceback.format_exc()}")
+            await websocket.send_json({"type": "error", "message": str(e)})
+            return
+
+        # 初始化流式状态
+        loop = asyncio.get_event_loop()
+
+        def _init_state():
+            return asr_instance.init_streaming_state()
+
+        streaming_state = await loop.run_in_executor(None, _init_state)
+        logger.info(f"[ASR-Streaming] 流式状态初始化完成")
+
+        await websocket.send_json({
+            "type": "ready",
+            "algorithm": algorithm,
+        })
+
+        logger.info(f"[ASR-Streaming] 流式转录会话开始: algorithm={algorithm}")
+
+        # 主循环：接收音频块并流式转录
+        while True:
+            msg = await websocket.receive()
+
+            # 处理文本消息（控制指令）
+            if "text" in msg:
+                import json as _json
+                try:
+                    ctrl = _json.loads(msg["text"])
+                except Exception:
+                    ctrl = {}
+
+                logger.info(f"[ASR-Streaming] 收到控制消息: {ctrl}")
+
+                if ctrl.get("type") == "finish":
+                    # 客户端请求结束
+                    def _finish():
+                        return asr_instance.finish_streaming_transcribe(streaming_state)
+                    result = await loop.run_in_executor(None, _finish)
+                    await websocket.send_json({
+                        "type": "final",
+                        "text": result.get("text", ""),
+                        "language": result.get("language", ""),
+                    })
+                    logger.info(f"[ASR-Streaming] 流式转录完成: text={result.get('text', '')!r}, chunks={chunk_count}")
+                    return
+
+                continue
+
+            # 处理二进制音频数据
+            if "bytes" in msg:
+                audio_bytes = msg["bytes"]
+                if not audio_bytes:
+                    continue
+
+                chunk_count += 1
+
+                # 16bit PCM -> float32
+                audio_chunk = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+                if chunk_count <= 3 or chunk_count % 20 == 0:
+                    logger.info(f"[ASR-Streaming] 收到音频块 #{chunk_count}: {len(audio_bytes)} 字节, {len(audio_chunk)} 采样点")
+
+                # 流式转录
+                def _stream_transcribe(chunk=audio_chunk, state=streaming_state):
+                    return asr_instance.streaming_transcribe(chunk, state)
+
+                result = await loop.run_in_executor(None, _stream_transcribe)
+
+                text = result.get("text", "")
+                lang = result.get("language", "")
+
+                if chunk_count <= 3 or chunk_count % 20 == 0 or text:
+                    logger.info(f"[ASR-Streaming] 块 #{chunk_count} 转写结果: text={text!r}, lang={lang!r}")
+
+                await websocket.send_json({
+                    "type": "partial",
+                    "text": text,
+                    "language": lang,
+                })
+
+    except WebSocketDisconnect:
+        logger.info(f"[ASR-Streaming] 客户端断开连接, 已处理 {chunk_count} 个音频块")
+    except Exception as e:
+        logger.error(f"[ASR-Streaming] 流式转录异常: {e}")
+        import traceback
+        logger.error(f"[ASR-Streaming] 堆栈: {traceback.format_exc()}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        # 清理流式状态
+        if asr_instance and streaming_state:
+            try:
+                asr_instance.finish_streaming_transcribe(streaming_state)
+            except Exception:
+                pass
 
 
 # ===========================

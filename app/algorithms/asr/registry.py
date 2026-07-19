@@ -181,7 +181,7 @@ ASR_ALGORITHM_DESCRIPTIONS = {
     },
     "qwen3-asr": {
         "display_name": "Qwen3-ASR-1.7B",
-        "description": "通义千问ASR，支持22种中文方言，统一流式/非流式架构",
+        "description": "通义千问ASR，支持22种中文方言，统一流式/非流式架构（流式需vLLM后端）",
         "architecture": "AuT音频编码器 + Qwen3 LLM",
         "params": "1.7B",
         "cer_aishell1": "~3.76%",
@@ -189,7 +189,7 @@ ASR_ALGORITHM_DESCRIPTIONS = {
         "languages": ["zh", "en", "52种语言"],
         "license": "Apache 2.0",
         "preload": False,
-        "tags": ["方言", "流式", "千问"],
+        "tags": ["方言", "流式", "千问", "vLLM"],
     },
     "funasr-llm": {
         "display_name": "Fun-ASR-Nano (800M)",

@@ -2082,6 +2082,9 @@ function initAsrPage() {
 
   // 提交benchmark
   $('asr-benchmark-btn').addEventListener('click', submitAsrBenchmark);
+
+  // 初始化流式转录
+  initStreamingTranscription();
 }
 
 function updateAsrFileInfo() {
@@ -2274,4 +2277,250 @@ function showAsrBenchmarkResult(benchData) {
     detailHtml += `</div></div>`;
   }
   $('asr-detail-metrics').innerHTML = detailHtml;
+}
+
+// ==================== ASR 流式转录 ====================
+let _streamingWs = null;        // WebSocket连接
+let _streamingAudioCtx = null;  // AudioContext
+let _streamingMediaStream = null;  // 麦克风MediaStream
+let _streamingProcessor = null;    // ScriptProcessorNode
+let _streamingTimer = null;        // 计时器
+let _streamingStartTime = 0;       // 开始时间
+let _streamingText = '';           // 累积文本
+
+function initStreamingTranscription() {
+  $('streaming-start-btn').addEventListener('click', startStreaming);
+  $('streaming-stop-btn').addEventListener('click', stopStreaming);
+}
+
+function streamingLog(msg) {
+  const ts = new Date().toLocaleTimeString();
+  const line = `[${ts}] ${msg}`;
+  console.log(line);
+  const el = document.getElementById('streaming-log');
+  if (el) {
+    el.textContent += line + '\n';
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+function getWsBaseUrl() {
+  // 从当前页面URL推导WebSocket地址
+  const loc = window.location;
+  const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${loc.host}`;
+}
+
+async function startStreaming() {
+  const startBtn = $('streaming-start-btn');
+  const stopBtn = $('streaming-stop-btn');
+  const statusDiv = $('streaming-status');
+  const textDiv = $('streaming-text');
+  const errorDiv = $('streaming-error');
+
+  // 重置状态
+  _streamingText = '';
+  errorDiv.classList.add('d-none');
+
+  // 检查安全上下文（getUserMedia 需要 HTTPS 或 localhost）
+  if (!window.isSecureContext) {
+    showStreamingError(
+      '麦克风访问需要安全上下文（HTTPS 或 localhost）。' +
+      '请使用 https:// 访问页面，或通过 localhost 访问。'
+    );
+    return;
+  }
+
+  // 检查浏览器是否支持 getUserMedia
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showStreamingError('当前浏览器不支持麦克风采集，请使用 Chrome/Edge 最新版');
+    return;
+  }
+
+  textDiv.innerHTML = '<span class="text-muted">请求麦克风权限...</span>';
+
+  try {
+    // 1. 获取麦克风权限
+    _streamingMediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        sampleRate: 16000,
+        echoCancellation: true,
+        noiseSuppression: true,
+      }
+    });
+    streamingLog('麦克风权限已获取, tracks: ' + _streamingMediaStream.getTracks().length);
+
+    // 2. 建立 WebSocket 连接
+    const wsUrl = `${getWsBaseUrl()}/api/asr/streaming-ws`;
+    streamingLog('连接 WebSocket: ' + wsUrl);
+    _streamingWs = new WebSocket(wsUrl);
+
+    _streamingWs.onopen = async () => {
+      streamingLog('WebSocket 已连接');
+      // 发送配置
+      const configMsg = JSON.stringify({
+        type: 'config',
+        algorithm: 'qwen3-asr',
+        language: 'zh',
+      });
+      _streamingWs.send(configMsg);
+      streamingLog('已发送配置: ' + configMsg);
+    };
+
+    _streamingWs.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      streamingLog('收到消息: ' + data.type + ' ' + JSON.stringify(data).substring(0, 200));
+      handleStreamingMessage(data);
+    };
+
+    _streamingWs.onerror = (e) => {
+      streamingLog('WebSocket 错误');
+      showStreamingError('WebSocket连接错误');
+    };
+
+    _streamingWs.onclose = (e) => {
+      streamingLog('WebSocket 关闭, code=' + e.code + ' reason=' + e.reason);
+      // 如果非主动关闭，提示
+      if (_streamingMediaStream) {
+        showStreamingError('WebSocket连接已断开');
+      }
+    };
+
+    // 等待 ready 消息（由 handleStreamingMessage 处理）
+    // 稍后启动音频采集
+    await new Promise(r => setTimeout(r, 500));
+
+    // 3. 启动音频采集
+    _streamingAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    streamingLog('AudioContext 创建, sampleRate=' + _streamingAudioCtx.sampleRate);
+    const source = _streamingAudioCtx.createMediaStreamSource(_streamingMediaStream);
+
+    // 使用 ScriptProcessorNode 采集 PCM 数据
+    // bufferSize=4096 对应约 256ms @16kHz
+    _streamingProcessor = _streamingAudioCtx.createScriptProcessor(4096, 1, 1);
+
+    let _chunkCount = 0;
+    _streamingProcessor.onaudioprocess = (e) => {
+      if (!_streamingWs || _streamingWs.readyState !== WebSocket.OPEN) return;
+
+      const float32Data = e.inputBuffer.getChannelData(0);
+      // float32 -> int16 PCM
+      const int16Data = new Int16Array(float32Data.length);
+      for (let i = 0; i < float32Data.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32Data[i]));
+        int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      _streamingWs.send(int16Data.buffer);
+      _chunkCount++;
+      if (_chunkCount % 20 === 1) {
+        streamingLog('已发送 ' + _chunkCount + ' 个音频块, ' + int16Data.length + ' 采样点, ' + int16Data.buffer.byteLength + ' 字节');
+      }
+    };
+
+    source.connect(_streamingProcessor);
+    _streamingProcessor.connect(_streamingAudioCtx.destination);
+
+    // 更新 UI
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    statusDiv.classList.remove('d-none');
+    _streamingStartTime = Date.now();
+    _streamingTimer = setInterval(updateStreamingTimer, 1000);
+    textDiv.innerHTML = '<span class="text-muted">等待识别结果...</span>';
+
+  } catch (e) {
+    showStreamingError(`启动失败: ${e.message}`);
+    cleanupStreaming();
+  }
+}
+
+function stopStreaming() {
+  // 发送 finish 指令
+  if (_streamingWs && _streamingWs.readyState === WebSocket.OPEN) {
+    _streamingWs.send(JSON.stringify({ type: 'finish' }));
+  }
+  // 等待 final 消息后清理（由 handleStreamingMessage 处理）
+  // 设置超时保护
+  setTimeout(() => {
+    cleanupStreaming();
+  }, 3000);
+}
+
+function handleStreamingMessage(data) {
+  const textDiv = $('streaming-text');
+  const startBtn = $('streaming-start-btn');
+  const stopBtn = $('streaming-stop-btn');
+
+  switch (data.type) {
+    case 'ready':
+      textDiv.innerHTML = '<span class="text-muted">录音中，请说话...</span>';
+      break;
+
+    case 'partial':
+      // 增量更新文本
+      _streamingText = data.text || '';
+      textDiv.innerHTML = `<span class="streaming-current">${escapeHtml(_streamingText)}</span><span class="streaming-cursor">|</span>`;
+      break;
+
+    case 'final':
+      // 最终结果
+      _streamingText = data.text || '';
+      textDiv.innerHTML = escapeHtml(_streamingText);
+      cleanupStreaming();
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      $('streaming-status').classList.add('d-none');
+      showToast('实时转录完成', 'success');
+      break;
+
+    case 'error':
+      showStreamingError(data.message || '未知错误');
+      cleanupStreaming();
+      break;
+  }
+}
+
+function updateStreamingTimer() {
+  const elapsed = Math.floor((Date.now() - _streamingStartTime) / 1000);
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+  $('streaming-time').textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function showStreamingError(msg) {
+  const errorDiv = $('streaming-error');
+  const errorMsg = $('streaming-error-msg');
+  errorDiv.classList.remove('d-none');
+  errorMsg.textContent = msg;
+  $('streaming-start-btn').disabled = false;
+  $('streaming-stop-btn').disabled = true;
+  $('streaming-status').classList.add('d-none');
+}
+
+function cleanupStreaming() {
+  // 停止计时
+  if (_streamingTimer) { clearInterval(_streamingTimer); _streamingTimer = null; }
+
+  // 关闭音频采集
+  if (_streamingProcessor) { _streamingProcessor.disconnect(); _streamingProcessor = null; }
+  if (_streamingAudioCtx) { _streamingAudioCtx.close().catch(() => {}); _streamingAudioCtx = null; }
+  if (_streamingMediaStream) {
+    _streamingMediaStream.getTracks().forEach(t => t.stop());
+    _streamingMediaStream = null;
+  }
+
+  // 关闭 WebSocket
+  if (_streamingWs) {
+    if (_streamingWs.readyState === WebSocket.OPEN) {
+      _streamingWs.close();
+    }
+    _streamingWs = null;
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }

@@ -342,6 +342,7 @@
           <!-- ASR 子Tab -->
           <ul class="nav nav-pills mb-3" id="asr-tabs" role="tablist">
             <li class="nav-item"><button class="nav-link active" id="asr-tab-recognize" data-bs-toggle="pill" data-bs-target="#asr-pane-recognize">语音识别</button></li>
+            <li class="nav-item"><button class="nav-link" id="asr-tab-streaming" data-bs-toggle="pill" data-bs-target="#asr-pane-streaming">实时转录</button></li>
             <li class="nav-item"><button class="nav-link" id="asr-tab-benchmark" data-bs-toggle="pill" data-bs-target="#asr-pane-benchmark">Benchmark</button></li>
           </ul>
 
@@ -392,6 +393,52 @@
                   <div class="card-body">
                     <h5 class="card-title"><i class="bi bi-chat-square-text"></i> 识别结果</h5>
                     <div id="asr-result-content"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 实时转录子Tab -->
+            <div class="tab-pane fade" id="asr-pane-streaming">
+              <div class="card mb-3">
+                <div class="card-body">
+                  <h5 class="card-title"><i class="bi bi-broadcast"></i> 实时流式转录</h5>
+                  <p class="text-muted small">使用麦克风采集音频，实时转录为文字。需要 Qwen3-ASR vLLM 后端支持。</p>
+
+                  <div class="d-flex gap-2 mb-3">
+                    <button class="btn btn-submit" id="streaming-start-btn">
+                      <i class="bi bi-mic-fill"></i> 开始录音
+                    </button>
+                    <button class="btn btn-outline-secondary" id="streaming-stop-btn" disabled>
+                      <i class="bi bi-stop-fill"></i> 停止录音
+                    </button>
+                  </div>
+
+                  <div id="streaming-status" class="mb-3 d-none">
+                    <span class="badge bg-danger pulse" id="streaming-indicator">
+                      <i class="bi bi-record-fill"></i> 录音中
+                    </span>
+                    <span class="text-muted small ms-2" id="streaming-time">00:00</span>
+                  </div>
+
+                  <!-- 实时转录结果显示 -->
+                  <div class="card bg-light">
+                    <div class="card-body">
+                      <h6 class="card-title"><i class="bi bi-chat-square-text"></i> 转写结果</h6>
+                      <div id="streaming-text" class="streaming-text" style="min-height: 120px; font-size: 1.1rem; line-height: 1.8; white-space: pre-wrap; word-break: break-all;">
+                        <span class="text-muted">等待开始录音...</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div id="streaming-error" class="mt-2 d-none">
+                    <div class="alert alert-danger small" id="streaming-error-msg"></div>
+                  </div>
+
+                  <!-- 调试日志 -->
+                  <div class="mt-2">
+                    <small class="text-muted" style="cursor:pointer" onclick="document.getElementById('streaming-log').classList.toggle('d-none')">[调试日志] 点击展开/收起</small>
+                    <div id="streaming-log" class="d-none mt-1 p-2 bg-dark text-light rounded" style="max-height:200px;overflow-y:auto;font-size:0.7rem;font-family:monospace;white-space:pre-wrap;"></div>
                   </div>
                 </div>
               </div>

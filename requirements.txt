@@ -42,6 +42,12 @@ funasr
 openai-whisper
 wenet
 
+# ===== 语音识别 (Qwen3-ASR 流式转录) =====
+# 非流式: pip install qwen-asr
+# 流式转录: pip install qwen-asr[vllm]
+qwen-asr
+vllm==0.10.2
+
 # ===== 模型框架 =====
 modelscope
 speechbrain

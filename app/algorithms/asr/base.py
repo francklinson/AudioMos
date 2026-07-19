@@ -5,7 +5,7 @@ ASR算法基类
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 import numpy as np
 
 
@@ -91,6 +91,49 @@ class BaseASR(ABC):
             ASRResult对象
         """
         pass
+
+    # ── 流式转录接口（可选实现） ──
+
+    def supports_streaming(self) -> bool:
+        """是否支持流式转录"""
+        return False
+
+    def init_streaming_state(self, **kwargs) -> Any:
+        """
+        初始化流式转录状态
+
+        Args:
+            **kwargs: 算法特定参数，如 chunk_size_sec, unfixed_chunk_num 等
+
+        Returns:
+            流式状态对象
+        """
+        raise NotImplementedError(f"{self.name} 不支持流式转录")
+
+    def streaming_transcribe(self, audio_chunk: np.ndarray, state: Any) -> dict:
+        """
+        流式转录：送入一个音频块，返回增量识别结果
+
+        Args:
+            audio_chunk: 音频块(numpy float32, 16kHz)
+            state: 流式状态对象（由 init_streaming_state 返回）
+
+        Returns:
+            dict: {"text": str, "language": str, "is_final": bool}
+        """
+        raise NotImplementedError(f"{self.name} 不支持流式转录")
+
+    def finish_streaming_transcribe(self, state: Any) -> dict:
+        """
+        结束流式转录，获取最终结果
+
+        Args:
+            state: 流式状态对象
+
+        Returns:
+            dict: {"text": str, "language": str, "is_final": True}
+        """
+        raise NotImplementedError(f"{self.name} 不支持流式转录")
 
     def transcribe_file(self, audio_path: str) -> ASRResult:
         """

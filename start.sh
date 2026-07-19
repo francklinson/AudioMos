@@ -261,6 +261,7 @@ show_help() {
     echo "选项:"
     echo "  --port <port>   指定端口"
     echo "  --host <host>   指定地址"
+    echo "  --https         启用HTTPS（开发用自签名证书，麦克风录音需要）"
     echo ""
     echo ""
     echo "当前配置:"
@@ -326,15 +327,19 @@ show_status() {
 
     if [ "$status" = "running" ]; then
         local _pid="$(cat "$SCRIPT_DIR/.server.pid" 2>/dev/null || cat "$BACKEND_PID_FILE" 2>/dev/null || echo "?")"
+        local _proto="http"
+        if [ "${AUDIOMOS_HTTPS:-0}" = "1" ]; then _proto="https"; fi
         echo "✅ AudioMOS 服务: 运行中 (PID: $_pid)"
-        echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
+        echo "   地址: $_proto://$BACKEND_HOST:$BACKEND_PORT"
         echo ""
-        echo "📡 前端页面: http://$BACKEND_HOST:$BACKEND_PORT"
-        echo "📚 API文档:  http://$BACKEND_HOST:$BACKEND_PORT/docs"
+        echo "📡 前端页面: $_proto://$BACKEND_HOST:$BACKEND_PORT"
+        echo "📚 API文档:  $_proto://$BACKEND_HOST:$BACKEND_PORT/docs"
     elif [ "$status" = "backend_only" ]; then
         local _pid="$(cat "$BACKEND_PID_FILE" 2>/dev/null || echo "?")"
+        local _proto="http"
+        if [ "${AUDIOMOS_HTTPS:-0}" = "1" ]; then _proto="https"; fi
         echo "✅ 后端服务: 运行中 (PID: $_pid)"
-        echo "   地址: http://$BACKEND_HOST:$BACKEND_PORT"
+        echo "   地址: $_proto://$BACKEND_HOST:$BACKEND_PORT"
         echo ""
         echo "❌ 后端服务: 未运行"
         echo ""
@@ -1024,8 +1029,9 @@ start_server() {
     # 解析参数
     local server_port="$BACKEND_PORT"
     local server_host="$BACKEND_HOST"
-    
-    # 解析 --port 和 --host 参数
+    local server_https=true
+
+    # 解析 --port, --host, --https 参数
     while [[ $# -gt 0 ]]; do
         case $1 in
             --port)
@@ -1035,6 +1041,10 @@ start_server() {
             --host)
                 server_host="$2"
                 shift 2
+                ;;
+            --https)
+                server_https=true
+                shift
                 ;;
             *)
                 shift
@@ -1120,6 +1130,9 @@ start_server() {
     #   export AUDIOMOS_CORS_ORIGINS="https://your-domain.com"
     export AUDIOMOS_HOST="${AUDIOMOS_HOST:-$server_host}"
     export AUDIOMOS_PORT="${AUDIOMOS_PORT:-$server_port}"
+    if $server_https; then
+        export AUDIOMOS_HTTPS=1
+    fi
     # JWT密钥: 如未设置,从config.yaml读取; 再没有则使用安全随机生成(每次启动不同,踢下线已登录用户)
     if [ -z "$AUDIOMOS_SECRET_KEY" ]; then
         _cfg_key=$(read_yaml_value "$CONFIG_FILE" "secret_key" "")
@@ -1155,18 +1168,51 @@ from app.core.logging_config import logger
 
 host = os.environ.get('AUDIOMOS_HOST', '0.0.0.0')
 port = int(os.environ.get('AUDIOMOS_PORT', '8002'))
+enable_https = os.environ.get('AUDIOMOS_HTTPS', '1').strip() in ('1', 'true', 'yes')
+
+
+def _generate_selfsigned_cert():
+    """生成开发用自签名 SSL 证书"""
+    cert_dir = os.path.join(_script_dir, 'backend', '.ssl')
+    cert_file = os.path.join(cert_dir, 'dev.crt')
+    key_file = os.path.join(cert_dir, 'dev.key')
+
+    if os.path.isfile(cert_file) and os.path.isfile(key_file):
+        return cert_file, key_file
+
+    os.makedirs(cert_dir, exist_ok=True)
+    logger.info('生成开发用自签名 SSL 证书...')
+    import subprocess
+    subprocess.run([
+        'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+        '-keyout', key_file, '-out', cert_file,
+        '-days', '365', '-nodes',
+        '-subj', '/CN=localhost/O=AudioMos-Dev',
+    ], check=True, capture_output=True)
+    logger.info(f'SSL 证书已生成: {cert_dir}')
+    return cert_file, key_file
+
 
 logger.info('=' * 60)
 logger.info('AudioMOS 服务启动')
 logger.info('=' * 60)
-logger.info(f'监听地址: {host}:{port}')
+
+ssl_kwargs = {}
+if enable_https:
+    cert_file, key_file = _generate_selfsigned_cert()
+    ssl_kwargs['ssl_certfile'] = cert_file
+    ssl_kwargs['ssl_keyfile'] = key_file
+    logger.info(f'监听地址: https://{host}:{port}')
+else:
+    logger.info(f'监听地址: http://{host}:{port}')
 
 uvicorn.run(
     'app.main:app',
     host=host,
     port=port,
     reload=False,
-    access_log=True
+    access_log=True,
+    **ssl_kwargs,
 )
 PYEOF
     
@@ -1196,15 +1242,23 @@ PYEOF
         if [ "$check_host" = "0.0.0.0" ]; then
             check_host="127.0.0.1"
         fi
-        
-        if curl -s "http://$check_host:$server_port/health" > /dev/null 2>&1; then
+
+        # 根据是否启用 HTTPS 选择协议
+        local proto="http"
+        local curl_opts="-s"
+        if $server_https; then
+            proto="https"
+            curl_opts="-sk"  # -k 允许自签名证书
+        fi
+
+        if curl $curl_opts "$proto://$check_host:$server_port/health" > /dev/null 2>&1; then
             echo ""
             echo "================================"
             echo "  ✅ AudioMOS 启动成功!"
             echo "================================"
             echo ""
-            echo "🌐 访问地址: http://$server_host:$server_port"
-            echo "📚 API文档:  http://$server_host:$server_port/docs"
+            echo "🌐 访问地址: $proto://$server_host:$server_port"
+            echo "📚 API文档:  $proto://$server_host:$server_port/docs"
             echo ""
             echo "默认登录账号:"
             echo "  用户名: admin"

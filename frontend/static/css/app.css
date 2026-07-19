@@ -217,6 +217,17 @@ body::after {
   50% { transform: scale(1.05); opacity: .8; }
 }
 
+/* 流式转录光标动画 */
+.streaming-cursor {
+  color: var(--primary);
+  animation: blink 1s step-end infinite;
+  font-weight: bold;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 .login-container {
   display: flex;
   gap: 3rem;
