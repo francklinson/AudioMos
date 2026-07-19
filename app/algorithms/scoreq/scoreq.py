@@ -183,24 +183,31 @@ class Scoreq:
 
     def _download_model(self, filename, url, cache_dir_name):
         """Helper to download a model from a URL with a progress bar."""
-        # 优先使用项目目录下的模型
-        project_root = os.path.dirname(os.path.abspath(__file__))
-        project_model_dir = os.path.join(project_root, "models", "scoreq")
+        # 优先使用项目目录下的模型（通过环境变量或向上遍历查找项目根目录）
+        project_root = os.environ.get("AUDIOMOS_ROOT")
+        if not project_root:
+            # 从当前文件向上查找包含 models/scoreq 的目录
+            _dir = os.path.dirname(os.path.abspath(__file__))
+            for _ in range(10):
+                candidate = os.path.join(_dir, "models", "scoreq")
+                if os.path.isdir(candidate):
+                    project_root = _dir
+                    break
+                _dir = os.path.dirname(_dir)
 
-        # 根据cache_dir_name确定子目录
-        if "onnx" in cache_dir_name.lower():
-            sub_dir = "onnx"
-        elif "pt" in cache_dir_name.lower():
-            sub_dir = "pytorch"
-        else:
-            sub_dir = cache_dir_name
+        if project_root:
+            project_model_dir = os.path.join(project_root, "models", "scoreq")
+            if "onnx" in cache_dir_name.lower():
+                sub_dir = "onnx"
+            elif "pt" in cache_dir_name.lower():
+                sub_dir = "pytorch"
+            else:
+                sub_dir = cache_dir_name
 
-        project_model_path = os.path.join(project_model_dir, sub_dir, filename)
-
-        # 如果项目目录下存在模型，直接使用
-        if os.path.exists(project_model_path):
-            print(f"Using project model: {project_model_path}")
-            return project_model_path
+            project_model_path = os.path.join(project_model_dir, sub_dir, filename)
+            if os.path.exists(project_model_path):
+                print(f"Using project model: {project_model_path}")
+                return project_model_path
 
         # 否则使用缓存目录
         cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "scoreq", cache_dir_name)
