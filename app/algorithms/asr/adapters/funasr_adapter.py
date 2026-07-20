@@ -93,7 +93,7 @@ class ParaformerAdapter(BaseASR):
             algorithm_name=self.name,
         )
 
-    # ── 流式转录实现（模拟流式：累积音频 + 周期性转录）──
+    # ── 流式转录实现（全量累积 + 防抖跳过）──
 
     def supports_streaming(self) -> bool:
         return self._is_initialized
@@ -102,8 +102,9 @@ class ParaformerAdapter(BaseASR):
         return {
             "audio_buffer": np.array([], dtype=np.float32),
             "last_text": "",
-            "chunk_size_sec": kwargs.get("chunk_size_sec", 2.0),
-            "min_chunk_samples": int(self.sample_rate * kwargs.get("chunk_size_sec", 2.0)),
+            "chunk_size_sec": kwargs.get("chunk_size_sec", 1.0),
+            "min_chunk_samples": int(self.sample_rate * kwargs.get("chunk_size_sec", 1.0)),
+            "last_transcribe_buffer_len": 0,
         }
 
     def streaming_transcribe(self, audio_chunk: np.ndarray, state: Any) -> dict:
@@ -115,11 +116,17 @@ class ParaformerAdapter(BaseASR):
         if len(state["audio_buffer"]) < state["min_chunk_samples"]:
             return {"text": state["last_text"], "language": self.language, "is_final": False}
 
+        # ── 减少重复转录：新增音频不足 min_chunk_samples 时跳过 ──
+        new_samples = len(state["audio_buffer"]) - state.get("last_transcribe_buffer_len", 0)
+        if new_samples < state["min_chunk_samples"]:
+            return {"text": state["last_text"], "language": self.language, "is_final": False}
+
         try:
             result = self.transcribe(state["audio_buffer"], self.sample_rate)
             text = result.text
             if text != state["last_text"]:
                 state["last_text"] = text
+            state["last_transcribe_buffer_len"] = len(state["audio_buffer"])
         except Exception as e:
             logger.warning(f"[Paraformer] 流式转录中间结果失败: {e}")
 

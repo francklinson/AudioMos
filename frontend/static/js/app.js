@@ -251,7 +251,6 @@ function loadAllData() {
   loadMosTasks();
   loadRestorationAlgorithms();
   loadRestorationTasks();
-  loadRefAudioList();
   loadAsrAlgorithms();
   loadAsrDatasets();
 }
@@ -1829,6 +1828,19 @@ $('api-doc-btn').addEventListener('click', () => {
   $('api-doc-base-url').textContent = window.location.origin;
   new bootstrap.Modal($('api-doc-modal')).show();
 });
+$('ref-audio-btn').addEventListener('click', () => {
+  loadRefAudioList();
+  new bootstrap.Modal($('ref-audio-modal')).show();
+});
+
+// ==================== ASR 语音识别评测 ====================
+// 注意: 变量声明必须在 initAsrPage() 之前，避免 let TDZ 错误
+let asrAlgorithms = [];
+let asrSelectedAlgorithm = '';
+let asrFile = null;
+let asrDatasets = [];
+let asrBenchmarkAlgos = new Set();
+let leaderboardData = null;
 
 // 初始化各页面
 initMosPage();
@@ -1838,14 +1850,6 @@ initAsrPage();
 
 // 启动轮询
 startPolling();
-
-// ==================== ASR 语音识别评测 ====================
-let asrAlgorithms = [];
-let asrSelectedAlgorithm = '';
-let asrFile = null;
-let asrDatasets = [];
-let asrBenchmarkAlgos = new Set();
-let leaderboardData = null;
 
 // ── 测评榜单 ──
 
@@ -1978,6 +1982,8 @@ async function loadAsrAlgorithms() {
     }
     // 渲染 benchmark 算法多选
     renderAsrBenchmarkAlgos();
+    // 同步更新流式转录算法下拉框
+    initStreamingAlgorithms();
   } catch (e) {
     console.error('加载ASR算法列表失败:', e);
   }
@@ -2287,10 +2293,54 @@ let _streamingProcessor = null;    // ScriptProcessorNode
 let _streamingTimer = null;        // 计时器
 let _streamingStartTime = 0;       // 开始时间
 let _streamingText = '';           // 累积文本
+let _streamingRenderId = null;     // requestAnimationFrame ID（按帧合并渲染）
+let _streamingLastRendered = '';   // 上次实际渲染的文本（避免重复 DOM 操作）
 
 function initStreamingTranscription() {
   $('streaming-start-btn').addEventListener('click', startStreaming);
   $('streaming-stop-btn').addEventListener('click', stopStreaming);
+
+  // 初始化流式转录算法下拉框
+  initStreamingAlgorithms();
+  $('streaming-algorithm-select').addEventListener('change', updateStreamingAlgoInfo);
+}
+
+function initStreamingAlgorithms() {
+  const sel = $('streaming-algorithm-select');
+  if (!sel) return;
+
+  // 从已加载的ASR算法列表中筛选支持流式的算法
+  const streamingAlgos = asrAlgorithms.filter(a => a.streaming);
+  sel.innerHTML = '';
+
+  if (streamingAlgos.length === 0) {
+    sel.innerHTML = '<option value="">暂无可用流式算法</option>';
+    return;
+  }
+
+  streamingAlgos.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.name;
+    opt.textContent = `${a.display_name || a.name}${a.initialized ? ' ✅' : ''}`;
+    sel.appendChild(opt);
+  });
+
+  // 默认选中第一个
+  updateStreamingAlgoInfo();
+}
+
+function updateStreamingAlgoInfo() {
+  const sel = $('streaming-algorithm-select');
+  const info = $('streaming-algorithm-info');
+  if (!sel || !info) return;
+
+  const name = sel.value;
+  const algo = asrAlgorithms.find(a => a.name === name);
+  if (algo) {
+    info.innerHTML = `<strong>${algo.display_name || algo.name}</strong> | 架构: ${algo.architecture || '-'} | 参数: ${algo.params || '-'} | ${algo.languages ? '语言: ' + algo.languages.join(', ') : ''}`;
+  } else {
+    info.textContent = '';
+  }
 }
 
 function streamingLog(msg) {
@@ -2317,6 +2367,14 @@ async function startStreaming() {
   const statusDiv = $('streaming-status');
   const textDiv = $('streaming-text');
   const errorDiv = $('streaming-error');
+  const algoSelect = $('streaming-algorithm-select');
+
+  // 获取选中的算法
+  const selectedAlgorithm = algoSelect ? algoSelect.value : '';
+  if (!selectedAlgorithm) {
+    showStreamingError('请先选择转录算法');
+    return;
+  }
 
   // 重置状态
   _streamingText = '';
@@ -2361,7 +2419,7 @@ async function startStreaming() {
       // 发送配置
       const configMsg = JSON.stringify({
         type: 'config',
-        algorithm: 'qwen3-asr',
+        algorithm: selectedAlgorithm,
         language: 'zh',
       });
       _streamingWs.send(configMsg);
@@ -2397,8 +2455,8 @@ async function startStreaming() {
     const source = _streamingAudioCtx.createMediaStreamSource(_streamingMediaStream);
 
     // 使用 ScriptProcessorNode 采集 PCM 数据
-    // bufferSize=4096 对应约 256ms @16kHz
-    _streamingProcessor = _streamingAudioCtx.createScriptProcessor(4096, 1, 1);
+    // bufferSize=2048 对应约 128ms @16kHz（更快的反馈频率）
+    _streamingProcessor = _streamingAudioCtx.createScriptProcessor(2048, 1, 1);
 
     let _chunkCount = 0;
     _streamingProcessor.onaudioprocess = (e) => {
@@ -2424,6 +2482,7 @@ async function startStreaming() {
     // 更新 UI
     startBtn.disabled = true;
     stopBtn.disabled = false;
+    if (algoSelect) algoSelect.disabled = true;
     statusDiv.classList.remove('d-none');
     _streamingStartTime = Date.now();
     _streamingTimer = setInterval(updateStreamingTimer, 1000);
@@ -2436,6 +2495,19 @@ async function startStreaming() {
 }
 
 function stopStreaming() {
+  // 立即停止计时器
+  if (_streamingTimer) { clearInterval(_streamingTimer); _streamingTimer = null; }
+
+  // 立即更新UI状态
+  $('streaming-stop-btn').disabled = true;
+  const indicator = $('streaming-indicator');
+  if (indicator) {
+    indicator.classList.remove('bg-danger', 'pulse');
+    indicator.classList.add('bg-warning');
+    indicator.innerHTML = '<i class="bi bi-hourglass-split"></i> 处理中...';
+  }
+  $('streaming-text').innerHTML = '<span class="text-muted">正在生成最终结果...</span>';
+
   // 发送 finish 指令
   if (_streamingWs && _streamingWs.readyState === WebSocket.OPEN) {
     _streamingWs.send(JSON.stringify({ type: 'finish' }));
@@ -2444,7 +2516,11 @@ function stopStreaming() {
   // 设置超时保护
   setTimeout(() => {
     cleanupStreaming();
-  }, 3000);
+    $('streaming-start-btn').disabled = false;
+    const algoSelect = $('streaming-algorithm-select');
+    if (algoSelect) algoSelect.disabled = false;
+    $('streaming-status').classList.add('d-none');
+  }, 5000);
 }
 
 function handleStreamingMessage(data) {
@@ -2458,9 +2534,13 @@ function handleStreamingMessage(data) {
       break;
 
     case 'partial':
-      // 增量更新文本
-      _streamingText = data.text || '';
-      textDiv.innerHTML = `<span class="streaming-current">${escapeHtml(_streamingText)}</span><span class="streaming-cursor">|</span>`;
+      // 去抖逻辑：通过最长公共前缀(LCP)区分稳定文本和待确认文本
+      // 按帧合并渲染：多个 partial 在同一帧内到达时只渲染最后一次
+      {
+        const newText = data.text || '';
+        _streamingText = newText;
+        scheduleStreamingRender(textDiv);
+      }
       break;
 
     case 'final':
@@ -2470,6 +2550,16 @@ function handleStreamingMessage(data) {
       cleanupStreaming();
       startBtn.disabled = false;
       stopBtn.disabled = true;
+      // 恢复算法选择框
+      const algoSelect = $('streaming-algorithm-select');
+      if (algoSelect) algoSelect.disabled = false;
+      // 恢复录音指示灯
+      const indicator = $('streaming-indicator');
+      if (indicator) {
+        indicator.classList.remove('bg-warning');
+        indicator.classList.add('bg-danger', 'pulse');
+        indicator.innerHTML = '<i class="bi bi-record-fill"></i> 录音中';
+      }
       $('streaming-status').classList.add('d-none');
       showToast('实时转录完成', 'success');
       break;
@@ -2488,6 +2578,37 @@ function updateStreamingTimer() {
   $('streaming-time').textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function scheduleStreamingRender(textDiv) {
+  // 按帧合并渲染：同一帧内的多次 partial 只触发一次 DOM 更新
+  if (_streamingRenderId !== null) return;  // 已有待执行的渲染，跳过
+  _streamingRenderId = requestAnimationFrame(() => {
+    _streamingRenderId = null;
+    const newText = _streamingText;
+    // 文本没变化就不动 DOM
+    if (newText === _streamingLastRendered) return;
+    const prevText = _streamingLastRendered;
+    _streamingLastRendered = newText;
+
+    // 用上次渲染的文本计算 LCP
+    let commonLen = 0;
+    const minLen = Math.min(prevText.length, newText.length);
+    while (commonLen < minLen && prevText[commonLen] === newText[commonLen]) {
+      commonLen++;
+    }
+
+    const stablePart = newText.substring(0, commonLen);
+    const unstablePart = newText.substring(commonLen);
+
+    if (unstablePart) {
+      textDiv.innerHTML = `<span class="streaming-stable">${escapeHtml(stablePart)}</span><span class="streaming-unstable">${escapeHtml(unstablePart)}</span><span class="streaming-cursor">|</span>`;
+    } else if (stablePart) {
+      textDiv.innerHTML = `<span class="streaming-stable">${escapeHtml(stablePart)}</span><span class="streaming-cursor">|</span>`;
+    } else {
+      textDiv.innerHTML = '<span class="streaming-cursor">|</span>';
+    }
+  });
+}
+
 function showStreamingError(msg) {
   const errorDiv = $('streaming-error');
   const errorMsg = $('streaming-error-msg');
@@ -2495,10 +2616,15 @@ function showStreamingError(msg) {
   errorMsg.textContent = msg;
   $('streaming-start-btn').disabled = false;
   $('streaming-stop-btn').disabled = true;
+  const algoSelect = $('streaming-algorithm-select');
+  if (algoSelect) algoSelect.disabled = false;
   $('streaming-status').classList.add('d-none');
 }
 
 function cleanupStreaming() {
+  // 取消待执行的渲染
+  if (_streamingRenderId !== null) { cancelAnimationFrame(_streamingRenderId); _streamingRenderId = null; }
+  _streamingLastRendered = '';
   // 停止计时
   if (_streamingTimer) { clearInterval(_streamingTimer); _streamingTimer = null; }
 

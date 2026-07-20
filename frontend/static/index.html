@@ -91,10 +91,13 @@
     </div>
     <div class="nav-right">
       <span class="user-greeting">欢迎, <span id="user-display"></span></span>
-      <button class="btn btn-outline-light btn-sm" id="api-doc-btn">
+      <button class="btn btn-outline-secondary btn-sm" id="ref-audio-btn">
+        <i class="bi bi-database-fill"></i> 参考音频
+      </button>
+      <button class="btn btn-outline-secondary btn-sm" id="api-doc-btn">
         <i class="bi bi-book"></i> API文档
       </button>
-      <button class="btn btn-outline-light btn-sm" id="logout-btn">
+      <button class="btn btn-outline-secondary btn-sm" id="logout-btn">
         <i class="bi bi-box-arrow-right"></i> 退出
       </button>
     </div>
@@ -119,11 +122,6 @@
       <li class="nav-item" role="presentation">
         <button class="nav-link" id="tab-restoration" data-bs-toggle="tab" data-bs-target="#pane-restoration" type="button" role="tab">
           <i class="bi bi-tools"></i> 音频修复
-        </button>
-      </li>
-      <li class="nav-item" role="presentation">
-        <button class="nav-link" id="tab-reference" data-bs-toggle="tab" data-bs-target="#pane-reference" type="button" role="tab">
-          <i class="bi bi-database-fill"></i> 参考音频
         </button>
       </li>
       <li class="nav-item" role="presentation">
@@ -279,58 +277,6 @@
         </div>
       </div>
 
-      <!-- ==================== 参考音频 Tab ==================== -->
-      <div class="tab-pane fade" id="pane-reference" role="tabpanel">
-        <div class="container-fluid py-3">
-          <!-- 状态概览 -->
-          <div class="row g-2 mb-3" id="ref-status-cards">
-            <div class="col-4"><div class="stat-card"><div class="stat-value" id="ref-stat-count">0</div><div class="stat-label">参考音频</div></div></div>
-            <div class="col-4" style="display:none"><div class="stat-card"><div class="stat-value" id="ref-stat-fingerprint"><span class="text-secondary">未建立</span></div><div class="stat-label">指纹数据库</div></div></div>
-            <div class="col-4"><div class="stat-card"><div class="stat-value" id="ref-stat-size">0 B</div><div class="stat-label">总占用</div></div></div>
-          </div>
-
-          <!-- 上传 -->
-          <div class="card mb-3">
-            <div class="card-body">
-              <h5 class="card-title"><i class="bi bi-upload"></i> 上传参考音频</h5>
-              <div class="upload-zone" id="ref-upload-zone">
-                <i class="bi bi-cloud-arrow-up-fill upload-icon"></i>
-                <p class="mb-1">点击选择参考音频文件</p>
-                <small class="text-muted">支持 .wav / .mp3 格式，可多选</small>
-                <input type="file" class="upload-input" id="ref-file-input" multiple accept=".wav,.mp3">
-              </div>
-              <div id="ref-upload-info" class="mt-2 d-none">
-                <span class="badge bg-info" id="ref-upload-count"></span>
-                <button class="btn btn-sm btn-primary ms-2" id="ref-upload-btn">
-                  <i class="bi bi-cloud-upload"></i> 开始上传
-                </button>
-                <div class="spinner-border spinner-border-sm d-none ms-2" id="ref-upload-spinner"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- 参考音频列表 -->
-          <div class="card mb-3">
-            <div class="card-body">
-              <h5 class="card-title"><i class="bi bi-list-ul"></i> 参考音频列表</h5>
-              <div id="ref-audio-list">
-                <div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无参考音频</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- 指纹数据库管理 -->
-          <div class="card" style="display:none">
-            <div class="card-body">
-              <h5 class="card-title"><i class="bi bi-fingerprint"></i> 指纹数据库管理</h5>
-              <div id="ref-fingerprint-status">
-                <div class="text-center text-muted py-3">加载中...</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- ==================== ASR评测 Tab ==================== -->
       <div class="tab-pane fade" id="pane-asr" role="tabpanel">
         <div class="container-fluid py-3">
@@ -403,13 +349,22 @@
               <div class="card mb-3">
                 <div class="card-body">
                   <h5 class="card-title"><i class="bi bi-broadcast"></i> 实时流式转录</h5>
-                  <p class="text-muted small">使用麦克风采集音频，实时转录为文字。需要 Qwen3-ASR vLLM 后端支持。</p>
+                  <p class="text-muted small">使用麦克风采集音频，实时转录为文字。请先选择转录算法。</p>
+
+                  <!-- 流式转录算法选择 -->
+                  <div class="mb-3">
+                    <label class="form-label fw-bold"><i class="bi bi-cpu"></i> 转录算法</label>
+                    <select class="form-select" id="streaming-algorithm-select">
+                      <option value="">加载中...</option>
+                    </select>
+                    <div id="streaming-algorithm-info" class="mt-1 text-muted small"></div>
+                  </div>
 
                   <div class="d-flex gap-2 mb-3">
-                    <button class="btn btn-submit" id="streaming-start-btn">
+                    <button class="btn btn-primary" id="streaming-start-btn">
                       <i class="bi bi-mic-fill"></i> 开始录音
                     </button>
-                    <button class="btn btn-outline-secondary" id="streaming-stop-btn" disabled>
+                    <button class="btn btn-danger" id="streaming-stop-btn" disabled>
                       <i class="bi bi-stop-fill"></i> 停止录音
                     </button>
                   </div>
@@ -437,8 +392,10 @@
 
                   <!-- 调试日志 -->
                   <div class="mt-2">
-                    <small class="text-muted" style="cursor:pointer" onclick="document.getElementById('streaming-log').classList.toggle('d-none')">[调试日志] 点击展开/收起</small>
-                    <div id="streaming-log" class="d-none mt-1 p-2 bg-dark text-light rounded" style="max-height:200px;overflow-y:auto;font-size:0.7rem;font-family:monospace;white-space:pre-wrap;"></div>
+                    <small class="text-muted" style="cursor:pointer" onclick="document.getElementById('streaming-log').classList.toggle('d-none')">
+                      <i class="bi bi-terminal"></i> 调试日志 · 点击展开/收起
+                    </small>
+                    <div id="streaming-log" class="d-none mt-1 streaming-log-panel"></div>
                   </div>
                 </div>
               </div>
@@ -573,6 +530,55 @@
       </div>
       <div class="modal-body" id="mos-result-body">
         <div class="text-center py-4"><div class="spinner-border" role="status"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Modal: 参考音频管理 ===================== -->
+<div class="modal fade" id="ref-audio-modal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-database-fill"></i> 参考音频管理</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <!-- 状态概览 -->
+        <div class="row g-2 mb-3" id="ref-status-cards">
+          <div class="col-6"><div class="stat-card"><div class="stat-value" id="ref-stat-count">0</div><div class="stat-label">参考音频</div></div></div>
+          <div class="col-6"><div class="stat-card"><div class="stat-value" id="ref-stat-size">0 B</div><div class="stat-label">总占用</div></div></div>
+        </div>
+
+        <!-- 上传 -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h5 class="card-title"><i class="bi bi-upload"></i> 上传参考音频</h5>
+            <div class="upload-zone upload-zone-sm" id="ref-upload-zone">
+              <i class="bi bi-cloud-arrow-up-fill upload-icon" style="font-size:2rem;margin-bottom:.4rem"></i>
+              <p class="mb-1" style="font-size:.88rem">点击选择参考音频文件</p>
+              <small class="text-muted">支持 .wav / .mp3 格式，可多选</small>
+              <input type="file" class="upload-input" id="ref-file-input" multiple accept=".wav,.mp3">
+            </div>
+            <div id="ref-upload-info" class="mt-2 d-none">
+              <span class="badge bg-info" id="ref-upload-count"></span>
+              <button class="btn btn-sm btn-primary ms-2" id="ref-upload-btn">
+                <i class="bi bi-cloud-upload"></i> 开始上传
+              </button>
+              <div class="spinner-border spinner-border-sm d-none ms-2" id="ref-upload-spinner"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 参考音频列表 -->
+        <div class="card">
+          <div class="card-body">
+            <h5 class="card-title"><i class="bi bi-list-ul"></i> 参考音频列表</h5>
+            <div id="ref-audio-list">
+              <div class="text-center text-muted py-4"><i class="bi bi-inbox"></i> 暂无参考音频</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
