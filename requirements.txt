@@ -33,26 +33,55 @@ torchaudio==2.8.0+cu128
 onnxruntime-gpu
 timm
 
-# ===== 语音识别 (WeNet) =====
-# WeNet 需从本地安装: pip install -e app/algorithms/wenet
+# ===== 语音识别 (ASR) — 共用框架 =====
+transformers              # Whisper / VibeVoice / Step-Audio / Qwen3-ASR 回退加载
+huggingface-hub           # HuggingFace 模型下载
+modelscope                # ModelScope 模型下载（国内加速）
+
+# ===== ASR: Paraformer / SenseVoice / Fun-ASR-Nano =====
+# 模型: FunAudioLLM/paraformer-large, FunAudioLLM/SenseVoiceSmall,
+#       FunAudioLLM/Fun-ASR-Nano-2512 (800M LLM-based)
+# 大小: 849MB / 904MB / 2.0GB
+# 流式: Paraformer ✅模拟, Fun-ASR-Nano ✅模拟, SenseVoice ❌
+funasr
+
+# ===== ASR: WeNet U2++ =====
+# 模型: wenet-e2e/wenet (本地 models/asr/wenet-u2pp/，需包含 train.yaml)
+# 大小: ~530MB | 流式: ✅模拟 (chunk_size_sec=1.0s) | 预加载
+# WeNet 也可从本地安装: pip install -e app/algorithms/wenet
+wenet
 jieba
 
-# ===== 语音识别 (ASR Benchmark) =====
-funasr
+# ===== ASR: Whisper Large-v3 Turbo =====
+# 模型: openai/whisper-large-v3-turbo | 大小: ~1.6GB | 流式: ❌
+# 支持 .pt (openai-whisper) 和 .safetensors (transformers) 两种格式
 openai-whisper
-wenet
 
-# ===== 语音识别 (Qwen3-ASR 流式转录) =====
+# ===== ASR: Qwen3-ASR-1.7B ⭐流式核心 =====
+# 模型: Qwen/Qwen3-ASR-1.7B | 大小: ~4.4GB | 流式: ✅vLLM真流式
+# 双后端: vLLM (真流式, ~19GB显存) / transformers (模拟流式, ~6GB显存)
 # 非流式: pip install qwen-asr
 # 流式转录: pip install qwen-asr[vllm]
 qwen-asr
 vllm==0.10.2
 
-# ===== 模型框架 =====
-modelscope
+# ===== ASR: FireRedASR2-AED (1.1B) =====
+# 模型: FireRedTeam/FireRedASR2-AED | 大小: ~4.5GB | 流式: ❌
+# 二选一: pip install fireredasr2s (官方) 或 pip install fasr-asr-firered (社区)
+# fireredasr2s
+
+# ===== ASR: Step-Audio-2-mini =====
+# 模型: stepfun-ai/Step-Audio-2-mini | 流式: ❌
+# 二选一: pip install step-audio (官方) 或 transformers 回退
+# step-audio
+
+# ===== ASR: VibeVoice-ASR (7B) =====
+# 模型: microsoft/VibeVoice-ASR-HF | 流式: ❌
+# 二选一: pip install vibevoice-asr (官方) 或 transformers 回退 (支持4bit量化)
+# vibevoice-asr
+
+# ===== 模型框架（其他算法共用） =====
 speechbrain
-transformers
-huggingface-hub
 
 # ===== MOS评分 =====
 scoreq

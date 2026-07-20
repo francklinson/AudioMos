@@ -128,6 +128,9 @@ AudioMOS/
 - Python 3.12+
 - Node.js 18+
 - CUDA 12.8+ (推荐，用于 GPU 加速)
+- NVIDIA GPU 建议 24GB VRAM（流式转录需 vLLM）
+
+> 📖 ASR 语音识别 & 流式转录的完整环境需求请参阅 [docs/ASR_ENVIRONMENT.md](docs/ASR_ENVIRONMENT.md)
 
 ### 安装步骤
 
