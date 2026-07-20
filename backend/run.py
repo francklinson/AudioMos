@@ -73,12 +73,16 @@ def main():
         logger.info("HTTPS 模式已启用（自签名证书）")
 
     # 启动服务
+    # ws_ping_interval=0 禁用 Uvicorn 的 WebSocket keepalive ping
+    # 音频数据流本身（每 128ms 一个 chunk）就是心跳，无需额外 ping
+    # 浏览器主线程被 ScriptProcessorNode 占用时可能无法及时回复 pong，导致误断连
     uvicorn.run(
         "app.main:app",
         host=actual_host,
         port=configured_port,
         reload=settings.server.debug,
         log_level="info",
+        ws_ping_interval=0,  # 禁用 WebSocket keepalive ping
         **ssl_kwargs,
     )
 

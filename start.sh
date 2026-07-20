@@ -1212,6 +1212,7 @@ uvicorn.run(
     port=port,
     reload=False,
     access_log=True,
+    ws_ping_interval=0,  # 禁用 WebSocket keepalive ping（音频数据流即心跳）
     **ssl_kwargs,
 )
 PYEOF

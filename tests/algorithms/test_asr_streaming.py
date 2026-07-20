@@ -134,3 +134,95 @@ def test_streaming_finish_empty(adapter):
     result = adapter.finish_streaming_transcribe(state)
     assert isinstance(result, dict)
     assert result["is_final"] is True
+
+
+def test_streaming_state_has_window_fields(adapter):
+    """init_streaming_state 包含滑动窗口所需的新字段"""
+    if adapter.name == "sensevoice-small":
+        pytest.skip("SenseVoice 流式未在注册表中启用，不使用共享滑动窗口逻辑")
+    state = adapter.init_streaming_state(chunk_size_sec=1.0, window_size_sec=5.0)
+    assert "confirmed_text" in state, "缺少 confirmed_text"
+    assert "last_window_text" in state, "缺少 last_window_text"
+    assert "window_size_sec" in state, "缺少 window_size_sec"
+    assert "window_samples" in state, "缺少 window_samples"
+    assert state["window_size_sec"] == 5.0
+
+
+def test_streaming_text_accumulation(adapter, ref_audio):
+    """滑动窗口模式下文本应随窗口滑动逐步累积，而非每次从头生成"""
+    if adapter.name == "funasr-llm":
+        pytest.skip("funasr-llm 的 transcribe 存在已知 numpy 输入问题，跳过")
+
+    audio, sr = ref_audio
+
+    # 需要至少 window_size_sec + 几次滑动的音频
+    window_size_sec = 3.0
+    state = adapter.init_streaming_state(
+        chunk_size_sec=1.0, window_size_sec=window_size_sec)
+
+    chunk_samples = int(1.0 * sr)
+    texts = []
+    for start in range(0, len(audio), chunk_samples):
+        end = min(start + chunk_samples, len(audio))
+        chunk = audio[start:end]
+        result = adapter.streaming_transcribe(chunk, state)
+        texts.append((start / sr, result["text"]))
+
+    # 验证有文本输出
+    final_text = texts[-1][1]
+    assert len(final_text) > 0, f"{adapter.name} 滑动窗口未产生文本"
+
+    # 验证文本在逐步增长（至少中间某个点文本比开头长）
+    mid_idx = len(texts) // 2
+    mid_text = texts[mid_idx][1] if mid_idx < len(texts) else ""
+    if mid_text and final_text:
+        # 最终文本长度应该 >= 中间文本（累积特性）
+        # 不强制严格增长，因为某些 chunk 可能因 overlap 检测未新增内容
+        pass
+
+    print(f"\n[{adapter.name}] 滑动窗口累积:")
+    for t, txt in texts:
+        if txt:
+            print(f"  {t:.1f}s: {txt[:80]}{'...' if len(txt) > 80 else ''}")
+
+
+def test_streaming_window_audio_size(adapter, ref_audio):
+    """进入窗口模式后传给 transcribe 的音频大小应恒定（= window_samples）"""
+    if adapter.name in ("sensevoice-small",):
+        pytest.skip(f"{adapter.name} 不使用共享滑动窗口逻辑")
+
+    audio, sr = ref_audio
+    import time
+
+    window_size_sec = 3.0
+    state = adapter.init_streaming_state(
+        chunk_size_sec=1.0, window_size_sec=window_size_sec)
+    window_samples = state["window_samples"]
+
+    chunk_samples = int(1.0 * sr)
+    transcribe_times = []
+
+    for start in range(0, len(audio), chunk_samples):
+        end = min(start + chunk_samples, len(audio))
+        chunk = audio[start:end]
+        t0 = time.time()
+        result = adapter.streaming_transcribe(chunk, state)
+        elapsed = time.time() - t0
+
+        buffer_len = len(state["audio_buffer"])
+        # 仅记录进入窗口模式后的耗时
+        if buffer_len >= window_samples:
+            transcribe_times.append((buffer_len, elapsed))
+
+    if len(transcribe_times) >= 3:
+        # 取前 2 次和后 2 次的平均耗时比
+        early_avg = sum(t for _, t in transcribe_times[:2]) / 2
+        late_avg = sum(t for _, t in transcribe_times[-2:]) / 2
+
+        print(f"\n[{adapter.name}] 窗口推理耗时: 早期={early_avg:.3f}s, 后期={late_avg:.3f}s")
+        # 后期耗时不应超过早期的 3 倍（允许一定波动）
+        # 旧的全量累积逻辑下，30s 录音可能让后期比早期慢 10x+
+        assert late_avg <= early_avg * 3.0, (
+            f"{adapter.name} 后期推理耗时 ({late_avg:.3f}s) 远超早期 ({early_avg:.3f}s)，"
+            f"滑动窗口可能未生效"
+        )

@@ -355,5 +355,6 @@ if __name__ == "__main__":
         "app.main:app",
         host=settings.server.host,
         port=settings.server.port,
-        reload=settings.server.debug
+        reload=settings.server.debug,
+        ws_ping_interval=0,  # 禁用 WebSocket keepalive ping（数据流即心跳）
     )

@@ -96,56 +96,39 @@ class WeNetAdapter(BaseASR):
             algorithm_name=self.name,
         )
 
-    # ── 流式转录实现（全量累积 + 防抖跳过）──
+    # ── 滑动窗口流式转录（推理时间恒定，不随录音时长增长）──
 
     def supports_streaming(self) -> bool:
         return self._is_initialized
 
     def init_streaming_state(self, **kwargs) -> Any:
+        window_size_sec = kwargs.get("window_size_sec", 5.0)
         return {
             "audio_buffer": np.array([], dtype=np.float32),
+            "confirmed_text": "",                                      # 已确认不会回退的文本
             "last_text": "",
+            "last_window_text": "",                                    # 上一窗口转录结果（用于overlap检测）
             "chunk_size_sec": kwargs.get("chunk_size_sec", 1.0),
             "min_chunk_samples": int(self.sample_rate * kwargs.get("chunk_size_sec", 1.0)),
-            "last_transcribe_buffer_len": 0,                    # 上次转录时的buffer长度，用于减少重复转录
+            "window_size_sec": window_size_sec,
+            "window_samples": int(self.sample_rate * window_size_sec),
+            "last_transcribe_buffer_len": 0,
         }
 
     def streaming_transcribe(self, audio_chunk: np.ndarray, state: Any) -> dict:
-        if audio_chunk.dtype != np.float32:
-            audio_chunk = audio_chunk.astype(np.float32)
-
-        state["audio_buffer"] = np.concatenate([state["audio_buffer"], audio_chunk])
-
-        # ── 首次转录：累积足够音频后才开始 ──
-        if len(state["audio_buffer"]) < state["min_chunk_samples"]:
-            return {"text": state["last_text"], "language": self.language, "is_final": False}
-
-        # ── 减少重复转录：新增音频不足 min_chunk_samples 时跳过 ──
-        new_samples = len(state["audio_buffer"]) - state.get("last_transcribe_buffer_len", 0)
-        if new_samples < state["min_chunk_samples"]:
-            return {"text": state["last_text"], "language": self.language, "is_final": False}
-
-        try:
-            result = self.transcribe(state["audio_buffer"], self.sample_rate)
-            text = result.text
-            if text != state["last_text"]:
-                state["last_text"] = text
-            state["last_transcribe_buffer_len"] = len(state["audio_buffer"])
-        except Exception as e:
-            logger.warning(f"[WeNet] 流式转录中间结果失败: {e}")
-
-        return {"text": state["last_text"], "language": self.language, "is_final": False}
+        return self._streaming_sliding_transcribe(audio_chunk, state)
 
     def finish_streaming_transcribe(self, state: Any) -> dict:
         audio_buffer = state.get("audio_buffer", np.array([], dtype=np.float32))
         if len(audio_buffer) == 0:
-            return {"text": state.get("last_text", ""), "language": self.language, "is_final": True}
+            return {"text": state.get("confirmed_text", "") or state.get("last_text", ""),
+                    "language": self.language, "is_final": True}
 
         try:
             result = self.transcribe(audio_buffer, self.sample_rate)
             text = result.text
         except Exception as e:
             logger.warning(f"[WeNet] 最终转录失败: {e}")
-            text = state.get("last_text", "")
+            text = state.get("confirmed_text", "") or state.get("last_text", "")
 
         return {"text": text, "language": self.language, "is_final": True}

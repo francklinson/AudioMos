@@ -191,3 +191,154 @@ class BaseASR(ABC):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    # ── 滑动窗口流式转录共享逻辑 ──
+
+    @staticmethod
+    def _find_text_overlap(prev_text: str, curr_text: str,
+                           min_overlap: int = 3, max_lookback: int = 80) -> int:
+        """
+        找到 prev_text 尾部与 curr_text 头部的最长匹配长度。
+
+        策略:
+        1. 优先后缀-前缀精确匹配（O(max_lookback²)，但常数很小）
+        2. 失败则回退到最长公共子串（prev 尾部 60 字符窗口 × curr 头部 60 字符窗口）
+
+        Returns:
+            curr_text 中与 prev_text 尾部重叠的字符数（即 curr_text 的偏移量）
+        """
+        if not prev_text or not curr_text:
+            return 0
+
+        # 策略1: 后缀-前缀精确匹配
+        check_len = min(len(prev_text), len(curr_text), max_lookback)
+        for n in range(check_len, min_overlap - 1, -1):
+            if prev_text[-n:] == curr_text[:n]:
+                return n
+
+        # 策略2: 回退 — 最长公共子串（prev 尾部 × curr 头部）
+        search_prev = prev_text[-60:] if len(prev_text) > 60 else prev_text
+        search_curr = curr_text[:60] if len(curr_text) > 60 else curr_text
+        best_offset = 0  # curr_text 中匹配起始位置 + 匹配长度
+
+        for pl in range(len(search_prev)):
+            for cl in range(len(search_curr)):
+                match = 0
+                while (pl + match < len(search_prev) and
+                       cl + match < len(search_curr) and
+                       search_prev[pl + match] == search_curr[cl + match]):
+                    match += 1
+                if match >= min_overlap:
+                    # curr 中的绝对位置 = (curr 头部偏移) + cl + match
+                    curr_abs_offset = cl + match
+                    if curr_abs_offset > best_offset:
+                        best_offset = curr_abs_offset
+
+        return best_offset
+
+    def _streaming_sliding_transcribe(self, audio_chunk: "np.ndarray",
+                                       state: dict) -> dict:
+        """
+        滑动窗口流式转录：只推理最近 window_size_sec 秒音频，推理时间恒定。
+
+        供模拟流式适配器（WeNet/Paraformer/Fun-ASR-Nano）的 streaming_transcribe 委托调用。
+
+        要求 state 包含:
+          - audio_buffer: np.ndarray (float32)
+          - confirmed_text: str (已确认不会回退的文本)
+          - last_window_text: str (上一窗口的转录结果)
+          - chunk_size_sec: float
+          - min_chunk_samples: int
+          - window_size_sec: float (默认 5.0)
+          - window_samples: int (= window_size_sec * sample_rate)
+          - last_transcribe_buffer_len: int
+        """
+        if audio_chunk.dtype != np.float32:
+            audio_chunk = audio_chunk.astype(np.float32)
+
+        # 追加 chunk
+        state["audio_buffer"] = np.concatenate([state["audio_buffer"], audio_chunk])
+        total_samples = len(state["audio_buffer"])
+        window_samples = state["window_samples"]
+        min_chunk = state["min_chunk_samples"]
+
+        # 阶段1: 音频总量不足一个窗口 → 全量转录（与旧逻辑一致）
+        if total_samples < window_samples:
+            if total_samples < min_chunk:
+                return {
+                    "text": state.get("confirmed_text", "") or state.get("last_text", ""),
+                    "language": self.language,
+                    "is_final": False,
+                }
+            new_samples = total_samples - state.get("last_transcribe_buffer_len", 0)
+            if new_samples < min_chunk:
+                return {
+                    "text": state.get("confirmed_text", "") or state.get("last_text", ""),
+                    "language": self.language,
+                    "is_final": False,
+                }
+            try:
+                result = self.transcribe(state["audio_buffer"], self.sample_rate)
+                text = result.text
+                state["last_text"] = text
+                state["confirmed_text"] = text
+                state["last_window_text"] = text
+                state["last_transcribe_buffer_len"] = total_samples
+            except Exception as e:
+                import logging
+                logging.getLogger("audiomos").warning(
+                    f"[{self.name}] 流式转录（阶段1）失败: {e}"
+                )
+            return {
+                "text": state.get("confirmed_text", ""),
+                "language": self.language,
+                "is_final": False,
+            }
+
+        # 阶段2: 滑动窗口模式
+        new_samples = total_samples - state.get("last_transcribe_buffer_len", 0)
+        if new_samples < min_chunk:
+            return {
+                "text": state.get("confirmed_text", ""),
+                "language": self.language,
+                "is_final": False,
+            }
+
+        try:
+            # 只取最后 window_samples 个样本推理
+            window_audio = state["audio_buffer"][-window_samples:]
+            result = self.transcribe(window_audio, self.sample_rate)
+            new_window_text = result.text
+
+            prev_window = state.get("last_window_text", "")
+            if prev_window and new_window_text:
+                overlap = self._find_text_overlap(prev_window, new_window_text)
+                if overlap > 0:
+                    new_part = new_window_text[overlap:]
+                    if new_part:
+                        state["confirmed_text"] = (state.get("confirmed_text", "") + new_part)
+                else:
+                    # 完全没有重叠，保守地追加新文本（用空格分隔）
+                    if new_window_text != prev_window:
+                        state["confirmed_text"] = (state.get("confirmed_text", "")
+                                                   + new_window_text)
+            else:
+                # 首次进入窗口模式，confirmed_text 设为窗口结果
+                # 但如果阶段1已经设置了 confirmed_text，保留它
+                if not state.get("confirmed_text"):
+                    state["confirmed_text"] = new_window_text
+
+            state["last_window_text"] = new_window_text
+            state["last_transcribe_buffer_len"] = total_samples
+
+        except Exception as e:
+            import logging
+            logging.getLogger("audiomos").warning(
+                f"[{self.name}] 滑动窗口转录失败: {e}"
+            )
+
+        return {
+            "text": state.get("confirmed_text", ""),
+            "language": self.language,
+            "is_final": False,
+        }

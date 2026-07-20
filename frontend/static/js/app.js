@@ -2295,6 +2295,8 @@ let _streamingStartTime = 0;       // 开始时间
 let _streamingText = '';           // 累积文本
 let _streamingRenderId = null;     // requestAnimationFrame ID（按帧合并渲染）
 let _streamingLastRendered = '';   // 上次实际渲染的文本（避免重复 DOM 操作）
+let _streamingHeartbeat = null;    // WebSocket 心跳定时器（应用层保活）
+let _streamingErrorShown = false;  // 防止 onclose 覆盖 handleStreamingMessage 的错误信息
 
 function initStreamingTranscription() {
   $('streaming-start-btn').addEventListener('click', startStreaming);
@@ -2396,6 +2398,7 @@ async function startStreaming() {
   }
 
   textDiv.innerHTML = '<span class="text-muted">请求麦克风权限...</span>';
+  _streamingErrorShown = false;  // 重置错误状态
 
   try {
     // 1. 获取麦克风权限
@@ -2424,24 +2427,58 @@ async function startStreaming() {
       });
       _streamingWs.send(configMsg);
       streamingLog('已发送配置: ' + configMsg);
+
+      // 启动应用层心跳（15s 间隔），防止代理层超时断连
+      // 注意：数据流本身（每 128ms 一个音频块）就是心跳，
+      // 此心跳仅在音频暂停时兜底
+      _streamingHeartbeat = setInterval(() => {
+        if (_streamingWs && _streamingWs.readyState === WebSocket.OPEN) {
+          _streamingWs.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 15000);
     };
 
     _streamingWs.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      streamingLog('收到消息: ' + data.type + ' ' + JSON.stringify(data).substring(0, 200));
-      handleStreamingMessage(data);
+      try {
+        const data = JSON.parse(event.data);
+        streamingLog('收到消息: ' + data.type + ' ' + JSON.stringify(data).substring(0, 200));
+        handleStreamingMessage(data);
+      } catch (parseErr) {
+        streamingLog('消息解析失败: ' + parseErr.message + ' raw=' + String(event.data).substring(0, 100));
+      }
     };
 
     _streamingWs.onerror = (e) => {
       streamingLog('WebSocket 错误');
+      // 清理录音状态（计时器、音频采集），避免 UI 假死
+      cleanupStreaming();
+      // 恢复 UI
+      $('streaming-start-btn').disabled = false;
+      $('streaming-stop-btn').disabled = true;
+      const algoSelect = $('streaming-algorithm-select');
+      if (algoSelect) algoSelect.disabled = false;
+      $('streaming-status').classList.add('d-none');
       showStreamingError('WebSocket连接错误');
     };
 
     _streamingWs.onclose = (e) => {
       streamingLog('WebSocket 关闭, code=' + e.code + ' reason=' + e.reason);
-      // 如果非主动关闭，提示
-      if (_streamingMediaStream) {
-        showStreamingError('WebSocket连接已断开');
+      // 1005 = 未收到关闭帧（异常断开：进程崩溃/网络中断/代理超时）
+      // 1000 = 正常关闭, 1001 = 离开页面
+      const abnormalClose = (e.code !== 1000 && e.code !== 1001);
+      if (abnormalClose && _streamingMediaStream) {
+        // 清理录音状态
+        cleanupStreaming();
+        // 恢复 UI
+        $('streaming-start-btn').disabled = false;
+        $('streaming-stop-btn').disabled = true;
+        const algoSelect = $('streaming-algorithm-select');
+        if (algoSelect) algoSelect.disabled = false;
+        $('streaming-status').classList.add('d-none');
+        const msg = e.code === 1005
+          ? 'WebSocket连接异常断开（可能代理超时或服务端异常），请重试'
+          : `WebSocket连接已断开 (code=${e.code})`;
+        showStreamingError(msg);
       }
     };
 
@@ -2455,29 +2492,49 @@ async function startStreaming() {
     const source = _streamingAudioCtx.createMediaStreamSource(_streamingMediaStream);
 
     // 使用 ScriptProcessorNode 采集 PCM 数据
-    // bufferSize=2048 对应约 128ms @16kHz（更快的反馈频率）
-    _streamingProcessor = _streamingAudioCtx.createScriptProcessor(2048, 1, 1);
+    // bufferSize=4096 对应约 256ms @16kHz（平衡延迟与消息开销）
+    _streamingProcessor = _streamingAudioCtx.createScriptProcessor(4096, 1, 1);
 
     let _chunkCount = 0;
     _streamingProcessor.onaudioprocess = (e) => {
       if (!_streamingWs || _streamingWs.readyState !== WebSocket.OPEN) return;
 
-      const float32Data = e.inputBuffer.getChannelData(0);
-      // float32 -> int16 PCM
-      const int16Data = new Int16Array(float32Data.length);
-      for (let i = 0; i < float32Data.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32Data[i]));
-        int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-      }
-      _streamingWs.send(int16Data.buffer);
-      _chunkCount++;
-      if (_chunkCount % 20 === 1) {
-        streamingLog('已发送 ' + _chunkCount + ' 个音频块, ' + int16Data.length + ' 采样点, ' + int16Data.buffer.byteLength + ' 字节');
+      try {
+        const float32Data = e.inputBuffer.getChannelData(0);
+        // float32 -> int16 PCM
+        const int16Data = new Int16Array(float32Data.length);
+        for (let i = 0; i < float32Data.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32Data[i]));
+          int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        _streamingWs.send(int16Data.buffer);
+        _chunkCount++;
+        if (_chunkCount % 20 === 1) {
+          streamingLog('已发送 ' + _chunkCount + ' 个音频块, ' + int16Data.length + ' 采样点, ' + int16Data.buffer.byteLength + ' 字节');
+        }
+      } catch (sendErr) {
+        streamingLog('发送音频块失败: ' + sendErr.message);
+        // WebSocket 发送失败时主动清理
+        cleanupStreaming();
+        $('streaming-start-btn').disabled = false;
+        $('streaming-stop-btn').disabled = true;
+        const algoSelect = $('streaming-algorithm-select');
+        if (algoSelect) algoSelect.disabled = false;
+        $('streaming-status').classList.add('d-none');
+        showStreamingError('音频发送失败: ' + sendErr.message);
       }
     };
 
     source.connect(_streamingProcessor);
     _streamingProcessor.connect(_streamingAudioCtx.destination);
+
+    // 防止竞态：如果在 setup 期间 WebSocket 已断开，不更新 UI 为录音状态
+    if (!_streamingWs || _streamingWs.readyState !== WebSocket.OPEN) {
+      streamingLog('WebSocket 在 setup 期间已断开，放弃启动录音');
+      cleanupStreaming();
+      showStreamingError('WebSocket连接失败，请重试');
+      return;
+    }
 
     // 更新 UI
     startBtn.disabled = true;
@@ -2568,6 +2625,10 @@ function handleStreamingMessage(data) {
       showStreamingError(data.message || '未知错误');
       cleanupStreaming();
       break;
+
+    case 'pong':
+      // 心跳回复，静默忽略
+      break;
   }
 }
 
@@ -2610,6 +2671,9 @@ function scheduleStreamingRender(textDiv) {
 }
 
 function showStreamingError(msg) {
+  // 防止 onclose 覆盖 handleStreamingMessage 的实际错误
+  if (_streamingErrorShown) return;
+  _streamingErrorShown = true;
   const errorDiv = $('streaming-error');
   const errorMsg = $('streaming-error-msg');
   errorDiv.classList.remove('d-none');
@@ -2627,6 +2691,8 @@ function cleanupStreaming() {
   _streamingLastRendered = '';
   // 停止计时
   if (_streamingTimer) { clearInterval(_streamingTimer); _streamingTimer = null; }
+  // 停止心跳
+  if (_streamingHeartbeat) { clearInterval(_streamingHeartbeat); _streamingHeartbeat = null; }
 
   // 关闭音频采集
   if (_streamingProcessor) { _streamingProcessor.disconnect(); _streamingProcessor = null; }

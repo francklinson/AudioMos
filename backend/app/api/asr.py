@@ -46,6 +46,11 @@ except ImportError as e:
     ASR_AVAILABLE = False
     logger.warning(f"ASR语音识别模块加载失败: {e}")
 
+# 流式转录批次处理阈值：累积到约 400ms 音频才推理一次
+# 16kHz 单声道 16bit PCM → 每秒 32000 字节 → 400ms ≈ 12800 字节
+# 推理耗时 ~300-500ms，此阈值确保推理能跟上实时音频流
+_MIN_STREAMING_BATCH_BYTES = 12800  # 400ms @ 16kHz mono 16-bit
+
 # ── 全局依赖 ──
 
 
@@ -1362,15 +1367,28 @@ async def asr_ws_endpoint(websocket: WebSocket, task_id: str):
 
 # ── 流式转录全局模型缓存 ──
 _streaming_asr_instance: Optional[Any] = None
+_streaming_asr_algorithm: Optional[str] = None  # 记录当前缓存的算法名称
 _streaming_lock = asyncio.Lock()
 
 
 async def _get_or_init_streaming_model(algorithm: str = "qwen3-asr") -> Any:
     """获取或初始化支持流式转录的ASR模型实例"""
-    global _streaming_asr_instance
+    global _streaming_asr_instance, _streaming_asr_algorithm
     async with _streaming_lock:
-        if _streaming_asr_instance and _streaming_asr_instance.is_initialized():
+        # 缓存命中：同一算法已初始化 → 复用
+        if (_streaming_asr_instance and _streaming_asr_instance.is_initialized()
+                and _streaming_asr_algorithm == algorithm):
             return _streaming_asr_instance
+
+        # 不同算法：先卸载旧模型释放 GPU 显存
+        if _streaming_asr_instance and _streaming_asr_algorithm != algorithm:
+            logger.info(f"[ASR-Streaming] 切换算法: {_streaming_asr_algorithm} → {algorithm}，卸载旧模型")
+            try:
+                _streaming_asr_instance.unload()
+            except Exception as e:
+                logger.warning(f"[ASR-Streaming] 卸载旧模型出错: {e}")
+            _streaming_asr_instance = None
+            _streaming_asr_algorithm = None
 
         if not ASR_AVAILABLE:
             raise RuntimeError("ASR模块不可用")
@@ -1379,7 +1397,7 @@ async def _get_or_init_streaming_model(algorithm: str = "qwen3-asr") -> Any:
             algorithm, device=_get_device(),
             model_dir=os.path.join(asr_model_dir, algorithm),
             offline=settings.asr.offline,
-            use_vllm=True,
+            use_vllm=(algorithm == "qwen3-asr"),  # 仅 Qwen3-ASR 需要 vLLM
         )
         if not instance:
             raise ValueError(f"未知的ASR算法: {algorithm}")
@@ -1396,6 +1414,7 @@ async def _get_or_init_streaming_model(algorithm: str = "qwen3-asr") -> Any:
             )
 
         _streaming_asr_instance = instance
+        _streaming_asr_algorithm = algorithm
         return instance
 
 
@@ -1463,6 +1482,11 @@ async def asr_streaming_ws(websocket: WebSocket):
 
         logger.info(f"[ASR-Streaming] 流式转录会话开始: algorithm={algorithm}")
 
+        # 跳过-合并策略：不逐块推理（前端每 ~256ms 一块），累积到 ≥400ms 才推理
+        # 推理耗时期间新到的数据自然累积到下一批，避免积压
+        pending_bytes = bytearray()
+        last_partial_text = ""
+
         # 主循环：接收音频块并流式转录
         while True:
             msg = await websocket.receive()
@@ -1478,7 +1502,22 @@ async def asr_streaming_ws(websocket: WebSocket):
                 logger.info(f"[ASR-Streaming] 收到控制消息: {ctrl}")
 
                 if ctrl.get("type") == "finish":
-                    # 客户端请求结束
+                    # 客户端请求结束：先处理剩余累积音频
+                    if len(pending_bytes) > 0:
+                        combined = bytes(pending_bytes)
+                        pending_bytes.clear()
+                        audio_batch = np.frombuffer(combined, dtype=np.int16).astype(np.float32) / 32768.0
+
+                        def _drain_finish():
+                            return asr_instance.streaming_transcribe(audio_batch, streaming_state)
+                        drain_result = await loop.run_in_executor(None, _drain_finish)
+                        if drain_result.get("text"):
+                            await websocket.send_json({
+                                "type": "partial",
+                                "text": drain_result.get("text", ""),
+                                "language": drain_result.get("language", ""),
+                            })
+
                     def _finish():
                         return asr_instance.finish_streaming_transcribe(streaming_state)
                     result = await loop.run_in_executor(None, _finish)
@@ -1490,6 +1529,11 @@ async def asr_streaming_ws(websocket: WebSocket):
                     logger.info(f"[ASR-Streaming] 流式转录完成: text={result.get('text', '')!r}, chunks={chunk_count}")
                     return
 
+                if ctrl.get("type") == "ping":
+                    # 客户端心跳保活，回复 pong
+                    await websocket.send_json({"type": "pong"})
+                    continue
+
                 continue
 
             # 处理二进制音频数据
@@ -1499,33 +1543,60 @@ async def asr_streaming_ws(websocket: WebSocket):
                     continue
 
                 chunk_count += 1
+                pending_bytes.extend(audio_bytes)
 
-                # 16bit PCM -> float32
-                audio_chunk = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                # 未达到批次阈值 → 跳过，继续累积
+                if len(pending_bytes) < _MIN_STREAMING_BATCH_BYTES:
+                    continue
 
-                if chunk_count <= 3 or chunk_count % 20 == 0:
-                    logger.info(f"[ASR-Streaming] 收到音频块 #{chunk_count}: {len(audio_bytes)} 字节, {len(audio_chunk)} 采样点")
+                # 达到阈值 → 合并处理后送给推理
+                combined = bytes(pending_bytes)
+                pending_bytes.clear()
 
-                # 流式转录
-                def _stream_transcribe(chunk=audio_chunk, state=streaming_state):
-                    return asr_instance.streaming_transcribe(chunk, state)
+                audio_batch = np.frombuffer(combined, dtype=np.int16).astype(np.float32) / 32768.0
 
+                if chunk_count <= 3 or chunk_count % 10 == 0:
+                    logger.info(f"[ASR-Streaming] 批次推理: {len(audio_batch)} 采样点 ({len(audio_batch)/16000:.2f}s), 累计 {chunk_count} 个块")
+
+                def _stream_transcribe():
+                    return asr_instance.streaming_transcribe(audio_batch, streaming_state)
+
+                t0 = time.time()
                 result = await loop.run_in_executor(None, _stream_transcribe)
+                elapsed = time.time() - t0
 
                 text = result.get("text", "")
                 lang = result.get("language", "")
 
-                if chunk_count <= 3 or chunk_count % 20 == 0 or text:
-                    logger.info(f"[ASR-Streaming] 块 #{chunk_count} 转写结果: text={text!r}, lang={lang!r}")
+                if chunk_count <= 3 or chunk_count % 10 == 0 or text:
+                    logger.info(f"[ASR-Streaming] 批次结果 ({elapsed:.2f}s): text={text[:120]!r}")
+                    # 推理慢于实时 → 仍有积压风险
+                    batch_duration = len(audio_batch) / 16000.0
+                    if elapsed > batch_duration * 1.5:
+                        logger.warning(
+                            f"[ASR-Streaming] ⚠️ 推理速度跟不上实时音频: "
+                            f"处理 {batch_duration:.2f}s 音频耗时 {elapsed:.2f}s ({elapsed/batch_duration:.1f}x RTF)"
+                        )
 
-                await websocket.send_json({
-                    "type": "partial",
-                    "text": text,
-                    "language": lang,
-                })
+                # 只在文本变化时推送（避免无效传输）
+                if text != last_partial_text:
+                    last_partial_text = text
+                    await websocket.send_json({
+                        "type": "partial",
+                        "text": text,
+                        "language": lang,
+                    })
 
     except WebSocketDisconnect:
         logger.info(f"[ASR-Streaming] 客户端断开连接, 已处理 {chunk_count} 个音频块")
+    except RuntimeError as e:
+        # Starlette 在客户端断开后调用 receive() 会抛 RuntimeError 而非 WebSocketDisconnect
+        if "disconnect" in str(e).lower():
+            logger.info(f"[ASR-Streaming] 客户端断开连接 (RuntimeError), 已处理 {chunk_count} 个音频块")
+        else:
+            logger.error(f"[ASR-Streaming] 运行时异常: {e}")
+            import traceback
+            logger.error(f"[ASR-Streaming] 堆栈: {traceback.format_exc()}")
     except Exception as e:
         logger.error(f"[ASR-Streaming] 流式转录异常: {e}")
         import traceback
