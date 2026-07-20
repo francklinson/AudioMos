@@ -5,7 +5,7 @@ WeNet适配器
 
 import os
 import logging
-from typing import Optional
+from typing import Optional, Any
 import numpy as np
 
 from ..base import BaseASR, ASRResult
@@ -95,3 +95,49 @@ class WeNetAdapter(BaseASR):
             language=self.language,
             algorithm_name=self.name,
         )
+
+    # ── 流式转录实现（模拟流式：累积音频 + 周期性转录）──
+
+    def supports_streaming(self) -> bool:
+        return self._is_initialized
+
+    def init_streaming_state(self, **kwargs) -> Any:
+        return {
+            "audio_buffer": np.array([], dtype=np.float32),
+            "last_text": "",
+            "chunk_size_sec": kwargs.get("chunk_size_sec", 2.0),
+            "min_chunk_samples": int(self.sample_rate * kwargs.get("chunk_size_sec", 2.0)),
+        }
+
+    def streaming_transcribe(self, audio_chunk: np.ndarray, state: Any) -> dict:
+        if audio_chunk.dtype != np.float32:
+            audio_chunk = audio_chunk.astype(np.float32)
+
+        state["audio_buffer"] = np.concatenate([state["audio_buffer"], audio_chunk])
+
+        if len(state["audio_buffer"]) < state["min_chunk_samples"]:
+            return {"text": state["last_text"], "language": self.language, "is_final": False}
+
+        try:
+            result = self.transcribe(state["audio_buffer"], self.sample_rate)
+            text = result.text
+            if text != state["last_text"]:
+                state["last_text"] = text
+        except Exception as e:
+            logger.warning(f"[WeNet] 流式转录中间结果失败: {e}")
+
+        return {"text": state["last_text"], "language": self.language, "is_final": False}
+
+    def finish_streaming_transcribe(self, state: Any) -> dict:
+        audio_buffer = state.get("audio_buffer", np.array([], dtype=np.float32))
+        if len(audio_buffer) == 0:
+            return {"text": state.get("last_text", ""), "language": self.language, "is_final": True}
+
+        try:
+            result = self.transcribe(audio_buffer, self.sample_rate)
+            text = result.text
+        except Exception as e:
+            logger.warning(f"[WeNet] 最终转录失败: {e}")
+            text = state.get("last_text", "")
+
+        return {"text": text, "language": self.language, "is_final": True}
