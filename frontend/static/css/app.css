@@ -622,6 +622,12 @@ body::after {
   padding: 1.3rem 1.5rem;
 }
 
+.card-header {
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: .88rem;
+}
+
 .card-title {
   font-size: .9rem;
   font-weight: 700;
@@ -1494,9 +1500,236 @@ body::after {
   opacity: 1;
 }
 
+/* ===================== API 文档弹窗配色 ===================== */
+.modal-body {
+  background: #f8fafc;
+}
+
+.modal-body h5,
+.modal-body h6 {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.modal-body p,
+.modal-body li,
+.modal-body td,
+.modal-body th,
+.modal-body strong {
+  color: #334155;
+}
+
+.modal-body .text-muted {
+  color: #64748b !important;
+}
+
+.modal-body .text-info {
+  color: #0284c7 !important;
+}
+
+/* Base URL code */
+.modal-body #api-doc-base-url {
+  background: #e0e7ff;
+  color: #4338ca;
+  padding: .2rem .5rem;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+/* 认证说明卡片 */
+.modal-body .alert-info {
+  background: linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%);
+  border: 1px solid #bfdbfe;
+  color: #1e3a5f;
+  border-radius: 10px;
+}
+
+.modal-body .alert-info strong {
+  color: #1e40af;
+}
+
+.modal-body .alert-info code {
+  background: rgba(59, 130, 246, .1);
+  color: #1d4ed8;
+}
+
+/* Tab 导航 */
+.modal-body .nav-pills .nav-link {
+  color: #475569;
+  background: transparent;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: .88rem;
+  padding: .45rem 1rem;
+  transition: all .2s;
+}
+
+.modal-body .nav-pills .nav-link:hover {
+  color: #4f46e5;
+  background: #eef2ff;
+}
+
+.modal-body .nav-pills .nav-link.active {
+  background: linear-gradient(135deg, #6366f1, #818cf8);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, .35);
+}
+
+/* API 端点卡片 */
+.modal-body .card {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  transition: box-shadow .2s;
+}
+
+.modal-body .card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,.07);
+}
+
+.modal-body .card-header {
+  background: #fff;
+  color: #0f172a;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: .9rem;
+  padding: .65rem 1rem;
+}
+
+.modal-body .card-body {
+  background: #fff;
+  color: #334155;
+  padding: 1rem 1.2rem;
+}
+
+.modal-body .card-body h6 {
+  color: #475569;
+  font-weight: 700;
+  font-size: .85rem;
+  margin-top: .8rem;
+  margin-bottom: .4rem;
+  text-transform: uppercase;
+  letter-spacing: .02em;
+}
+
+/* 表格 */
+.modal-body .table {
+  color: #334155;
+}
+
+.modal-body .table thead th {
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 700;
+  font-size: .82rem;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.modal-body .table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.modal-body .table td {
+  color: #334155;
+  vertical-align: middle;
+}
+
+/* 行内 code（非 pre 内的） */
+.modal-body .card-body > *:not(pre) code,
+.modal-body .card-body p code,
+.modal-body .card-body td code {
+  background: #f1f5f9;
+  color: #be185d;
+  font-weight: 500;
+  padding: .1rem .35rem;
+  border-radius: 4px;
+  font-size: .82rem;
+}
+
+/* 代码块 */
+.modal-body pre {
+  background: #1e293b !important;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  margin: .6rem 0;
+}
+
+.modal-body pre code {
+  background: transparent;
+  color: #e2e8f0;
+  font-size: .82rem;
+  line-height: 1.6;
+  padding: .8rem 1rem;
+}
+
+/* 代码块中的注释 */
+.modal-body pre code::before {
+  content: '';
+}
+
+/* HTTP 方法 Badge */
+.modal-body .badge.bg-success {
+  background: linear-gradient(135deg, #059669, #10b981) !important;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.modal-body .badge.bg-primary {
+  background: linear-gradient(135deg, #2563eb, #3b82f6) !important;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.modal-body .badge.bg-danger {
+  background: linear-gradient(135deg, #dc2626, #ef4444) !important;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.modal-body .badge.bg-warning {
+  background: linear-gradient(135deg, #d97706, #f59e0b) !important;
+  color: #fff !important;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.modal-body .badge.bg-info {
+  background: linear-gradient(135deg, #0891b2, #06b6d4) !important;
+  color: #fff !important;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.modal-body .badge.bg-secondary {
+  background: linear-gradient(135deg, #6b7280, #9ca3af) !important;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+/* 认证说明中的 code 块 */
+.modal-body .alert-info pre {
+  background: #1e293b !important;
+  border: none;
+  border-radius: 6px;
+}
+
+.modal-body .alert-info pre code {
+  color: #a5f3fc;
+  font-size: .78rem;
+}
+
+/* 分隔线 */
+.modal-body .border-bottom {
+  border-color: #e2e8f0 !important;
+}
+
+/* Modal footer */
 .modal-footer {
-  border-top: 1px solid #f3f4f6;
+  border-top: 1px solid #e2e8f0;
   padding: .8rem 1.3rem;
+  background: #f8fafc;
 }
 
 /* ===================== 消息提示 ===================== */
@@ -1673,18 +1906,18 @@ input[type="checkbox"] {
 }
 
 .alert-info {
-  background: rgba(59,130,246,.08);
-  color: #1d4ed8;
+  background: #e0f2fe;
+  color: #0c4a6e;
 }
 
 .alert-success {
-  background: rgba(16,185,129,.08);
-  color: #047857;
+  background: #dcfce7;
+  color: #14532d;
 }
 
 .alert-danger {
-  background: rgba(239,68,68,.08);
-  color: #b91c1c;
+  background: #fef2f2;
+  color: #7f1d1d;
 }
 
 /* ── Form 控件增强 ── */
@@ -1725,14 +1958,19 @@ input[type="checkbox"] {
   word-break: break-all;
 }
 
-/* ── 链接和代码 ── */
+/* ── 链接和代码 ─ */
 code {
   font-family: var(--font-mono);
   font-size: .84rem;
   background: #f1f5f9;
   padding: .15rem .4rem;
   border-radius: 4px;
-  color: var(--primary-dark);
+}
+
+/* pre 块内的 code 不要浅色背景，继承 pre 的深色背景 */
+pre code {
+  background: transparent;
+  color: inherit;
 }
 
 a {
@@ -1764,11 +2002,11 @@ h6 {
 
 /* ── 小型徽章/标签 ── */
 .badge.bg-info {
-  background: rgba(59,130,246,.1) !important;
-  color: var(--info) !important;
+  background: #0ea5e9 !important;
+  color: #fff !important;
 }
 
 .badge.bg-secondary {
-  background: #f1f5f9 !important;
-  color: var(--text-muted) !important;
+  background: #64748b !important;
+  color: #fff !important;
 }
